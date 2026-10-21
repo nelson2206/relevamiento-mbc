@@ -51,7 +51,11 @@ export function prepararEstructura(existentes, hoja) {
     const deLaGerencia = [...filas.values()].filter(f => normal(f.gerencia) === normal(g));
     const conSeccion = deLaGerencia.filter(f => normal(f.seccion));
     const exacta = deLaGerencia.find(f => normal(f.seccion) === normal(s) && normal(s));
-    if (exacta) return [exacta.gerencia, exacta.seccion];
+    if (exacta) {
+      // Una sección creada hace un momento por otra fila de esta misma carga sigue sin estar en el esqueleto original: se sigue contando.
+      if (sinVincular[exacta.clave]) sinVincular[exacta.clave][tipo]++;
+      return [exacta.gerencia, exacta.seccion];
+    }
     if (relleno && conSeccion.length === 1) return [conSeccion[0].gerencia, conSeccion[0].seccion];
     if (!normal(s)) return [gerencia(g), s];   // sin sección no se puede crear una fila: la carga la rechaza como siempre
     const f = agregar(g, s);

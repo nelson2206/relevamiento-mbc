@@ -851,10 +851,10 @@ async function rutaEnlace(env, b) {
 async function rutaImportar(env, b) {
   const camp = await env.DB.prepare('SELECT id FROM campanas WHERE id=?').bind(b.campana_id).first();
   if (!camp) throw new HttpError(404, 'Campaña no encontrada');
-  const enc = Array.isArray(b.encuestados) ? b.encuestados : [];
-  const pro = Array.isArray(b.procesos) ? b.procesos : [];
-  const sis = Array.isArray(b.sistemas) ? b.sistemas : [];
-  const hojaEst = Array.isArray(b.estructura) ? b.estructura : [];   // hoja «Gerencias»: {area, gerencia, seccion}
+  // Solo filas que sean objetos: un null, un número o un texto suelto en la lista se ignoran en vez de provocar un error 500.
+  const filas = v => (Array.isArray(v) ? v : []).filter(x => x && typeof x === 'object' && !Array.isArray(x));
+  const enc = filas(b.encuestados), pro = filas(b.procesos), sis = filas(b.sistemas);
+  const hojaEst = filas(b.estructura);   // hoja «Gerencias»: {area, gerencia, seccion}
   if (enc.length > 500 || pro.length > 3000 || sis.length > 1000 || hojaEst.length > 2000) throw new HttpError(413, 'Demasiadas filas en una sola carga');
   const st = [];
   if (b.modo === 'reemplazar') {
