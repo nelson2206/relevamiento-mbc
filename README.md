@@ -19,12 +19,29 @@ Desplegar el servidor (desde `worker/`): `npm install && npx wrangler deploy`. S
 Este repositorio nació el 2026-10-21 como copia, con su historial, de la carpeta `relevamiento/` de
 [`hub-encuestas-mbc`](https://github.com/nelson2206/hub-encuestas-mbc) (el repo de Voz MBC).
 
-**Producción de TDP todavía se publica desde `hub-encuestas-mbc`** (GitHub Pages en encuesta.mbc-latam.com/relevamiento/ y el Worker
-`voz-relevamiento-api`). Mientras no se haga el traspaso, un cambio hecho solo aquí **no llega a TDP**, y uno hecho en `hub-encuestas-mbc`
-no llega aquí. El traspaso (publicar desde este repo sin cambiar los enlaces que ya tiene TDP) está pendiente de decisión.
+**Producción de TDP vive en https://relevamiento.mbc-latam.com** (desde 2026-10-21). El Worker `voz-relevamiento-api` sirve la encuesta, la consola
+y la API en ese mismo dominio: `worker/sitio.mjs` copia `index.html`, `admin.html`, los dos `flujo-*.js` y los íconos a `worker/publico/` antes de cada
+despliegue (`npm run deploy` desde `worker/`). La dirección antigua (encuesta.mbc-latam.com/relevamiento/) redirige al dominio nuevo con el mismo enlace.
+Hasta el 2026-10-23 se publicaba desde `hub-encuestas-mbc`; esta carpeta quedó **idéntica** a la de ese repo en esa fecha. Mientras ambos existan,
+un cambio hecho en uno hay que llevarlo al otro, y **el despliegue de producción debe hacerse con estos archivos** (incluyen el dominio en `wrangler.toml`
+y `sitio.mjs`; sin ellos relevamiento.mbc-latam.com se queda sin página). Las migraciones se aplican a la base **antes** de desplegar.
 
-La **demo** (relevamiento.mbc-latam.com, empresa ficticia, sin datos de ningún cliente) se genera desde este código con
-`voz-relevamiento-demo`.
+La **demo** (empresa ficticia, sin datos de ningún cliente) se genera desde este código con `voz-relevamiento-demo` y vive solo en su dirección
+`workers.dev`: ya no usa relevamiento.mbc-latam.com.
+
+## Perfil de cada persona (Responsable, Supervisor, Gerente)
+
+En «Personas y enlaces» de la consola, cada persona tiene un selector de perfil:
+
+- **Responsable**: responde sus procesos (lo de siempre).
+- **Supervisor**: entra al panel del cliente con su clave; su alcance es su sección. Llega hasta el avance, **sin validación final**.
+- **Gerente**: su alcance es toda su gerencia; lleva el flujo de 4 pasos y da la validación final.
+
+Al elegir un perfil el Worker (`POST /a/persona/perfil`) crea el acceso y devuelve la clave **una sola vez**; la consola la muestra con la dirección y
+prepara un correo `.eml` para Outlook. «Nueva clave» la regenera (la anterior deja de servir); volver a Responsable la desactiva. Solo el Gerente puede
+dar la validación final: el servidor responde 403 al Supervisor (`flujo.js`). Los Supervisores que el cliente creó antes quedan como Gerente.
+Para que las claves entren, el acceso del cliente de la campaña debe estar activo. Migración `migracion-016.sql` (columnas `perfil` y
+`encuestado_id` en `supervisores`); prueba `npm run test:perfiles`.
 
 ## Flujo guiado del Gerente (Supervisor)
 
