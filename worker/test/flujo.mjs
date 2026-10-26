@@ -61,8 +61,8 @@ try {
 
   console.log('Paso 1 · procesos');
   ok((await gerente('POST', '/c/flujo/confirmar', { paso: 2 })).status === 409, 'no se puede saltar al paso 2');
-  const fuera = await gerente('POST', '/c/flujo/proceso', { accion: 'agregar', gerencia: GAJENA, seccion: 'Otra', proceso: 'Intruso' });
-  ok(fuera.status === 403, 'no agrega procesos fuera de su alcance', fuera.status);
+  const fuera = await gerente('POST', '/c/flujo/proceso', { accion: 'agregar', gerencia: GAJENA, seccion: 'Seccion Inventada', proceso: 'Intruso' });
+  ok(fuera.status === 400, 'no agrega procesos en una sección que no existe', fuera.status);
   const dup = await gerente('POST', '/c/flujo/proceso', { accion: 'agregar', gerencia: G, seccion: S, proceso: 'proceso UNO' });
   ok(dup.status === 409, 'no agrega un duplicado', dup.status);
   const nuevo = await gerente('POST', '/c/flujo/proceso', { accion: 'agregar', gerencia: G, seccion: S, proceso: 'Proceso tres', descripcion: 'Agregado por el Gerente' });

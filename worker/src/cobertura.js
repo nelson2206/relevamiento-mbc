@@ -32,14 +32,14 @@ export function crearCobertura({ bloques, revisiones, respuestas, precarga }) {
   function avancePersona(pid, eid) {
     const filas = (todas[pid] || {})[eid] || [], por = {};
     filas.forEach(f => { por[f.pregunta] = f; });
-    if (PREG_ANTES.every(q => por[q] && por[q].contenido)) return true;
+    if (PREG_ANTES.every(q => por[q] && por[q].contenido)) return { listos: total, total, completo: true };   // formato anterior
     const adm = pre[pid] || {};
     let listos = 0;
     bloques.forEach(b => {
       const ck = (por[b.id] || {}).ck || {};
       b.puntos.forEach(pt => { if (adm[pt[0]] || puntoListo(ck, pt[0])) listos++; });
     });
-    return total > 0 && listos === total;
+    return { listos, total, completo: total > 0 && listos === total };
   }
 
   // Puntos cubiertos entre todas las personas y el equipo, sin repetir.
@@ -51,15 +51,18 @@ export function crearCobertura({ bloques, revisiones, respuestas, precarga }) {
     return [...cub].filter(k => validos.has(k)).length;
   }
 
-  return function cobertura(pid) {
+  // cobertura(pid): estado del proceso entre todas las personas · cobertura.persona(pid, eid): avance de una persona en ese proceso
+  const cobertura = function (pid) {
     const revs = rev[pid] || [], personas = new Set();
     revs.forEach(r => { if (r.estado === 'vigente' || r.estado === 'cambio') personas.add(r.encuestado_id); });
     Object.keys(conTexto[pid] || {}).forEach(eid => personas.add(eid));
     const candidatos = new Set([...Object.keys(todas[pid] || {}), ...personas]);
-    let completos = [...candidatos].filter(eid => avancePersona(pid, eid)).length;
+    let completos = [...candidatos].filter(eid => avancePersona(pid, eid).completo).length;
     if (!completos && candidatos.size && total > 0 && puntosUnidos(pid) === total) completos = 1;
     const noExiste = revs.filter(r => r.estado === 'no_existe').length;
     const estado = completos ? 'respondido' : personas.size ? 'en_curso' : noExiste ? 'no_vigente' : 'sin_cobertura';
     return { estado, personas: personas.size, completos, puntos: Math.min(puntosUnidos(pid), total), total };
   };
+  cobertura.persona = avancePersona;
+  return cobertura;
 }

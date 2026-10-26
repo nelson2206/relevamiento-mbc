@@ -47,6 +47,10 @@
   var OCUPADO = false;
 
   function esc(s){ return X.esc(s); }
+  // El Supervisor llega hasta el avance (paso 3): la validación final la da el Gerente, así que no ve el paso 4.
+  function esSup(){ return F && F.perfil === 'supervisor'; }
+  function pasosVisibles(){ return esSup() ? PASOS.slice(0, 3) : PASOS; }
+  function tope(){ return esSup() ? 3 : 4; }
   function nombreProc(p){ return p.subproceso || p.proceso || p.macroproceso || '(sin nombre)'; }
   function plural(n, uno, varios){ return n + ' ' + (n === 1 ? uno : varios); }
   function pct(a, b){ return b ? Math.round(100 * a / b) : 0; }
@@ -92,7 +96,7 @@
       var antes = F;
       F = j;
       // Si el Worker reinició pasos o el flujo avanzó, la vista sigue al paso actual; si no, se queda donde estaba.
-      if (!VISTA || VISTA > F.paso_actual || (antes && antes.paso_actual !== F.paso_actual && VISTA === antes.paso_actual)) VISTA = Math.min(F.paso_actual, 4);
+      if (!VISTA || VISTA > F.paso_actual || (antes && antes.paso_actual !== F.paso_actual && VISTA === antes.paso_actual)) VISTA = Math.min(F.paso_actual, tope());
       pintar();
     });
   }
@@ -108,7 +112,8 @@
     var h = '<div id="fgAviso" class="msg hidden" role="status" aria-live="polite" style="margin-bottom:12px"></div>';
     if (F.aprobacion) h += '<div class="fg-fin" role="status"><b>Validación final dada</b> · ' + esc(X.fecha(F.aprobacion.aprobado_en)) + ' · ' + plural(F.aprobacion.procesos, 'proceso aprobado', 'procesos aprobados') +
       '<br><span class="muted" style="color:inherit">Tus procesos quedaron cerrados. Si necesitas corregir algo, pídele al equipo consultor que reabra tu aprobación.</span></div>';
-    h += '<ol class="fg-pasos" aria-label="Pasos del flujo">' + PASOS.map(function(p){
+    if (F.terminado) h += '<div class="fg-fin" role="status"><b>Terminaste tu parte</b><br><span class="muted" style="color:inherit">Confirmaste los tres pasos. La validación final la da el Gerente de tu gerencia; aquí puedes seguir el avance de tu equipo.</span></div>';
+    h += '<ol class="fg-pasos" aria-label="Pasos del flujo">' + pasosVisibles().map(function(p){
       var hecho = F.paso_actual > p.n, actual = F.paso_actual === p.n, bloqueado = F.paso_actual < p.n;
       return '<li class="fg-paso ' + (hecho ? 'hecho' : actual ? 'actual' : 'bloq') + (VISTA === p.n ? ' vista' : '') + '"' + (VISTA === p.n ? ' aria-current="step"' : '') + '>' +
         '<button type="button" data-paso="' + p.n + '"' + (bloqueado ? ' disabled' : '') + '><span class="fg-num">' + (hecho ? '✓' : p.n) + '</span>' +
@@ -135,6 +140,7 @@
     }
     h += '<div class="fg-pie">' + (paso > 1 ? '<button type="button" class="btn btn-ghost" data-fg="atras">← Volver al paso ' + (paso - 1) + '</button>' : '') + '<span class="fg-espacio"></span>';
     if (aprobada) h += '<span class="muted">Flujo cerrado</span>';
+    else if (F.terminado) h += '<span class="muted">Tu parte está terminada</span>';
     else if (esActual) h += '<button type="button" class="btn" data-fg="confirmar"' + (puede ? '' : ' disabled') + '>' + esc(textoBoton) + '</button>';
     else h += '<button type="button" class="btn btn-navy" data-fg="adelante">Ir al paso actual (' + F.paso_actual + ') →</button>';
     h += '</div>';
@@ -144,14 +150,14 @@
   function enlazarPie(c, paso, textoConfirmacion, tituloConfirmacion, final){
     var atras = c.querySelector('[data-fg=atras]'), conf = c.querySelector('[data-fg=confirmar]'), adel = c.querySelector('[data-fg=adelante]');
     if (atras) atras.onclick = function(){ VISTA = paso - 1; pintar(); };
-    if (adel) adel.onclick = function(){ VISTA = Math.min(F.paso_actual, 4); pintar(); };
+    if (adel) adel.onclick = function(){ VISTA = Math.min(F.paso_actual, tope()); pintar(); };
     if (conf) conf.onclick = function(){
       if (OCUPADO) return;
       confirmar(tituloConfirmacion, textoConfirmacion, final ? 'Dar mi validación final' : 'Sí, continuar', !!final).then(function(si){
         if (!si) return;
         OCUPADO = true; conf.disabled = true;
         var cuerpo = {paso: paso}; if (final) cuerpo.confirmar_final = true;
-        return X.post('/c/flujo/confirmar', cuerpo).then(function(){ VISTA = Math.min(paso + 1, 4); return X.recargar(); })
+        return X.post('/c/flujo/confirmar', cuerpo).then(function(){ VISTA = Math.min(paso + 1, tope()); return X.recargar(); })
           .then(function(){ aviso(final ? 'Listo: tu validación final quedó registrada.' : 'Paso ' + paso + ' confirmado.'); })
           .catch(function(err){ aviso(err.message, true); return cargar(); })
           .then(function(){ OCUPADO = false; });
@@ -239,9 +245,9 @@
   }
 
   function dialogoProceso(){
-    var secs = porSeccion(activos().concat(F.procesos.filter(function(p){ return p.quitado; })));
+    var secs = (F.secciones && F.secciones.length ? F.secciones : porSeccion(activos())).map(function(x){ return {gerencia: x.gerencia, seccion: x.seccion}; });   // cualquier sección de la campaña
     var d = document.getElementById('dlg');
-    X.abrirDlg('Agregar un proceso', 'Pasará a formar parte del inventario final',
+    X.abrirDlg('Agregar un proceso', 'Puedes crearlo en tu sección o en otra; pasa a formar parte del inventario final',
       '<label for="fgSec">Sección</label><select id="fgSec">' + secs.map(function(s, i){ return '<option value="' + i + '">' + esc(s.seccion) + ' · ' + esc(s.gerencia) + '</option>'; }).join('') + '</select>' +
       '<label for="fgNom">Nombre del proceso</label><input type="text" id="fgNom" maxlength="200" autocomplete="off" placeholder="Por ejemplo: Conciliación de pagos">' +
       '<label for="fgDes">Descripción (qué hace y para qué)</label><textarea id="fgDes" rows="4" maxlength="1500"></textarea>' +
@@ -367,13 +373,37 @@
     };
   }
 
+  // ---------------------------------------------------------------- equipo: avance de las personas a cargo
+  // El Gerente ve a los Supervisores de su gerencia y a los responsables; el Supervisor, solo a los responsables de su sección.
+  function equipoHtml(){
+    var e = F.equipo || {responsables: [], supervisores: []}, h = '';
+    h += '<h3 style="font-size:15px;margin:24px 0 2px">' + (esSup() ? 'Tus responsables' : 'Tu equipo') + '</h3>' +
+      '<p class="muted" style="margin:0 0 6px">' + (esSup() ? 'Avance de las personas que llenan los procesos de tu sección.' : 'Avance de los Supervisores de tu gerencia y de las personas que llenan los procesos.') + '</p>';
+    if (!esSup()){
+      h += '<h4 style="font-size:13px;margin:10px 0 2px">Supervisores (' + e.supervisores.length + ')</h4>';
+      h += e.supervisores.length ? '<section class="fg-sec" id="fgSupervisores">' + e.supervisores.map(function(s){
+        return '<div class="fg-fila"><div class="fg-nom"><b>' + esc(s.nombre) + '</b><p class="muted">' + plural(s.procesos, 'proceso', 'procesos') + ' · ' + plural(s.responsables, 'responsable', 'responsables') + '</p></div>' +
+          '<div class="fg-der">' + (s.terminado ? '<span class="chip c-ok">Terminó sus 3 pasos</span>' : '<span class="chip c-inf">Paso ' + Math.min(s.pasos + 1, 3) + ' de 3</span>') +
+          barra(s.respondidos, s.procesos, s.respondidos + ' de ' + s.procesos + ' procesos respondidos') + '<span class="muted">' + s.respondidos + ' de ' + plural(s.procesos, 'proceso respondido', 'procesos respondidos') + '</span></div></div>';
+      }).join('') + '</section>' : '<p class="muted" style="margin:0">No hay Supervisores con procesos en tu gerencia.</p>';
+      h += '<h4 style="font-size:13px;margin:14px 0 2px">Responsables (' + e.responsables.length + ')</h4>';
+    }
+    h += e.responsables.length ? '<section class="fg-sec" id="fgResponsables">' + e.responsables.map(function(r){
+      return '<div class="fg-fila"><div class="fg-nom"><b>' + esc(r.nombre) + '</b>' + (r.perfil !== 'responsable' ? ' <span class="chip c-acc">' + (r.perfil === 'gerente' ? 'Gerente' : 'Supervisor') + '</span>' : '') +
+        '<p class="muted">' + esc([r.rol, r.seccion].filter(Boolean).join(' · ')) + '</p></div>' +
+        '<div class="fg-der"><span class="chip ' + (r.completos === r.procesos ? 'c-ok' : 'c-inf') + '">' + r.completos + ' de ' + plural(r.procesos, 'proceso completo', 'procesos completos') + '</span>' +
+        (r.total ? barra(r.puntos, r.total, r.puntos + ' de ' + r.total + ' puntos') + '<span class="muted">' + pct(r.puntos, r.total) + '% de sus puntos</span>' : '') + '</div></div>';
+    }).join('') + '</section>' : '<p class="muted" style="margin:0">Todavía no hay personas con procesos asignados.</p>';
+    return h;
+  }
+
   // ---------------------------------------------------------------- paso 3: avance
   var ESTADO = {respondido: ['Respondido', 'c-ok'], en_curso: ['En curso', 'c-inf'], sin_cobertura: ['Sin respuestas', 'c-warn'], no_vigente: ['Ya no se hace', 'c-mut']};
   function paso3(c){
     var vivos = activos(), listos = vivos.filter(function(p){ return p.estado === 'respondido' || p.estado === 'no_vigente'; }).length;
     var h = '<h2 style="font-size:17px;margin:0 0 4px">Avance de tus procesos</h2>' +
-      '<p class="muted" style="margin-top:0">Para continuar, <b>todos los procesos deben estar respondidos</b>. Aquí ves cuánto lleva cada uno, por sección y en toda tu gerencia.</p>' +
-      '<div class="card" style="padding:12px 16px;margin:8px 0"><b>Toda tu gerencia</b><div style="font-size:26px;font-family:Montserrat,sans-serif;font-weight:800;color:var(--heading)">' + pct(listos, vivos.length) + '%</div>' +
+      '<p class="muted" style="margin-top:0">' + (esSup() ? 'Para terminar tu parte, <b>todos los procesos deben estar respondidos</b>. Aquí ves cuánto lleva cada uno y tu sección completa.' : 'Para continuar, <b>todos los procesos deben estar respondidos</b>. Aquí ves cuánto lleva cada uno, por sección y en toda tu gerencia.') + '</p>' +
+      '<div class="card" style="padding:12px 16px;margin:8px 0"><b>' + (esSup() ? 'Toda tu sección' : 'Toda tu gerencia') + '</b><div style="font-size:26px;font-family:Montserrat,sans-serif;font-weight:800;color:var(--heading)">' + pct(listos, vivos.length) + '%</div>' +
       barra(listos, vivos.length, pct(listos, vivos.length) + '% de tus procesos respondidos') + '<div class="muted">' + listos + ' de ' + plural(vivos.length, 'proceso respondido', 'procesos respondidos') + '</div></div>';
     h += porSeccion(vivos).map(function(s){
       var ok = s.procs.filter(function(p){ return p.estado === 'respondido' || p.estado === 'no_vigente'; }).length;
@@ -385,9 +415,10 @@
             '<div class="fg-der"><span class="chip ' + e[1] + '">' + e[0] + '</span>' + (p.total && p.estado !== 'no_vigente' ? barra(p.puntos, p.total, p.puntos + ' de ' + p.total + ' puntos') + '<span class="muted">' + p.puntos + ' de ' + p.total + ' puntos</span>' : '') + '</div></div>';
         }).join('') + '</section>';
     }).join('');
+    h += equipoHtml();
     c.innerHTML = h;
-    pie(c, 3, 'Confirmar avance y continuar');
-    enlazarPie(c, 3, 'Todos tus procesos están respondidos. Pasarás a la validación final, después de que el equipo consultor valide.', '¿Estás seguro de continuar?');
+    pie(c, 3, esSup() ? 'Confirmar avance y terminar' : 'Confirmar avance y continuar');
+    enlazarPie(c, 3, esSup() ? 'Todos tus procesos están respondidos. Tu parte termina aquí: el Gerente de tu gerencia da la validación final.' : 'Todos tus procesos están respondidos. Pasarás a la validación final, después de que el equipo consultor valide.', '¿Estás seguro de continuar?');
   }
 
   // ---------------------------------------------------------------- paso 4: validación final
@@ -410,7 +441,6 @@
     pie(c, 4, 'Validación final');
     enlazarPie(c, 4, 'Estás dando tu aprobación final sobre ' + plural(vivos.length, 'proceso', 'procesos') + '. Después NO podrás cambiar nada ni volver atrás: solo el equipo consultor puede reabrirla.', '¿Dar tu validación final?', true);
     if (!aprobada){ var b = c.querySelector('[data-fg=confirmar]'); if (b) b.classList.remove('btn-navy'); }
-    if (F.perfil === 'supervisor'){ var bc = c.querySelector('[data-fg=confirmar]'); if (bc) bc.remove(); c.insertAdjacentHTML('beforeend', '<p class="msg info" role="note">La validación final la da el Gerente de tu área. Tú llegas hasta aquí: tus procesos, su delegación y su avance.</p>'); }
   }
 
   // ---------------------------------------------------------------- API pública
