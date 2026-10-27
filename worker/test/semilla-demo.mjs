@@ -2,7 +2,8 @@
 //   node test/semilla-demo.mjs                  → contra http://127.0.0.1:8787 (npm run dev); borra y vuelve a crear la campaña de demo
 //   node test/semilla-demo.mjs --api URL        → otro Worker (solo uno de pruebas)
 //
-// Deja tres Gerentes en etapas distintas para recorrer todo el flujo, y dos gerencias sin Gerente para probar «Elegir del inventario»:
+// Deja tres Gerentes en etapas distintas para recorrer todo el flujo (con Supervisores de sección y responsables), un responsable con procesos de varias
+// secciones, y dos gerencias sin Gerente para probar «Elegir del inventario». Todas las cuentas se crean desde la consola (/a/usuario) y sus claves se imprimen al final:
 //   Operaciones  → paso 1 (empieza desde cero; MBC ya asignó los procesos de Planta)
 //   Finanzas     → paso 3 (ya confirmó procesos y delegación; respuestas a medias)
 //   Comercial    → paso 4 (todo respondido y validado por MBC: listo para la validación final)
@@ -18,10 +19,11 @@ const ADMIN = process.env.ADMIN_CODE || (() => { try { return /^ADMIN_CODE=(.*)$
 if (!ADMIN) { console.error('Falta ADMIN_CODE (variable de entorno o worker/.dev.vars)'); process.exit(2); }
 
 const NOMBRE = 'Demo flujo del Gerente', CLAVE_CLIENTE = 'DemoCliente2026';
+const SUPERVISORES = [['Supervisor de Planta', 'Operaciones', 'Planta'], ['Supervisor de Mantenimiento', 'Operaciones', 'Mantenimiento'], ['Supervisora de Tesorería', 'Finanzas', 'Tesorería'], ['Supervisor de Ventas', 'Comercial', 'Ventas']];
 const GERENTES = [
-  { nombre: 'Gerente de Operaciones', clave: 'GerenteOps2026', gerencia: 'Operaciones' },
-  { nombre: 'Gerente de Finanzas', clave: 'GerenteFin2026', gerencia: 'Finanzas' },
-  { nombre: 'Gerente Comercial', clave: 'GerenteCom2026', gerencia: 'Comercial' }
+  { nombre: 'Gerente de Operaciones', gerencia: 'Operaciones' },
+  { nombre: 'Gerente de Finanzas', gerencia: 'Finanzas' },
+  { nombre: 'Gerente Comercial', gerencia: 'Comercial' }
 ];
 
 // gerencia → sección → [macroproceso, proceso, descripción]
@@ -142,8 +144,16 @@ await admin('POST', '/a/campana/cliente', { campana_id: cid, accion: 'definir', 
 const dueno = como(CLAVE_CLIENTE);
 const alta = await admin('POST', '/a/encuestado', { campana_id: cid, personas: PERSONAS.map(([nombre, gerencia, seccion]) => ({ nombre, gerencia, seccion })) });
 const detalle = await admin('GET', '/a/campana?id=' + cid);
-const persona = (g, s) => detalle.encuestados.find(e => e.gerencia === g && e.seccion === s);
-for (const g of GERENTES) await dueno('POST', '/c/supervisores', { accion: 'crear', nombre: g.nombre, clave: g.clave, alcance: { gerencias: [g.gerencia] } });
+const persona = (g, s) => detalle.encuestados.find(e => PERSONAS.some(p => p[0] === e.nombre && p[1] === g && p[2] === s));
+// Cuentas desde la consola: Gerentes (su gerencia) y Supervisores (su sección); la clave la genera el sistema y se muestra una sola vez
+const slug = t => t.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, '.');
+for (const g of GERENTES) { const r = await admin('POST', '/a/usuario', { campana_id: cid, nombre: g.nombre, correo: slug(g.nombre) + '@demo.test', gerencia: g.gerencia, seccion: Object.keys(INVENTARIO[g.gerencia])[0], perfil: 'gerente' }); g.clave = r.clave; }
+const supers = [];
+for (const [nombre, gerencia, seccion] of SUPERVISORES) { const r = await admin('POST', '/a/usuario', { campana_id: cid, nombre, correo: slug(nombre) + '@demo.test', gerencia, seccion, perfil: 'supervisor' }); supers.push({ nombre, clave: r.clave }); }
+// Un responsable con procesos de varias secciones a la vez
+const multi = await admin('POST', '/a/usuario', { campana_id: cid, nombre: 'Elena Multiseccion', correo: 'elena.multiseccion@demo.test', rol: 'Analista', gerencia: 'Operaciones', seccion: 'Planta',
+  secciones: [{ g: 'Operaciones', s: 'Planta' }, { g: 'Operaciones', s: 'Mantenimiento' }, { g: 'Operaciones', s: 'Logística' }] });
+const claveGerente = g => GERENTES.find(x => x.gerencia === g).clave;
 
 // Checklist de un proceso a nombre de una persona: «cuantos» puntos de los 16 (todos si se omite)
 const sesion = await http('GET', '/r/sesion?k=' + persona('Operaciones', 'Planta').token);
@@ -162,7 +172,7 @@ await admin('POST', '/a/asignar', { encuestado_id: persona('Operaciones', 'Plant
 
 // Finanzas: pasos 1 y 2 confirmados; responde a medias (6 completos, 2 a medias, el resto sin respuesta)
 {
-  const gf = await delegarTodo('GerenteFin2026', 'Finanzas');
+  const gf = await delegarTodo(claveGerente('Finanzas'), 'Finanzas');
   await gf('POST', '/c/flujo/confirmar', { paso: 1 }); await gf('POST', '/c/flujo/confirmar', { paso: 2 });
   const lista = Object.keys(INVENTARIO.Finanzas).flatMap(s => ids['Finanzas|' + s].map(pid => [persona('Finanzas', s), pid]));
   for (const [i, [p, pid]] of lista.entries()) { if (i < 6) await responder(p, pid); else if (i < 8) { await http('POST', '/r/revision', { k: p.token, proceso_id: pid, estado: 'vigente' }); await responder(p, pid, 6); } }
@@ -170,7 +180,7 @@ await admin('POST', '/a/asignar', { encuestado_id: persona('Operaciones', 'Plant
 
 // Comercial: todo respondido y validado por MBC; confirmó los pasos 1 a 3 y queda listo para la validación final
 {
-  const gc = await delegarTodo('GerenteCom2026', 'Comercial');
+  const gc = await delegarTodo(claveGerente('Comercial'), 'Comercial');
   await gc('POST', '/c/flujo/confirmar', { paso: 1 }); await gc('POST', '/c/flujo/confirmar', { paso: 2 });
   for (const s of Object.keys(INVENTARIO.Comercial)) for (const pid of ids['Comercial|' + s]) await responder(persona('Comercial', s), pid);
   await gc('POST', '/c/flujo/confirmar', { paso: 3 });
@@ -181,5 +191,7 @@ const base = arg('--origen') || ORIGEN;
 console.log('\nListo. Campaña «' + NOMBRE + '» (ficticia):');
 console.log('  Consola (admin):     ' + base + '/admin.html   código: ' + ADMIN);
 console.log('  Cliente:             ' + base + '/admin.html?cliente=1   clave: ' + CLAVE_CLIENTE);
-GERENTES.forEach(g => console.log('  ' + g.nombre.padEnd(24) + base + '/admin.html?cliente=1   clave: ' + g.clave));
+GERENTES.forEach(g => console.log('  ' + g.nombre.padEnd(28) + base + '/admin.html?cliente=1   clave: ' + g.clave));
+supers.forEach(x => console.log('  ' + x.nombre.padEnd(28) + base + '/admin.html?cliente=1   clave: ' + x.clave));
+console.log('  Elena Multiseccion (responsable con ' + multi.asignados + ' procesos de 3 secciones) en «Personas y enlaces»');
 console.log('  Encuestados (ej.):   ' + base + '/index.html?k=' + persona('Operaciones', 'Planta').token + '   (Carla Mendoza)');

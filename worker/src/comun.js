@@ -20,3 +20,19 @@ export function log(evento, datos) {
   try { console.log(JSON.stringify(Object.assign({ evento }, datos || {}))); } catch (e) { /* el registro nunca rompe la respuesta */ }
 }
 export const mascara = k => (k ? String(k).slice(0, 4) + '…' : '');
+
+export function tokenNuevo() {
+  // 20 caracteres sin ambiguos (sin 0/O, 1/l/I): se puede dictar por teléfono si hace falta.
+  const abc = 'abcdefghjkmnpqrstuvwxyz23456789';
+  const b = crypto.getRandomValues(new Uint8Array(20));
+  return Array.from(b, x => abc[x % abc.length]).join('');
+}
+
+// Comparación en tiempo constante: el tiempo de respuesta no delata cuántos caracteres acertó.
+export function igualSeguro(a, b) {
+  const te = new TextEncoder();
+  const x = te.encode(a || ''), y = te.encode(b || '');
+  let dif = x.length ^ y.length;
+  for (let i = 0; i < Math.max(x.length, y.length); i++) dif |= (x[i] || 0) ^ (y[i] || 0);
+  return dif === 0;
+}

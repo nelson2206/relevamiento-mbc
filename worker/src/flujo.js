@@ -12,8 +12,9 @@
 //  - Con la aprobación final dada nada se puede cambiar hasta que MBC la reabra.
 // Solo el Supervisor tiene este flujo: el administrador del cliente conserva su panel.
 import { HttpError, ahora, uid, txt, normal, mismaArea, log } from './comun.js';
-import { ambitoSobre, enSecs, registrarAccion, alcanceDe, esIncorporado } from './ambito.js';
+import { ambitoSobre, enSecs, registrarAccion, alcanceDe, esIncorporado, cubreSeccion } from './ambito.js';
 import { crearCobertura } from './cobertura.js';
+import { leerEstructura } from './estructura.js';
 
 export const NOMBRE_PASO = { 1: 'Procesos', 2: 'Delegación', 3: 'Avance', 4: 'Validación final' };
 const COMPLETO = 5;   // paso_actual cuando la aprobación final ya está dada
@@ -27,7 +28,7 @@ export function soloSupervisor(actor) {
 // Todo lo que hace falta para calcular el estado de cualquier Supervisor de la campaña, leído una sola vez.
 async function cargarCampana(env, campId, bloques) {
   const q = sql => env.DB.prepare(sql).bind(campId).all().then(r => r.results);
-  const [procs, revisiones, respuestas, precarga, asignaciones, pasos, aprobaciones] = await Promise.all([
+  const [procs, revisiones, respuestas, precarga, asignaciones, pasos, aprobaciones, encuestados, cuentas] = await Promise.all([
     q('SELECT id, codigo, gerencia, seccion, macroproceso, proceso, subproceso, descripcion, fuente, fuera_alcance, quitado_por, validacion, validado_en FROM procesos WHERE campana_id=?'),
     q('SELECT r.encuestado_id, r.proceso_id, r.estado FROM revisiones r JOIN encuestados e ON e.id=r.encuestado_id WHERE e.campana_id=?'),
     // El texto no se necesita, solo saber si hay: se evita traer lo que dijeron las personas.
@@ -35,16 +36,18 @@ async function cargarCampana(env, campId, bloques) {
     q('SELECT pc.proceso_id, pc.punto FROM precarga pc JOIN procesos p ON p.id=pc.proceso_id WHERE p.campana_id=?'),
     q('SELECT a.encuestado_id, a.proceso_id, a.origen FROM asignaciones a JOIN encuestados e ON e.id=a.encuestado_id WHERE e.campana_id=?'),
     q('SELECT supervisor_id, paso, confirmado_en FROM flujo_pasos WHERE campana_id=?'),
-    q('SELECT * FROM aprobaciones WHERE campana_id=? AND activa=1')
+    q('SELECT * FROM aprobaciones WHERE campana_id=? AND activa=1'),
+    q('SELECT id, nombre, rol, gerencia, seccion FROM encuestados WHERE campana_id=?'),
+    q('SELECT id, nombre, perfil, alcance, activo, encuestado_id FROM supervisores WHERE campana_id=?')
   ]);
   const delegados = {};   // proceso -> personas que lo tienen a cargo (asignadas o que lo tomaron)
   asignaciones.forEach(a => { if (a.origen !== 'excluido') (delegados[a.proceso_id] = delegados[a.proceso_id] || new Set()).add(a.encuestado_id); });
   revisiones.forEach(r => { if (r.estado === 'vigente' || r.estado === 'cambio') (delegados[r.proceso_id] = delegados[r.proceso_id] || new Set()).add(r.encuestado_id); });
-  return { procs, pasos, aprobaciones, delegados, cobertura: crearCobertura({ bloques, revisiones, respuestas, precarga }) };
+  return { procs, pasos, aprobaciones, delegados, encuestados, cuentas, cobertura: crearCobertura({ bloques, revisiones, respuestas, precarga }) };
 }
 
 // Estado del flujo de un Supervisor: pasos vigentes, paso actual, compuertas y procesos de su alcance.
-function calcular(datos, sup) {
+export function calcular(datos, sup) {
   const amb = ambitoSobre({ rol: 'supervisor', sup }, datos.procs);
   const propios = datos.procs.filter(p => amb.procs.has(p.id));
   const activos = propios.filter(p => !p.fuera_alcance);
@@ -67,9 +70,10 @@ function calcular(datos, sup) {
   for (let n = 1; n <= 3 && confirmado[n] && compuertas[n].ok; n++) vigentes.push(n);   // una confirmación vale mientras su compuerta se cumpla
 
   const aprob = datos.aprobaciones.find(a => a.supervisor_id === sup.id) || null;
-  const pasoActual = aprob ? COMPLETO : vigentes.length < 3 ? vigentes.length + 1 : 4;
+  const perfil = sup.perfil || 'gerente';
+  const pasoActual = aprob ? COMPLETO : vigentes.length < 3 ? vigentes.length + 1 : 4;   // el Supervisor no ve el 4: su parte termina al confirmar el 3
   return {
-    amb, activos, gerencias, compuertas, vigentes, confirmado, aprobacion: aprob, aprobada: !!aprob, paso_actual: pasoActual,
+    amb, activos, gerencias, compuertas, vigentes, confirmado, aprobacion: aprob, aprobada: !!aprob, paso_actual: pasoActual, perfil, terminado: perfil === 'supervisor' && vigentes.length >= 3,
     procesos: propios.filter(p => !p.fuera_alcance || p.quitado_por).map(p => {
       const c = info.get(p.id);
       return { id: p.id, codigo: p.codigo, gerencia: p.gerencia, seccion: p.seccion, macroproceso: p.macroproceso, proceso: p.proceso, subproceso: p.subproceso,
@@ -85,14 +89,59 @@ async function leer(env, actor, bloques) {
 }
 
 // ---------------------------------------------------------------- consulta del Supervisor
+// Avance de las personas a cargo de los procesos de quien mira. El Supervisor ve solo a los responsables de su alcance; el Gerente ve además a los
+// Supervisores de su gerencia: por cuántos pasos van y cuánto llevan sus procesos.
+function equipoDe(datos, est, sup) {
+  const enAlcance = new Set(est.activos.map(p => p.id));
+  const porNombre = (a, b) => a.nombre.localeCompare(b.nombre, 'es');
+  const personas = Object.fromEntries(datos.encuestados.map(e => [e.id, e]));
+  const cuentaDe = Object.fromEntries(datos.cuentas.filter(c => c.encuestado_id && c.activo).map(c => [c.encuestado_id, c]));
+  const asignados = ids => {   // persona -> procesos suyos (de la lista dada)
+    const m = new Map();
+    ids.forEach(pid => (datos.delegados[pid] || new Set()).forEach(eid => { if (!m.has(eid)) m.set(eid, new Set()); m.get(eid).add(pid); }));
+    return m;
+  };
+  const responsables = [...asignados(enAlcance).entries()].filter(([eid]) => personas[eid]).map(([eid, pids]) => {
+    let listos = 0, total = 0, completos = 0;
+    pids.forEach(pid => { const a = datos.cobertura.persona(pid, eid); listos += a.listos; total += a.total; if (a.completo) completos++; });
+    const c = cuentaDe[eid], e = personas[eid];
+    return { id: eid, nombre: e.nombre, rol: e.rol || '', seccion: e.seccion, perfil: c ? c.perfil : 'responsable', procesos: pids.size, completos, puntos: listos, total };
+  }).sort(porNombre);
+  let supervisores = [];
+  if ((sup.perfil || 'gerente') === 'gerente') {
+    supervisores = datos.cuentas.filter(c => c.activo && c.perfil === 'supervisor' && c.id !== sup.id).map(c => {
+      const e = calcular(datos, c), suyos = e.activos.filter(p => enAlcance.has(p.id));
+      if (!suyos.length) return null;
+      const listos = suyos.filter(p => ['respondido', 'no_vigente'].includes(e.procesos.find(x => x.id === p.id).estado)).length;
+      return { id: c.id, nombre: c.nombre, pasos: Math.min(e.vigentes.length, 3), terminado: e.terminado, procesos: suyos.length, respondidos: listos,
+        responsables: asignados(suyos.map(p => p.id)).size };
+    }).filter(Boolean).sort(porNombre);
+  }
+  return { responsables, supervisores };
+}
+
+// Secciones que existen en la campaña (por sus procesos, el esqueleto o el alcance de quien pide): donde se puede crear un proceso.
+async function seccionesConocidas(env, campId, datos, sup) {
+  const m = new Map();
+  const sumar = (g, s) => { if (!g || !s) return; const k = normal(g) + '|' + normal(s); if (!m.has(k)) m.set(k, { gerencia: g, seccion: s }); };
+  datos.procs.forEach(p => { if (!p.fuera_alcance) sumar(p.gerencia, p.seccion); });
+  (await leerEstructura(env, campId)).forEach(f => sumar(f.gerencia, f.seccion));
+  alcanceDe(sup).secciones.forEach(x => sumar(x.g, x.s));
+  return [...m.values()].sort((a, b) => a.gerencia.localeCompare(b.gerencia, 'es') || a.seccion.localeCompare(b.seccion, 'es'));
+}
+
 export async function rutaFlujo(env, actor, bloques) {
   soloSupervisor(actor);
-  const { est } = await leer(env, actor, bloques);
+  const { datos, est } = await leer(env, actor, bloques);
+  // La validación final es del Gerente: el Supervisor no recibe nada del paso 4 (ni su compuerta ni la validación que dio MBC a cada proceso).
+  const esSup = est.perfil === 'supervisor';
+  const compuertas = esSup ? { 1: est.compuertas[1], 2: est.compuertas[2], 3: est.compuertas[3] } : est.compuertas;
+  const procesos = esSup ? est.procesos.map(({ validacion, validado_en, ...resto }) => resto) : est.procesos;
   return {
-    ok: true, supervisor: { id: actor.sup.id, nombre: actor.sup.nombre }, perfil: actor.sup.perfil || 'gerente',
-    paso_actual: est.paso_actual, vigentes: est.vigentes, confirmado: est.confirmado,
-    compuertas: est.compuertas, aprobacion: est.aprobacion && { gerente: est.aprobacion.gerente, aprobado_en: est.aprobacion.aprobado_en, gerencias: JSON.parse(est.aprobacion.gerencias || '[]'), procesos: est.aprobacion.procesos },
-    procesos: est.procesos
+    ok: true, supervisor: { id: actor.sup.id, nombre: actor.sup.nombre }, perfil: est.perfil, terminado: est.terminado,
+    paso_actual: est.paso_actual, vigentes: est.vigentes, confirmado: est.confirmado, compuertas,
+    aprobacion: est.aprobacion && { gerente: est.aprobacion.gerente, aprobado_en: est.aprobacion.aprobado_en, gerencias: JSON.parse(est.aprobacion.gerencias || '[]'), procesos: est.aprobacion.procesos },
+    procesos, equipo: equipoDe(datos, est, actor.sup), secciones: await seccionesConocidas(env, actor.camp.id, datos, actor.sup)
   };
 }
 
@@ -159,7 +208,8 @@ export async function rutaFlujoProceso(env, actor, b, bloques) {
   soloSupervisor(actor);
   const accion = String(b.accion || '');
   if (!['agregar', 'incorporar', 'soltar', 'quitar', 'restaurar'].includes(accion)) throw new HttpError(400, 'Acción inválida');
-  const { est } = await leer(env, actor, bloques);
+  const { datos, est } = await leer(env, actor, bloques);
+  const nuevos = accion === 'incorporar' ? await candidatosIncorporar(env, actor, est, b) : null;   // permisos primero: un 403 no debe llegar como aviso de reinicio
   await guardarCambio(env, actor, bloques, 1, b.forzar === true, true);
   const camp = actor.camp, t = ahora();
 
@@ -168,18 +218,23 @@ export async function rutaFlujoProceso(env, actor, b, bloques) {
       proceso: txt(b.proceso, 200), subproceso: txt(b.subproceso, 200), descripcion: txt(b.descripcion, 1500) };
     if (!f.proceso && !f.subproceso) throw new HttpError(400, 'Indica el nombre del proceso.');
     if (!f.gerencia || !f.seccion) throw new HttpError(400, 'Elige la sección del proceso.');
-    if (!enSecs(est.amb, f.gerencia, f.seccion)) throw new HttpError(403, 'Esa sección no está dentro de tu alcance.');
+    // Puede crear en su sección o en cualquier otra que ya exista en la campaña (de su gerencia o de otra); una sección inventada no.
+    const conocida = (await seccionesConocidas(env, camp.id, datos, actor.sup)).find(x => mismaArea(x.gerencia, f.gerencia) && mismaArea(x.seccion, f.seccion));
+    if (!conocida) throw new HttpError(400, 'Elige una sección que exista en la campaña.');
+    f.gerencia = conocida.gerencia; f.seccion = conocida.seccion;
     const nuevo = (f.subproceso || f.proceso).toLowerCase();
-    if (est.procesos.some(p => mismaArea(p.seccion, f.seccion) && mismaArea(nombreProc(p), nuevo))) throw new HttpError(409, 'Ya existe un proceso con ese nombre en esa sección.');
+    if (datos.procs.some(p => mismaArea(p.gerencia, f.gerencia) && mismaArea(p.seccion, f.seccion) && mismaArea(nombreProc(p), nuevo))) throw new HttpError(409, 'Ya existe un proceso con ese nombre en esa sección.');
     const id = uid();
     // fuente 'gerente': cuenta como parte del inventario (la encuesta lo muestra a la sección y la matriz lo incluye), a diferencia de 'nuevo'.
     await env.DB.prepare(`INSERT INTO procesos (id, campana_id, codigo, gerencia, seccion, macroproceso, proceso, subproceso, descripcion, fuente, orden)
       VALUES (?,?,?,?,?,?,?,?,?,'gerente',6000)`).bind(id, camp.id, '', f.gerencia, f.seccion, f.macroproceso, f.proceso, f.subproceso, f.descripcion).run();
-    await registrarAccion(env, camp.id, actor, 'proceso_agregado', { proceso_id: id, nombre: f.subproceso || f.proceso, seccion: f.seccion });
+    // Si queda fuera de su alcance (otra sección o gerencia), se suma a su lista como un proceso elegido: así no desaparece de su vista.
+    if (!cubreSeccion(actor.sup, f.gerencia, f.seccion)) await guardarAlcance(env, actor, al => { al.procesos.push(id); });
+    await registrarAccion(env, camp.id, actor, 'proceso_agregado', { proceso_id: id, nombre: f.subproceso || f.proceso, seccion: f.seccion, gerencia: f.gerencia });
     return { ok: true, id };
   }
 
-  if (accion === 'incorporar') return incorporar(env, actor, est, b);
+  if (accion === 'incorporar') return incorporar(env, actor, nuevos);
 
   const p = est.procesos.find(x => x.id === txt(b.proceso_id, 60));
   if (!p) throw new HttpError(404, 'Proceso no encontrado en tu alcance');
@@ -231,7 +286,8 @@ async function guardarAlcance(env, actor, cambiar) {
     .bind(JSON.stringify({ todo: al.todo, gerencias: al.gerencias, secciones: al.secciones, procesos: [...new Set(al.procesos)] }), actor.sup.id).run();
 }
 
-async function incorporar(env, actor, est, b) {
+// Procesos que se pueden incorporar a la lista de quien pide (valida permisos y disponibilidad; no escribe nada).
+async function candidatosIncorporar(env, actor, est, b) {
   if (alcanceDe(actor.sup).todo) throw new HttpError(409, 'Ya tienes acceso a todos los procesos.');
   const ids = [...new Set((Array.isArray(b.proceso_ids) ? b.proceso_ids : []).map(x => txt(x, 60)).filter(Boolean))].slice(0, 100);
   if (!ids.length) throw new HttpError(400, 'Elige al menos un proceso.');
@@ -244,6 +300,10 @@ async function incorporar(env, actor, est, b) {
   if (filas.length !== ids.length || filas.some(p => p.fuera_alcance)) throw new HttpError(404, 'Alguno de los procesos no está disponible.');
   const nuevos = filas.filter(p => !est.amb.procs.has(p.id));
   if (!nuevos.length) throw new HttpError(409, 'Esos procesos ya están en tu lista.');
+  return nuevos;
+}
+
+async function incorporar(env, actor, nuevos) {
   await guardarAlcance(env, actor, al => { al.procesos.push(...nuevos.map(p => p.id)); });
   await registrarAccion(env, actor.camp.id, actor, 'proceso_incorporado', { procesos: nuevos.length, nombres: nuevos.slice(0, 5).map(nombreProc) });
   return { ok: true, incorporados: nuevos.length };
@@ -253,13 +313,14 @@ async function incorporar(env, actor, est, b) {
 // Resumen del flujo de cada Supervisor y de cada gerencia: sin iniciar, en curso o aprobada.
 export async function rutaFlujoAdmin(env, camp, bloques) {
   const datos = await cargarCampana(env, camp.id, bloques);
-  const sups = (await env.DB.prepare('SELECT id, nombre, alcance, activo FROM supervisores WHERE campana_id=? ORDER BY nombre').bind(camp.id).all()).results;
+  const sups = (await env.DB.prepare('SELECT id, nombre, alcance, activo, perfil FROM supervisores WHERE campana_id=? ORDER BY nombre').bind(camp.id).all()).results;
   const gerencias = {};
   const supervisores = sups.map(s => {
     const est = calcular(datos, s);
     const gers = est.gerencias;
-    gers.forEach(g => { (gerencias[g] = gerencias[g] || []).push({ id: s.id, nombre: s.nombre, aprobada: est.aprobada, paso: est.paso_actual, aprobado_en: est.aprobacion ? est.aprobacion.aprobado_en : '' }); });
-    return { id: s.id, nombre: s.nombre, activo: !!s.activo, paso_actual: est.paso_actual, vigentes: est.vigentes, aprobada: est.aprobada,
+    // La validación final es del Gerente: un Supervisor no cuenta para dar por validada una gerencia.
+    if ((s.perfil || 'gerente') === 'gerente') gers.forEach(g => { (gerencias[g] = gerencias[g] || []).push({ id: s.id, nombre: s.nombre, aprobada: est.aprobada, paso: est.paso_actual, aprobado_en: est.aprobacion ? est.aprobacion.aprobado_en : '' }); });
+    return { id: s.id, nombre: s.nombre, perfil: s.perfil || 'gerente', activo: !!s.activo, paso_actual: est.paso_actual, vigentes: est.vigentes, aprobada: est.aprobada,
       aprobado_en: est.aprobacion ? est.aprobacion.aprobado_en : '', gerencias: gers, procesos: est.activos.length,
       validados: est.activos.filter(p => p.validacion === 'validado').length };
   });

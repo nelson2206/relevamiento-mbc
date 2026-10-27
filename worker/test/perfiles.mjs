@@ -47,11 +47,11 @@ try {
   ok(r.ok && r.perfil === 'supervisor' && r.clave, 'se asigna Supervisor y se entrega una clave', r);
   const claveLuis = r.clave;
   r = await admin('POST', '/a/persona/perfil', { campana_id: cid, encuestado_id: pedro.id, perfil: 'gerente' });
-  ok(r.status === 400 && /No hay procesos/.test(r.error || ''), 'si su gerencia no existe en el mapa se explica y no se crea', r);
+  ok(r.ok && r.clave, 'se puede crear la cuenta aunque su gerencia todavía no tenga procesos ni esté en el mapa', r);
   r = await admin('POST', '/a/persona/perfil', { campana_id: cid, encuestado_id: ana.id, perfil: 'otro' });
   ok(r.status === 400, 'un perfil desconocido se rechaza');
   d = await admin('GET', '/a/campana?id=' + cid);
-  ok(d.encuestados.find(e => e.id === ana.id).perfil === 'gerente' && d.encuestados.find(e => e.id === luis.id).perfil === 'supervisor' && d.encuestados.find(e => e.id === pedro.id).perfil === 'responsable', 'la consola ve el perfil de cada persona');
+  ok(d.encuestados.find(e => e.id === ana.id).perfil === 'gerente' && d.encuestados.find(e => e.id === luis.id).perfil === 'supervisor' && d.encuestados.find(e => e.id === pedro.id).perfil === 'gerente', 'la consola ve el perfil de cada persona');
 
   console.log('Lo que puede hacer cada perfil');
   await admin('POST', '/a/campana/cliente', { campana_id: cid, accion: 'definir', codigo: 'ClienteDePrueba26' });

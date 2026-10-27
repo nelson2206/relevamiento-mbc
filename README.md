@@ -8,6 +8,7 @@ checklist por bloque, y el equipo consultor valida la matriz en una consola. Rep
 | `index.html` | La encuesta que responden las personas (enlace personal `?k=`, de sección `?c=` y abierto) |
 | `admin.html` | La consola del equipo consultor y, con `?cliente=`, el panel de solo lectura del cliente |
 | `flujo-gerente.js` | Vista de 4 pasos del Gerente (Supervisor): procesos, delegación, avance, validación final. La carga `admin.html` |
+| `usuarios-consola.js` | En la consola: crear y editar usuarios con su perfil, descargar enlaces con claves y mostrar las claves de una carga |
 | `flujo-admin.js` | En la consola: insignia «Validada por el gerente», indicador en el resumen y reapertura de aprobaciones |
 | `worker/` | El servidor: Cloudflare Worker + D1 + Workers AI (voz) + Claude. Migraciones `migracion-NNN.sql` y `schema.sql` |
 
@@ -67,3 +68,20 @@ personas, procesos o la matriz, cada fila se vincula al esqueleto por nombre (si
 agrega al esqueleto sin área y se informa en el resumen. «Agregar» amplía y actualiza el esqueleto; «Reemplazar» lo reemplaza. Una campaña sin hoja `Gerencias`
 funciona como antes. El mapa agrupa por área y muestra también las gerencias y secciones que aún no tienen procesos. Base: `migracion-015.sql` (tabla `estructura`);
 código: `worker/src/estructura.js`; prueba: `npm run test:estructura`.
+
+## Usuarios desde la consola (Supervisor, Gerente y Responsable)
+
+**Personas y enlaces** permite crear (`+ Nuevo usuario`) y editar (`Editar`) a cada persona: datos personales, perfil, sección y gerencia principal y las secciones y
+procesos que recibe. Marcar una sección le da **todos sus procesos a la vez**; una persona puede recibir secciones de varias gerencias. Un Supervisor o Gerente se puede crear
+**sin procesos**: su alcance sale del nombre de su sección o gerencia, y si no existe se agrega al esqueleto. Rutas: `POST /a/usuario` (crear o editar) y `POST /a/persona/perfil`.
+
+- **Carga por Excel**: la hoja `Encuestados` acepta la columna `perfil` (responsable, supervisor o gerente). Una persona con varias secciones va en **una fila por sección con el
+  mismo correo**: la primera es su sección principal; las demás le suman los procesos de esa sección. Las claves de las cuentas nuevas se muestran una sola vez al terminar la carga.
+- **Descarga de enlaces personales**: incluye el enlace de la encuesta de cada persona y, para Supervisores y Gerentes, el enlace del panel y su clave. Como la clave solo se guarda
+  cifrada, al descargar se **genera una nueva** (la anterior deja de servir) y la consola pide confirmación antes (`POST /a/personas/claves`).
+- **Constructor del mapa**: muestra también las secciones del esqueleto y de las personas que aún no tienen procesos, para asignárselos a mano.
+
+**Qué ve cada perfil en el panel** (`GET /c/flujo`): el **Supervisor** trabaja 3 pasos (la validación final no es suya): no recibe el paso 4 ni la validación de MBC, ve solo el avance de
+sus responsables y, al confirmar el paso 3, queda «terminado»; empieza con los procesos de su sección, pero puede **tomar** libremente procesos de otras secciones o gerencias («Elegir del inventario») y **crear** procesos en cualquier sección que exista en la campaña; lo que toma o crea se suma a su lista (no a la de otros). El **Gerente** ve los 4 pasos, el avance de los Supervisores
+de su gerencia (por pasos y procesos respondidos) y el de todos los responsables. En la consola, una gerencia figura como validada cuando la da el Gerente, aunque tenga Supervisores.
+Pruebas: `npm run test:unit`, `test:usuarios`, `test:seguridad`, `test:perfiles`, `test:flujo`, `test:estructura` (con `npm run dev` corriendo).

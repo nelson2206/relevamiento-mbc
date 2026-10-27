@@ -30,6 +30,11 @@ export function alcanceDe(sup) {
   let al = {}; try { al = JSON.parse(sup.alcance || '{}') || {}; } catch (e) { al = {}; }
   return { todo: !!al.todo, gerencias: al.gerencias || [], secciones: al.secciones || [], procesos: al.procesos || [] };
 }
+// ¿El alcance de este Supervisor cubre la sección? (por acceso total, por su gerencia o por la sección misma; no cuenta lo que tomó proceso a proceso)
+export function cubreSeccion(sup, g, s) {
+  const al = alcanceDe(sup);
+  return al.todo || al.gerencias.some(x => normal(x) === normal(g)) || al.secciones.some(x => claveArea(x.g, x.s) === claveArea(g, s));
+}
 export function esIncorporado(sup, p) {
   const al = alcanceDe(sup);
   if (al.todo || !al.procesos.includes(p.id)) return false;

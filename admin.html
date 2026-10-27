@@ -378,7 +378,7 @@
         <div class="grid2">
           <div>
             <h3 style="font-size:14px">1. Plantilla</h3>
-            <p class="muted">Cuatro hojas: <code>Gerencias</code> (area, gerencia, seccion: el esqueleto del proyecto, con o sin procesos), <code>Encuestados</code> (nombre, correo, gerencia, seccion, rol), <code>Procesos</code> (codigo, gerencia, seccion, macroproceso, proceso, subproceso, descripcion) y <code>Sistemas</code> (nombre, tipo). La gerencia y la sección de cada persona se ajustan a como están escritas en los procesos; un correo que ya existe actualiza a esa persona en vez de duplicarla.</p>
+            <p class="muted">Cuatro hojas: <code>Gerencias</code> (area, gerencia, seccion: el esqueleto del proyecto, con o sin procesos), <code>Encuestados</code> (nombre, correo, gerencia, seccion, rol y, opcional, perfil: responsable, supervisor o gerente; una persona con procesos de varias secciones va en <b>una fila por sección con el mismo correo</b>: la primera es su sección principal y las demás le suman todos los procesos de esa sección), <code>Procesos</code> (codigo, gerencia, seccion, macroproceso, proceso, subproceso, descripcion) y <code>Sistemas</code> (nombre, tipo). La gerencia y la sección de cada persona se ajustan a como están escritas en los procesos; un correo que ya existe actualiza a esa persona en vez de duplicarla.</p>
             <p class="muted">También puedes cargar la <b>matriz de procesos</b> (el Excel exportado desde «Matriz y validación», editado): se reconoce sola y actualiza cada fila por su código.</p>
             <button class="btn btn-ghost btn-xs" id="btnPlantilla">Descargar plantilla</button>
             <p class="muted" id="estructuraResumen" style="margin:8px 0 0"></p>
@@ -457,6 +457,7 @@
 
 <script src="flujo-gerente.js"></script>
 <script src="flujo-admin.js"></script>
+<script src="usuarios-consola.js"></script>
 <script>
 'use strict';
 (function(){
@@ -655,7 +656,15 @@
 
   // ------------------------------------------------------------ campaña
   // Validación final de los gerentes (flujo-admin.js): insignias en el mapa y la matriz, indicador en el resumen y tabla en «Acceso del cliente».
+  // Usuarios (usuarios-consola.js): crear y editar personas con su perfil, descargar enlaces con claves y mostrar las claves de una carga.
+  function iniciarUsuarios(){
+    if (!window.UsuariosConsola) return;
+    window.UsuariosConsola.iniciar({api: api, datos: function(){ return C; }, esc: esc, sinTildes: sinTildes, abrirDlg: abrirDlgCl, enlaceCliente: function(){ return enlaceCliente(); }, enlace: enlace,
+      recargar: function(){ return abrir(C.campana.id); }, accesoPerfil: function(en, j){ dialogoAccesoPerfil(en, j); },
+      aviso: function(t){ var m = $('#selMsg'); if (m) m.textContent = t; }});
+  }
   function cargarFlujoAdmin(){
+    iniciarUsuarios();
     if (!window.FlujoAdmin) return;
     window.FlujoAdmin.iniciar({api: api, esc: esc, fecha: fecha, campanaId: function(){ return C.campana.id; }, alCambiar: repintarFlujoAdmin});
     window.FlujoAdmin.cargar(C.campana.id).then(repintarFlujoAdmin);
@@ -981,6 +990,15 @@
       var sc = g[p.seccion] = g[p.seccion] || {};
       (sc[p.macroproceso || ''] = sc[p.macroproceso || ''] || []).push(p);
     });
+    // Secciones del esqueleto y de las personas que todavía no tienen procesos mapeados: aparecen para poder asignárselos a mano.
+    var buscar = function(obj, nombre){ return Object.keys(obj).filter(function(k){ return sinTildes(k) === sinTildes(nombre); })[0]; };
+    var sumarVacia = function(ger, sec){
+      if (!ger) return;
+      var gk = buscar(arbol, ger) || ger; arbol[gk] = arbol[gk] || {};
+      if (sec && !buscar(arbol[gk], sec)) arbol[gk][sec] = {};
+    };
+    (C.estructura || []).forEach(function(f){ sumarVacia(f.gerencia, f.seccion); });
+    C.encuestados.forEach(function(e){ sumarVacia(e.gerencia, e.seccion); });
     // Gerencias y secciones creadas con «+» que todavía no tienen procesos.
     CN.extras = CN.extras.filter(function(x){ return !(arbol[x.g] && (!x.s || arbol[x.g][x.s])); });
     CN.extras.forEach(function(x){ var g = arbol[x.g] = arbol[x.g] || {}; if (x.s) g[x.s] = g[x.s] || {}; });
@@ -2871,7 +2889,7 @@
       [['', 'Total participantes'], ['sin_empezar', 'Sin empezar'], ['en_curso', 'En curso'], ['completado', 'Completados'], ['inactiva', 'Inactivos (más de ' + DIAS_INACTIVA + ' días)']].map(function(k){
         return '<button type="button" data-fp="' + k[0] + '" aria-pressed="false"' + (k[0] === 'inactiva' ? ' class="inact"' : '') + '><b>' + cuenta[k[0]] + '</b>' + k[1] + '</button>';
       }).join('') + '</div>';
-    h += '<div class="row" style="margin-bottom:10px"><button class="btn btn-ghost btn-xs" id="btnEnlacesXls">Descargar enlaces personales (Excel)</button>' +
+    h += '<div class="row" style="margin-bottom:10px"><button class="btn btn-xs" id="btnNuevoUsuario">+ Nuevo usuario</button><button class="btn btn-ghost btn-xs" id="btnEnlacesXls">Descargar enlaces personales (Excel)</button>' +
       '<span class="muted">Cada enlace es personal: da acceso a las respuestas de esa persona. Envíalo solo a ella. Los enlaces abren <code>' + esc(URL_ENCUESTA) + '</code></span></div>';
     if (repetidos) h += '<p class="msg warn">' + repetidos + (repetidos === 1 ? ' correo aparece' : ' correos aparecen') + ' más de una vez. Deja un solo registro por persona (el del enlace que le enviaste) y borra los demás: «Seleccionar duplicados» marca los repetidos sin respuestas. Las cargas nuevas ya no duplican: si el correo existe, actualizan su área.</p>';
     var conNombres = C.procesos.some(function(p){ return (p.personas || '').trim(); });
@@ -2898,7 +2916,7 @@
           '<div class="muted">' + av.hechos + ' de ' + av.total + (av.total === 1 ? ' proceso' : ' procesos') + '</div>' + (av.porMarcar ? '<div class="muted">' + av.porMarcar + ' por marcar</div>' : '') : '<span class="muted">Sin procesos asignados</span>') + '</td>' +
         '<td class="num">' + n + '</td><td>' + (i.inactiva ? '<b>' + esc(ult) + '</b>' : esc(ult)) + '</td>' +
         '<td>' + celdaPerfil(en) + '</td>' +
-        '<td><div class="row" style="flex-wrap:nowrap"><button class="btn btn-ghost btn-xs" data-procs="' + esc(en.id) + '">Procesos</button><button class="btn btn-ghost btn-xs" data-copiar="' + esc(en.token) + '">Copiar enlace</button>' +
+        '<td><div class="row" style="flex-wrap:nowrap"><button class="btn btn-ghost btn-xs" data-editar="' + esc(en.id) + '">Editar</button><button class="btn btn-ghost btn-xs" data-procs="' + esc(en.id) + '">Procesos</button><button class="btn btn-ghost btn-xs" data-copiar="' + esc(en.token) + '">Copiar enlace</button>' +
         '<button class="btn-link" data-quitar="' + esc(en.id) + '">Borrar</button></div></td></tr>';
     });
     if (!C.encuestados.length) h += '<tr><td colspan="11" class="muted">Todavía no hay personas: carga el Excel o activa el enlace abierto.</td></tr>';
@@ -2959,12 +2977,9 @@
       var sel = Array.prototype.map.call(document.querySelectorAll('#tEncuestados [data-sel]:checked'), function(x){ return {id: x.dataset.sel, resp: +x.dataset.resp}; });
       borrarPersonas(sel.map(function(x){ return x.id; }), sel.filter(function(x){ return x.resp > 0; }).length, this);
     });
-    $('#btnEnlacesXls').addEventListener('click', function(){
-      var ws = XLSX.utils.json_to_sheet(C.encuestados.map(function(en){ return {Nombre: en.nombre, Correo: en.correo, Gerencia: en.gerencia, 'Sección': en.seccion, Rol: en.rol, Origen: en.origen === 'abierto' ? 'Enlace abierto' : 'Carga', Enlace: enlace(en)}; }));
-      ws['!cols'] = [{wch:28},{wch:30},{wch:18},{wch:22},{wch:14},{wch:14},{wch:80}];
-      var wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, 'Enlaces');
-      XLSX.writeFile(wb, 'Enlaces encuesta - ' + C.campana.nombre + '.xlsx');
-    });
+    $('#btnEnlacesXls').addEventListener('click', function(){ window.UsuariosConsola.descargarEnlaces(this); });
+    $('#btnNuevoUsuario').addEventListener('click', function(){ window.UsuariosConsola.abrir(null); });
+    Array.prototype.forEach.call(document.querySelectorAll('#tEncuestados [data-editar]'), function(b){ b.addEventListener('click', function(){ window.UsuariosConsola.abrir(b.dataset.editar); }); });
   }
   function marcarSeleccion(){
     var sel = document.querySelectorAll('#tEncuestados [data-sel]:checked'), b = $('#btnBorrarSel');
@@ -3181,10 +3196,10 @@
     var wb = XLSX.utils.book_new();
     var ger = XLSX.utils.aoa_to_sheet([['area','gerencia','seccion'],['Operaciones','Logística','Importaciones'],['Operaciones','Logística','Almacenes'],['Soporte','Finanzas','Tesorería']]);
     ger['!cols'] = [{wch:20},{wch:22},{wch:24}];
-    var enc = XLSX.utils.aoa_to_sheet([['nombre','correo','gerencia','seccion','rol'],['Ejemplo Apellido','ejemplo@empresa.com','Logística','Importaciones','líder']]);
+    var enc = XLSX.utils.aoa_to_sheet([['nombre','correo','gerencia','seccion','rol','perfil'],['Ejemplo Apellido','ejemplo@empresa.com','Logística','Importaciones','líder','responsable'],['Ejemplo Apellido','ejemplo@empresa.com','Logística','Almacenes','',''],['Otra Persona','otra@empresa.com','Finanzas','Tesorería','jefa','supervisor']]);
     var pro = XLSX.utils.aoa_to_sheet([['codigo','gerencia','seccion','macroproceso','proceso','subproceso','descripcion'],['LOG.02.03','Logística','Importaciones','Abastecimiento de vehículos','Importación de vehículos','Desaduanaje','(opcional) descripción del inventario anterior']]);
     var sis = XLSX.utils.aoa_to_sheet([['nombre','tipo'],['SAP S/4HANA','ERP'],['Portal SUNAT','Portal de tercero']]);
-    enc['!cols'] = [{wch:26},{wch:28},{wch:18},{wch:22},{wch:10}];
+    enc['!cols'] = [{wch:26},{wch:28},{wch:18},{wch:22},{wch:10},{wch:14}];
     pro['!cols'] = [{wch:12},{wch:18},{wch:22},{wch:28},{wch:28},{wch:28},{wch:40}];
     XLSX.utils.book_append_sheet(wb, ger, 'Gerencias'); XLSX.utils.book_append_sheet(wb, enc, 'Encuestados'); XLSX.utils.book_append_sheet(wb, pro, 'Procesos'); XLSX.utils.book_append_sheet(wb, sis, 'Sistemas');
     XLSX.writeFile(wb, 'Plantilla carga relevamiento.xlsx');
@@ -3303,10 +3318,10 @@
     $('#msgCarga').innerHTML = '<span class="muted">Importando…</span>';
     api('/a/importar', Object.assign({campana_id: C.campana.id, modo: CARGA.upsert ? 'agregar' : $('#modoCarga').value}, CARGA)).then(function(j){
       $('#msgCarga').innerHTML = '<div class="msg ok">Importados: ' + j.encuestados + ' personas nuevas' + (j.encuestados_actualizados ? ' y ' + j.encuestados_actualizados + ' actualizadas (mismo correo, conservan su enlace)' : '') +
-        ', ' + j.procesos + ' procesos nuevos' + (j.procesos_actualizados ? ' y ' + j.procesos_actualizados + ' actualizados' : '') + ', ' + j.sistemas + ' sistemas.' +
-        (j.estructura ? ' Esqueleto: ' + j.estructura.total + ' filas (' + j.estructura.nuevas + ' nuevas).' : '') + '</div>' + resultadoEstructura(j.estructura);
+        ', ' + j.procesos + ' procesos nuevos' + (j.procesos_actualizados ? ' y ' + j.procesos_actualizados + ' actualizados' : '') + ', ' + j.sistemas + ' sistemas.' + (j.asignados ? ' ' + j.asignados + ' procesos asignados por secciones adicionales.' : '') + ((j.claves || []).length ? ' ' + j.claves.length + ' cuentas de acceso creadas (sus claves se muestran ahora).' : '') +
+        (j.estructura ? ' Esqueleto: ' + j.estructura.total + ' filas (' + j.estructura.nuevas + ' nuevas).' : '') + '</div>' + resultadoEstructura(j.estructura) + (j.avisos_perfil || []).map(function(a){ return '<div class="msg warn" style="margin-top:6px">' + esc(a) + '</div>'; }).join('');
       CARGA = null; $('#inExcel').value = '';
-      abrir(C.campana.id);
+      abrir(C.campana.id).then(function(){ if (window.UsuariosConsola) window.UsuariosConsola.mostrarClaves(j.claves); });
     }).catch(function(err){ $('#msgCarga').innerHTML = '<div class="msg warn">' + esc(err.message) + '</div>'; b.disabled = false; });
   });
   // Logo del cliente: se guarda como imagen incrustada (data URI) en la campaña.
