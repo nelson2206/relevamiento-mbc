@@ -133,6 +133,12 @@ export async function aplicarPerfil(env, camp, enc, perfil, op) {
     ? { gerencias: [enc.gerencia, ...(op.gerencias || [])], secciones: op.secciones || [], procesos: op.procesos || [] }
     : { secciones: [{ g: enc.gerencia, s: enc.seccion }, ...(op.secciones || [])], procesos: op.procesos || [] };
   const alcance = await alcancePorNombres(env, camp, pedido);
+  // Al rehacer el alcance se conservan los procesos que la propia persona tomó o creó (alcance.procesos): el formulario no los trae.
+  if (sup && op.recalcular) {
+    let previo = {}; try { previo = JSON.parse(sup.alcance) || {}; } catch (e) { previo = {}; }
+    const existen = new Set((await env.DB.prepare('SELECT id FROM procesos WHERE campana_id=?').bind(camp.id).all()).results.map(p => p.id));
+    alcance.procesos = [...new Set([...alcance.procesos, ...(Array.isArray(previo.procesos) ? previo.procesos : []).filter(id => existen.has(id))])].slice(0, 2000);
+  }
   let clave = '', id;
   if (sup) {
     id = sup.id;
