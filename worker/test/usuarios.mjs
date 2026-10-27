@@ -89,6 +89,26 @@ try {
   ok((await http('POST', '/a/personas/claves', { campana_id: C1.id, encuestado_ids: [sup.id] })).status === 401, 'sin código de administración no se generan claves');
   const supClave = cl.claves.find(c => c.perfil === 'supervisor').clave, gerClave = cl.claves.find(c => c.perfil === 'gerente').clave;
 
+  console.log('Editar a un usuario no borra lo que tomó o creó por su cuenta');
+  const apiSup = como(supClave);
+  const tomo = await apiSup('POST', '/c/flujo/proceso', { accion: 'incorporar', proceso_ids: [C1.ids.d1], forzar: true });
+  const creo = await apiSup('POST', '/c/flujo/proceso', { accion: 'agregar', gerencia: 'H', seccion: 'S9', proceso: 'Creado por la supervisora', forzar: true });
+  ok(tomo.ok && creo.ok, 'la Supervisora toma un proceso de otra gerencia y crea otro', [tomo.error, creo.error]);
+  const ids = async () => (await apiSup('GET', '/c/flujo')).procesos.map(p => p.id).sort();
+  const antesEdicion = await ids();
+  ok(antesEdicion.includes(C1.ids.d1) && antesEdicion.includes(creo.id), 'los dos están en su lista', antesEdicion.length);
+  const edSup = await usuario({ id: sup.id, nombre: 'Sandra Supervisora', correo: 'sandra@empresa.com', gerencia: 'G', seccion: 'S1', perfil: 'supervisor', secciones: [{ g: 'G', s: 'S2' }] });
+  ok(edSup.ok, 'MBC la edita desde la consola sin cambiar nada', edSup);
+  ok(JSON.stringify(await ids()) === JSON.stringify(antesEdicion), 'su lista queda exactamente igual (no pierde lo que tomó ni lo que creó)', await ids());
+  await usuario({ id: sup.id, nombre: 'Sandra S. Editada', correo: 'sandra@empresa.com', rol: 'Jefa', gerencia: 'G', seccion: 'S1', perfil: 'supervisor', secciones: [{ g: 'G', s: 'S2' }] });
+  ok(JSON.stringify(await ids()) === JSON.stringify(antesEdicion), 'tampoco al cambiarle el nombre o el cargo');
+  const quitaSec = await usuario({ id: sup.id, nombre: 'Sandra S. Editada', correo: 'sandra@empresa.com', gerencia: 'G', seccion: 'S1', perfil: 'supervisor', secciones: [] });
+  const trasQuitar = await ids();
+  ok(quitaSec.ok && !trasQuitar.includes(C1.ids.b1) && trasQuitar.includes(C1.ids.d1) && trasQuitar.includes(creo.id), 'sí cambia lo que el formulario controla (una sección desmarcada se quita) y conserva lo demás');
+  const aGer = await admin('POST', '/a/persona/perfil', { campana_id: C1.id, encuestado_id: sup.id, perfil: 'gerente', regenerar: true });
+  ok(aGer.ok && aGer.clave && (await como(aGer.clave)('GET', '/c/flujo')).procesos.some(p => p.id === creo.id && p.agregado), 'al cambiarla de perfil a Gerente conserva el proceso que creó');
+  ok((await como(aGer.clave)('GET', '/c/flujo')).procesos.some(p => p.id === C1.ids.d1), 'y el que tomó');
+
   console.log('Carga por Excel: perfil y una fila por sección');
   const C2 = await campana('Carga', PROCS, [{ area: 'A', gerencia: 'G', seccion: 'S1' }, { area: 'A', gerencia: 'G', seccion: 'S2' }, { area: 'A', gerencia: 'G', seccion: 'S3' }]);
   const imp = await admin('POST', '/a/importar', { campana_id: C2.id, modo: 'agregar', encuestados: [

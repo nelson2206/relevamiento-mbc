@@ -4,7 +4,7 @@
   "type": "module",
   "scripts": {
     "dev": "wrangler dev -c wrangler.local.toml --port 8787",
-    "test:unit": "node --test test/unit/",
+    "test:unit": "node --test \"test/unit/*.test.mjs\"",
     "test:flujo": "node test/flujo.mjs",
     "test:usuarios": "node test/usuarios.mjs",
     "test:seguridad": "node test/seguridad.mjs",

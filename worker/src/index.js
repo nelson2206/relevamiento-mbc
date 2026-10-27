@@ -985,7 +985,7 @@ async function rutaImportar(env, b) {
       try {
         asignados += await asignarSeccionesYProcesos(env, camp.id, p.id, p.extras, []);
         if (p.perfil) {
-          const r = await aplicarPerfil(env, campCompleta, p, p.perfil, { secciones: p.extras });
+          const r = await aplicarPerfil(env, campCompleta, p, p.perfil, { secciones: p.extras.length ? p.extras : undefined });
           if (r.clave) claves.push({ encuestado_id: p.id, nombre: p.nombre, correo: p.correo, perfil: p.perfil, clave: r.clave });
         }
       } catch (e) { avisosPerfil.push(p.nombre + ': ' + (e instanceof HttpError ? e.message : 'no se pudo dar el perfil')); }

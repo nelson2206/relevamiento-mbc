@@ -106,32 +106,47 @@
   }
 
   // ---------------------------------------------------------------- descarga de enlaces personales
-  // Para Supervisor y Gerente se incluye la dirección del panel y su clave. Como la clave no se puede leer (solo se guarda su huella), al descargar
-  // se genera una nueva y la anterior deja de servir: por eso se pide confirmación antes.
+  // Para Supervisor y Gerente se incluye la dirección del panel y su clave. La clave no se puede leer (solo se guarda su huella), así que incluirla
+  // significa generar una nueva y la anterior deja de servir. Por eso, por defecto: a quien AÚN NO ha ingresado se le genera sin riesgo; a quien ya
+  // ingresó con su clave no se le toca, salvo que se confirme expresamente (quedaría fuera hasta recibir la nueva).
   function descargarEnlaces(boton){
     var C = X.datos(), conCuenta = C.encuestados.filter(function(e){ return e.perfil === 'supervisor' || e.perfil === 'gerente'; });
+    var cuentaDe = function(en){ return (C.supervisores || []).filter(function(s){ return s.encuestado_id === en.id && s.activo; })[0]; };
+    var nuevas = conCuenta.filter(function(en){ var s = cuentaDe(en); return s && !s.ultimo; });    // todavía no ingresan
+    var ingresaron = conCuenta.filter(function(en){ var s = cuentaDe(en); return s && s.ultimo; });  // ya usan su clave
     var armar = function(claves){
-      var porId = {}; (claves || []).forEach(function(c){ porId[c.encuestado_id] = c.clave; });
+      var porId = {}, ya = {}; (claves || []).forEach(function(c){ porId[c.encuestado_id] = c.clave; });
+      ingresaron.forEach(function(en){ ya[en.id] = 1; });
       var panel = X.enlaceCliente();
       var filas = C.encuestados.map(function(en){
         var esCuenta = en.perfil === 'supervisor' || en.perfil === 'gerente';
+        var clave = !esCuenta ? '' : porId[en.id] || (ya[en.id] ? 'Ya la tiene (no se cambió). Si la perdió, usa «Nueva clave».' : '(no incluida: genera una nueva en la consola)');
         return {Nombre: en.nombre, Correo: en.correo, Gerencia: en.gerencia, 'Sección': en.seccion, Rol: en.rol, Perfil: en.perfil === 'gerente' ? 'Gerente' : en.perfil === 'supervisor' ? 'Supervisor' : 'Responsable',
-          Origen: en.origen === 'abierto' ? 'Enlace abierto' : 'Carga', 'Enlace de la encuesta': X.enlace(en), 'Enlace del panel': esCuenta ? panel : '', 'Clave personal': esCuenta ? (porId[en.id] || '(no incluida: genera una nueva en la consola)') : ''};
+          Origen: en.origen === 'abierto' ? 'Enlace abierto' : 'Carga', 'Enlace de la encuesta': X.enlace(en), 'Enlace del panel': esCuenta ? panel : '', 'Clave personal': clave};
       });
       var ws = XLSX.utils.json_to_sheet(filas);
-      ws['!cols'] = [{wch:28},{wch:30},{wch:18},{wch:22},{wch:14},{wch:12},{wch:14},{wch:80},{wch:60},{wch:26}];
+      ws['!cols'] = [{wch:28},{wch:30},{wch:18},{wch:22},{wch:14},{wch:12},{wch:14},{wch:80},{wch:60},{wch:40}];
       var wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, 'Enlaces');
       XLSX.writeFile(wb, 'Enlaces encuesta - ' + C.campana.nombre + '.xlsx');
     };
     if (!conCuenta.length) return armar([]);
-    var activo = !!C.campana.cliente_activo && !!C.campana.codigo_cliente;
-    var texto = 'Hay ' + plural(conCuenta.length, 'Supervisor o Gerente', 'Supervisores y Gerentes') + ' en la lista. Sus claves no se pueden leer después de entregadas, así que para incluirlas se generará una clave NUEVA para cada uno y la anterior dejará de servir.' +
-      (activo ? '' : '\n\nOjo: el acceso del cliente de la campaña está apagado; esas claves no entran hasta que lo actives en «Carga y configuración».') +
-      '\n\nAceptar: incluir las claves nuevas.\nCancelar: descargar sin claves (las claves actuales no cambian).';
-    if (!window.confirm(texto)) return armar([]);
+    var activo = !!C.campana.cliente_activo && !!C.campana.codigo_cliente, ids = [];
+    var texto = function(lineas){ return lineas.filter(function(l){ return l !== null; }).join('\n'); };
+    if (nuevas.length && window.confirm(texto([
+      plural(nuevas.length, 'Supervisor o Gerente todavía no ha ingresado', 'Supervisores o Gerentes todavía no han ingresado') + ': se les genera una clave NUEVA y se incluye en el Excel.',
+      activo ? null : '', activo ? null : 'Ojo: el acceso del cliente de la campaña está apagado; esas claves no entran hasta que lo actives en «Carga y configuración».',
+      '', 'Aceptar: incluirlas.', 'Cancelar: descargar sin sus claves.']))) ids = ids.concat(nuevas);
+    if (ingresaron.length && window.confirm(texto([
+      plural(ingresaron.length, 'Supervisor o Gerente ya ingresó', 'Supervisores o Gerentes ya ingresaron') + ' con su clave actual. Renovársela la deja FUERA hasta que reciba la nueva.',
+      '', '¿Renovar también la clave de ' + (ingresaron.length === 1 ? 'esta persona' : 'estas ' + ingresaron.length + ' personas') + '?',
+      '', 'Aceptar: renovarlas (dejan de servir las actuales).', 'Cancelar: no tocarlas (es lo recomendable).']))) ids = ids.concat(ingresaron);
+    if (!ids.length) return armar([]);
     boton.disabled = true;
-    X.api('/a/personas/claves', {campana_id: C.campana.id, encuestado_ids: conCuenta.map(function(e){ return e.id; })}).then(function(j){ armar(j.claves); })
-      .catch(function(err){ window.alert(err.message); }).then(function(){ boton.disabled = false; });
+    X.api('/a/personas/claves', {campana_id: C.campana.id, encuestado_ids: ids.map(function(e){ return e.id; })}).then(function(j){
+      var renovadas = {}; j.claves.forEach(function(c){ renovadas[c.encuestado_id] = 1; });
+      ingresaron = ingresaron.filter(function(en){ return !renovadas[en.id]; });   // las renovadas ya traen su clave nueva
+      armar(j.claves);
+    }).catch(function(err){ window.alert(err.message); }).then(function(){ boton.disabled = false; });
   }
 
   // ---------------------------------------------------------------- claves que devuelve una carga por Excel

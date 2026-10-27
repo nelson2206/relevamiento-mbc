@@ -78,10 +78,16 @@ procesos que recibe. Marcar una sección le da **todos sus procesos a la vez**; 
 - **Carga por Excel**: la hoja `Encuestados` acepta la columna `perfil` (responsable, supervisor o gerente). Una persona con varias secciones va en **una fila por sección con el
   mismo correo**: la primera es su sección principal; las demás le suman los procesos de esa sección. Las claves de las cuentas nuevas se muestran una sola vez al terminar la carga.
 - **Descarga de enlaces personales**: incluye el enlace de la encuesta de cada persona y, para Supervisores y Gerentes, el enlace del panel y su clave. Como la clave solo se guarda
-  cifrada, al descargar se **genera una nueva** (la anterior deja de servir) y la consola pide confirmación antes (`POST /a/personas/claves`).
+  cifrada, incluirla significa **generar una nueva**. Por seguridad la consola lo hace solo para quien **aún no ha ingresado**; a quien ya usa su clave no se la toca salvo
+  que se confirme (quedaría fuera hasta recibir la nueva), y el Excel dice «Ya la tiene» (`POST /a/personas/claves`).
 - **Constructor del mapa**: muestra también las secciones del esqueleto y de las personas que aún no tienen procesos, para asignárselos a mano.
 
 **Qué ve cada perfil en el panel** (`GET /c/flujo`): el **Supervisor** trabaja 3 pasos (la validación final no es suya): no recibe el paso 4 ni la validación de MBC, ve solo el avance de
 sus responsables y, al confirmar el paso 3, queda «terminado»; empieza con los procesos de su sección, pero puede **tomar** libremente procesos de otras secciones o gerencias («Elegir del inventario») y **crear** procesos en cualquier sección que exista en la campaña; lo que toma o crea se suma a su lista (no a la de otros). El **Gerente** ve los 4 pasos, el avance de los Supervisores
 de su gerencia (por pasos y procesos respondidos) y el de todos los responsables. En la consola, una gerencia figura como validada cuando la da el Gerente, aunque tenga Supervisores.
 Pruebas: `npm run test:unit`, `test:usuarios`, `test:seguridad`, `test:perfiles`, `test:flujo`, `test:estructura` (con `npm run dev` corriendo).
+
+**Editar un usuario conserva lo que no muestra el formulario**: los procesos que un Supervisor o Gerente tomó o creó por su cuenta y las gerencias adicionales de un Gerente no se
+borran al guardar una edición ni al cambiarle el perfil; solo cambia lo que el formulario controla (por ejemplo, una sección desmarcada). **Despliegue**: `npm run deploy` (en
+`worker/`) copia a `publico/` las páginas, sus scripts y los íconos de la raíz del repo (`favicon.png`, `apple-touch-icon.png`, `icon-512.png`, `og-image.png`); `npm run test:unit`
+funciona con cualquier versión de Node.
