@@ -16,6 +16,7 @@ CREATE TABLE IF NOT EXISTS campanas (
   dominio TEXT NOT NULL DEFAULT '',    -- dominio de correo exigido al registrarse (opcional)
   logo TEXT NOT NULL DEFAULT '',       -- logo del cliente (data URI) que se muestra en la encuesta
   ia_auto INTEGER NOT NULL DEFAULT 1,  -- 1 = la tarea programada completa la matriz con la IA
+  umbral_confianza REAL NOT NULL DEFAULT 0.7,  -- bajo este valor, la clasificación de un documento se resalta como de baja confianza (migracion-019.sql)
   estandares TEXT NOT NULL DEFAULT ''  -- glosario de estándares (TPS, Toyota Way, ISO…); vacío = el glosario base del Worker
 );
 CREATE UNIQUE INDEX IF NOT EXISTS ux_camp_codigo ON campanas(codigo_publico);
@@ -32,7 +33,12 @@ CREATE TABLE IF NOT EXISTS encuestados (
   estado TEXT NOT NULL DEFAULT 'pendiente',  -- pendiente / en_curso / enviado
   actualizado TEXT,
   origen TEXT NOT NULL DEFAULT 'carga',      -- carga (Excel) / abierto (se registró solo)
-  creado TEXT                                -- cuándo se cargó o registró (para medir inactividad)
+  creado TEXT,                               -- cuándo se cargó o registró (para medir inactividad)
+  pin_hash TEXT NOT NULL DEFAULT '',         -- PIN de 4 dígitos: huella PBKDF2 con sal propia
+  pin_sal TEXT NOT NULL DEFAULT '',
+  pin_fallos INTEGER NOT NULL DEFAULT 0,
+  pin_bloqueo TEXT NOT NULL DEFAULT '',      -- ISO: sin intentos hasta esa hora
+  ultimo_acceso TEXT
 );
 CREATE INDEX IF NOT EXISTS ix_enc_campana ON encuestados(campana_id);
 CREATE INDEX IF NOT EXISTS ix_enc_correo ON encuestados(campana_id, correo);
@@ -195,3 +201,37 @@ CREATE TABLE IF NOT EXISTS login_intentos (
 -- Base nueva: aplicar después de schema.sql las migraciones 011, 012 y 014 (schema.sql no incluye sus columnas ni tablas).
 
 -- Esqueleto Área > Gerencia > Sección (migracion-015.sql): tabla estructura. Aplicarla también en una base nueva.
+
+-- Documentos y su clasificación en procesos (migracion-019.sql); el archivo va a R2 (binding DOCS).
+CREATE TABLE IF NOT EXISTS documentos (
+  id TEXT PRIMARY KEY,
+  campana_id TEXT NOT NULL,
+  nombre TEXT NOT NULL,
+  tipo TEXT NOT NULL DEFAULT '',            -- extensión: pdf, docx, jpg, png...
+  gerencia TEXT NOT NULL,                   -- metadato obligatorio; el administrador puede cambiarlo después
+  clave_r2 TEXT NOT NULL DEFAULT '',
+  tamano INTEGER NOT NULL DEFAULT 0,
+  estado TEXT NOT NULL DEFAULT 'pendiente', -- pendiente (de clasificación) | clasificado
+  estado_ia TEXT NOT NULL DEFAULT 'sin_analizar', -- sin_analizar | analizado | error
+  confianza_min REAL,                       -- la menor confianza entre las sugerencias vigentes (para priorizar la revisión)
+  cargado_por TEXT NOT NULL DEFAULT '',
+  creado TEXT NOT NULL,
+  actualizado TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_doc_camp ON documentos(campana_id, estado, creado);
+CREATE INDEX IF NOT EXISTS ix_doc_ger ON documentos(campana_id, gerencia);
+
+-- Historial de asociaciones documento-proceso: no se sobrescribe, lo quitado queda con vigente = 0.
+CREATE TABLE IF NOT EXISTS documento_procesos (
+  id TEXT PRIMARY KEY,
+  documento_id TEXT NOT NULL,
+  proceso_id TEXT NOT NULL,
+  origen TEXT NOT NULL,                     -- ia | manual
+  confianza REAL,                           -- 0 a 1; solo si origen = ia
+  confirmado INTEGER NOT NULL DEFAULT 0,
+  vigente INTEGER NOT NULL DEFAULT 1,
+  actor TEXT NOT NULL DEFAULT '',
+  creado TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_docproc_doc ON documento_procesos(documento_id, vigente);
+CREATE INDEX IF NOT EXISTS ix_docproc_proc ON documento_procesos(proceso_id, vigente, confirmado);

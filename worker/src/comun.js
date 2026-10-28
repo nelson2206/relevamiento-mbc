@@ -28,6 +28,21 @@ export function tokenNuevo() {
   return Array.from(b, x => abc[x % abc.length]).join('');
 }
 
+// PIN de 4 dígitos del colaborador: se guarda solo su huella (PBKDF2 con sal propia), nunca el PIN. Con solo 10.000 combinaciones
+// lo que protege es el bloqueo por intentos, no el costo del hash: 10.000 vueltas bastan y caben en los 10 ms de CPU del plan gratuito.
+export const pinValido = p => /^\d{4}$/.test(String(p == null ? '' : p));
+const aHex = b => Array.from(new Uint8Array(b), x => x.toString(16).padStart(2, '0')).join('');
+export const salNueva = () => aHex(crypto.getRandomValues(new Uint8Array(16)));
+export async function hashPin(pin, sal) {
+  const base = await crypto.subtle.importKey('raw', new TextEncoder().encode(String(pin)), 'PBKDF2', false, ['deriveBits']);
+  const bits = await crypto.subtle.deriveBits({ name: 'PBKDF2', hash: 'SHA-256', salt: new TextEncoder().encode(sal), iterations: 10000 }, base, 256);
+  return aHex(bits);
+}
+export async function verificarPin(pin, sal, hash) {
+  if (!pinValido(pin) || !sal || !hash) return false;
+  return igualSeguro(await hashPin(pin, sal), hash);
+}
+
 // Comparación en tiempo constante: el tiempo de respuesta no delata cuántos caracteres acertó.
 export function igualSeguro(a, b) {
   const te = new TextEncoder();

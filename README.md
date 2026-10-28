@@ -9,6 +9,7 @@ checklist por bloque, y el equipo consultor valida la matriz en una consola. Rep
 | `admin.html` | La consola del equipo consultor y, con `?cliente=`, el panel de solo lectura del cliente |
 | `flujo-gerente.js` | Vista de 4 pasos del Gerente (Supervisor): procesos, delegación, avance, validación final. La carga `admin.html` |
 | `usuarios-consola.js` | En la consola: crear y editar usuarios con su perfil, descargar enlaces con claves y mostrar las claves de una carga |
+| `documentos-consola.js` | En la consola, pestaña «Documentos»: carga masiva (selección múltiple y arrastrar/soltar), bandeja con filtros y clasificación en procesos con IA |
 | `flujo-admin.js` | En la consola: insignia «Validada por el gerente», indicador en el resumen y reapertura de aprobaciones |
 | `worker/` | El servidor: Cloudflare Worker + D1 + Workers AI (voz) + Claude. Migraciones `migracion-NNN.sql` y `schema.sql` |
 
