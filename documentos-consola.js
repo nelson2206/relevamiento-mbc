@@ -79,7 +79,7 @@
     ST.cargando = true; pintarBandeja();
     return X.api(consulta()).then(function(j){ ST.docs = j.documentos; ST.umbral = j.umbral; ST.gerencias = j.gerencias; ST.resumen = j.resumen || {}; })
       .catch(function(err){ aviso(err.message); })
-      .then(function(){ ST.cargando = false; pintarBandeja(); });
+      .then(function(){ ST.cargando = false; pintarBandeja(); vigilar(); });
   }
   function aviso(t){ var m = $('#dbMsg'); if (m) m.textContent = t || ''; }
 
@@ -96,8 +96,23 @@
     if (!d.procesos.length) return '<span class="muted">—</span>';
     return d.procesos.map(function(p){
       var cls = p.confirmado ? 'c-ok' : p.baja ? 'c-warn' : 'c-inf';
-      return '<span class="chip ' + cls + '" title="' + esc(p.gerencia || '') + (p.confirmado ? ' · confirmado' : ' · sugerido por la IA') + '">' + esc(p.nombre) + (p.confianza != null ? ' · ' + pct(p.confianza) : '') + '</span>';
+      return '<span class="chip ' + cls + '" title="' + esc(p.gerencia || '') + (p.confirmado ? ' · confirmado' : ' · sugerido por la IA') + '">' + esc(p.nombre) + (p.confianza != null ? ' · ' + pct(p.confianza) : '') + '</span>' + extraccion(p);
     }).join(' ');
+  }
+  // Qué pasó con la lectura del documento para precargar ese proceso: leyendo, borradores por revisar, sin datos o con error (con reintento).
+  function extraccion(p){
+    var e = p.extraccion; if (!p.confirmado || !e) return '';
+    var pid = esc(p.proceso_id);
+    if (e.estado === 'pendiente') return ' <span class="chip c-inf" title="La IA está leyendo el documento para precargar este proceso">Leyendo…</span>';
+    if (e.estado === 'error') return ' <span class="chip c-warn" title="' + esc(e.mensaje) + '">Precarga con error</span> <button class="btn btn-ghost btn-xs" data-acc="extraer" data-pid="' + pid + '">Reintentar</button>';
+    if (e.borradores) return ' <button class="btn btn-navy btn-xs" data-acc="revisar" data-pid="' + pid + '" title="Revisar y aprobar lo que la IA extrajo">Revisar ' + e.borradores + (e.borradores === 1 ? ' borrador' : ' borradores') + '</button>';
+    return ' <span class="chip c-mut" title="' + esc(e.motivo || 'El documento no dice nada explícito para los puntos del checklist') + '">Sin datos nuevos</span> <button class="btn btn-ghost btn-xs" data-acc="extraer" data-pid="' + pid + '">Volver a leer</button>';
+  }
+  // Mientras alguna lectura siga en curso se vuelve a consultar la bandeja (la extracción corre en segundo plano).
+  function vigilar(){
+    clearTimeout(ST.sondeo);
+    var enCurso = ST.docs.some(function(d){ return d.procesos.some(function(p){ return p.extraccion && p.extraccion.estado === 'pendiente'; }); });
+    if (enCurso && RAIZ && document.body.contains(RAIZ)) ST.sondeo = setTimeout(function(){ if (document.body.contains(RAIZ)) recargar(); }, 4000);
   }
 
   function pintarBandeja(){
@@ -138,7 +153,7 @@
     var b = $('#dbBusca'); if (b && ST.enfocar){ b.focus(); b.setSelectionRange(b.value.length, b.value.length); ST.enfocar = false; }
   }
 
-  function actuar(id, acc){
+  function actuar(id, acc, pid){
     var d = ST.docs.filter(function(x){ return x.id === id; })[0]; if (!d) return;
     if (acc === 'abrir'){
       fetch(X.base() + '/a/documentos/archivo?id=' + encodeURIComponent(id), {headers: {'x-admin-code': X.codigo()}})
@@ -151,11 +166,16 @@
     } else if (acc === 'analizar'){
       ST.analizando = id; aviso(''); pintarBandeja();
       X.api('/a/documentos/analizar', {id: id}).catch(function(err){ aviso(err.message); }).then(function(){ ST.analizando = ''; ST.sel = null; return recargar(); });
+    } else if (acc === 'extraer'){
+      aviso('Leyendo el documento para este proceso…');
+      X.api('/a/documentos/extraer', {id: id, proceso_id: pid}).catch(function(err){ aviso(err.message); }).then(recargar);
+    } else if (acc === 'revisar'){
+      if (X.abrirProceso) X.abrirProceso(pid);
     } else if (acc === 'clasificar'){
       ST.abierto = ST.abierto === id ? '' : id; ST.sel = null; ST.busca = ''; pintarBandeja();
     } else if (acc === 'confirmar'){
       var ids = Object.keys(ST.sel || {});
-      X.api('/a/documentos/procesos', {id: id, procesos: ids}).then(function(){ ST.abierto = ''; ST.sel = null; aviso(ids.length ? 'Clasificación confirmada.' : 'El documento volvió a Pendiente.'); return recargar(); }).catch(function(err){ aviso(err.message); });
+      X.api('/a/documentos/procesos', {id: id, procesos: ids}).then(function(){ ST.abierto = ''; ST.sel = null; aviso(ids.length ? 'Clasificación confirmada. La IA está leyendo el documento para dejar la precarga como borrador; aparecerá aquí para tu revisión.' : 'El documento volvió a Pendiente.'); return recargar(); }).catch(function(err){ aviso(err.message); });
     }
   }
 
@@ -209,7 +229,7 @@
     $('#dbLista').addEventListener('click', function(e){
       var b = e.target.closest('[data-acc]'); if (!b) return;
       var fila = b.closest('tr'), id = ST.abierto && b.dataset.acc === 'confirmar' ? ST.abierto : fila && fila.dataset.id;
-      if (id) actuar(id, b.dataset.acc);
+      if (id) actuar(id, b.dataset.acc, b.dataset.pid);
     });
     $('#dbLista').addEventListener('change', function(e){
       var p = e.target.dataset && e.target.dataset.pid; if (!p) return;

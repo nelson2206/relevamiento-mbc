@@ -14,7 +14,7 @@ checklist por bloque, y el equipo consultor valida la matriz en una consola. Rep
 | `worker/` | El servidor: Cloudflare Worker + D1 + Workers AI (voz) + Claude. Migraciones `migracion-NNN.sql` y `schema.sql` |
 
 Desplegar el servidor (desde `worker/`): `npm install && npx wrangler deploy`. Secretos (nunca en el repo): `ADMIN_CODE`, `INTERNAL_CODE`
-(IA vía ProcessIQ) o `ANTHROPIC_API_KEY`. La base: `npx wrangler d1 execute voz-relevamiento --remote --file=schema.sql`.
+(IA vía ProcessIQ) o `ANTHROPIC_API_KEY`. La base nueva: `npx wrangler d1 execute voz-relevamiento --remote --file=schema.sql` (trae el estado final: no apliques después las migraciones). Una base que ya existe se actualiza con las migraciones `migracion-NNN.sql` posteriores a la última que tiene, en orden y antes de desplegar (hoy hasta la 021).
 
 ## Estado y relación con producción (TDP)
 
@@ -59,7 +59,7 @@ pasos ya confirmados (`409` con `requiere_confirmacion`, se repite con `forzar`)
 aprobación desde la consola (queda motivo y fecha). Módulos nuevos del Worker: `comun.js` (utilidades), `ambito.js` (alcance del Supervisor),
 `cobertura.js` (cuándo un proceso cuenta como respondido) y `flujo.js`.
 
-Base: `migracion-014.sql` (para una base nueva aplicar, después de `schema.sql`, las migraciones 011, 012 y 014). Prueba: con `npm run dev` corriendo,
+Base: `migracion-014.sql` (una base nueva ya la trae en `schema.sql`). Prueba: con `npm run dev` corriendo,
 `npm run test:flujo` (desde `worker/`) recorre el flujo en una campaña temporal y la borra. `npm run semilla` crea la campaña de demostración «Demo flujo del Gerente» (empresa ficticia, 41 procesos en 5 gerencias, tres Gerentes en etapas distintas); las claves las imprime al terminar.
 
 ## Esqueleto de la campaña (hoja «Gerencias»)

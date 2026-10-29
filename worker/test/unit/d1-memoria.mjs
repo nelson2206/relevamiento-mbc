@@ -1,5 +1,5 @@
-// Base de pruebas sin servidor: SQLite en memoria (node:sqlite) con la interfaz mínima de D1 y el esquema real (schema.sql + migraciones).
-import { readFileSync, readdirSync } from 'node:fs';
+// Base de pruebas sin servidor: SQLite en memoria (node:sqlite) con la interfaz mínima de D1 y el esquema real (schema.sql, que ya incluye todas las migraciones).
+import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -19,12 +19,7 @@ export function crearD1() {
   const d1 = { prepare: sql => stmt(sql), batch: async ss => { for (const s of ss) await s.run(); return []; } };
   const sinComentarios = t => t.split('\n').map(l => l.replace(/--.*$/, '')).join('\n');
   db.exec(sinComentarios(readFileSync(join(raiz, 'schema.sql'), 'utf8')));
-  // Las migraciones que ya trae schema.sql fallan con «duplicate column»: se ignoran.
-  for (const f of readdirSync(raiz).filter(n => /^migracion-\d+\.sql$/.test(n)).sort()) {
-    for (const s of sinComentarios(readFileSync(join(raiz, f), 'utf8')).split(';').map(x => x.trim()).filter(Boolean)) {
-      try { db.exec(s); } catch (e) { /* ya aplicada */ }
-    }
-  }
+  // schema.sql trae el estado final: las migraciones no se repiten aquí (test/unit/esquema.test.mjs comprueba que no haya desfase).
   return { d1, db };
 }
 

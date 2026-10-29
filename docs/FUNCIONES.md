@@ -67,7 +67,8 @@ Ninguna clave de Supervisor se guarda en claro: en la base solo queda su huella 
 | `POST /r/proceso` | `rutaProcesoNuevo` | Crear un proceso nuevo desde la encuesta. |
 | `POST /r/respuesta` | `rutaRespuesta` | Guardar el texto y los sistemas de un bloque. |
 | `POST /r/verificar` | `rutaVerificar` | La IA marca el checklist del bloque (`unirSistemas`, `guardarChecklist`). |
-| `POST /r/punto` | `rutaPunto` | La persona marca un punto como «lo mencioné» o «no aplica». |
+| `POST /r/punto` | `rutaPunto` | La persona marca un punto como «lo mencioné» o «no aplica». Deshacer una marca también revoca su confirmación de vigencia (queda en el historial). |
+| `POST /r/campo` | `rutaCampo` (`matriz-sync.js`) | HU03. La persona confirma que la descripción precargada de un punto sigue vigente. La descripción **no se edita** desde la encuesta (rechaza `texto` con 400): se actualiza sola cuando alguien cuenta algo nuevo y la IA estructura el proceso. Deja el punto cubierto y registra la validación en `matriz_historial`. |
 | `POST /r/transcribir` | `rutaTranscribir` | Audio WAV → texto con Whisper (`pistaWhisper` le pasa el glosario). |
 | `POST /r/imagen` | `rutaImagen` | Lee una imagen con la IA. No se guarda. |
 | `POST /r/enviar` | `rutaEnviar` | Cierra la encuesta de la persona. |
@@ -125,13 +126,16 @@ Ninguna clave de Supervisor se guarda en claro: en la base solo queda su huella 
 | `POST /a/validacion` | `rutaValidacion` | Validar en bloque. |
 | `POST /a/estructurar` | `rutaEstructurar` → `estructurarProceso` | Pide a la IA que complete la matriz de un proceso. |
 | `POST /a/precarga/extraer` | `rutaPrecargaExtraer` | Extrae de un archivo (JPG, PNG, PDF o DOCX) lo que explícitamente cubre cada punto. No guarda. |
-| `POST /a/precarga` | `rutaPrecarga` | Guardar la precarga de los puntos de un proceso. |
+| `POST /a/precarga` | `rutaPrecarga` → `aplicarPrecarga` | Guarda la precarga de los puntos de un proceso y la refleja en la matriz (única fuente) si el campo está vacío o es una descripción automática y la fila no está validada. Devuelve `escritos` y `bloqueados`. Un punto vaciado retira también la descripción que había puesto la precarga. |
+| `POST /a/precarga/borrador` | `rutaPrecargaBorrador` (`documentos.js`) | Aprueba (con el texto corregido, si se quiere) o descarta los borradores que salieron de un documento. Aprobar usa `aplicarPrecarga` con el nombre del documento como origen. |
+| `POST /a/documentos/extraer` | `rutaDocumentoExtraer` | Extrae o vuelve a extraer la precarga de un proceso ya confirmado para el documento (reintento tras un error). |
+| `GET /a/campana/historial` | `rutaHistorialMatriz` | Historial de cambios de la matriz (campo, valor anterior y nuevo, quién, origen y fecha) con filtros por proceso, campo, origen, persona y fechas. Solo administrador. |
 | `POST /a/documentos` | `rutaDocumentoSubir` (`documentos.js`) | HU01. Guarda UN archivo en R2 con su gerencia (obligatoria); queda «pendiente» de clasificar. |
 | `GET /a/documentos` | `rutaDocumentos` | Bandeja con filtros por gerencia, estado, análisis IA, confianza, fechas y nombre. Puede ordenar por menor confianza. |
 | `GET /a/documentos/archivo` | `rutaDocumentoArchivo` | Devuelve el archivo para abrirlo antes de clasificar. |
 | `POST /a/documentos/gerencia` | `rutaDocumentoGerencia` | Cambia la gerencia de un documento. |
 | `POST /a/documentos/analizar` | `rutaDocumentoAnalizar` → `analizarDocumentoIA` | HU02. La IA propone hasta 5 procesos con confianza; las sugerencias previas sin confirmar quedan como historial. |
-| `POST /a/documentos/procesos` | `rutaDocumentoProcesos` | Lista final de procesos del documento: confirma, quita y agrega. Con procesos pasa a «clasificado»; sin procesos vuelve a «pendiente». Audita sugerido, confirmado y cambios. |
+| `POST /a/documentos/procesos` | `rutaDocumentoProcesos` | Lista final de procesos del documento: confirma, quita y agrega. Con procesos pasa a «clasificado»; sin procesos vuelve a «pendiente». Audita sugerido, confirmado y cambios. **Lo recién confirmado lanza la extracción de la precarga en segundo plano** (`ctx.waitUntil`, máximo 8 procesos por confirmación; el resto con «Extraer»): el estado de cada par (documento, proceso) queda en `documento_extracciones` y el resultado en `precarga_borrador`, que no llega a la encuesta hasta que el administrador lo aprueba. Quitar un proceso descarta sus borradores. |
 | `POST /a/campana/umbral` | `rutaUmbral` | Umbral de baja confianza (0 a 1, por defecto 0,7). |
 | `GET /a/campana/flujo` | `rutaFlujoAdminCampana` → `rutaFlujoAdmin` | Validación final por Gerente y por gerencia. |
 | `GET /a/campana/trazabilidad` | `rutaTrazabilidadAdmin` → `trazabilidad` | Igual que `/c/trazabilidad`, desde la consola. |
@@ -296,7 +300,7 @@ Perfiles: **Responsable** (responde sus procesos), **Supervisor** (su sección; 
 | Archivo | Qué es |
 |---|---|
 | `sitio.mjs` | Copia `index.html`, `admin.html`, los `flujo-*.js`, `usuarios-consola.js` e íconos a `worker/publico/` antes de desplegar. |
-| `schema.sql` y `migracion-002.sql` a `migracion-016.sql` | Esquema de la base D1. Las migraciones se aplican en orden y **antes** de desplegar. |
+| `schema.sql` y `migracion-002.sql` a `migracion-021.sql` | Esquema de la base D1. `schema.sql` trae el **estado final** (base nueva: solo ese archivo). Las migraciones sirven para actualizar una base existente: se aplican en orden y **antes** de desplegar. 017–018 (PIN y renovación de accesos), 019 (documentos), 020 (`matriz_historial`), 021 (`precarga_borrador` y `documento_extracciones`). `test/unit/esquema.test.mjs` falla si una migración crea algo que `schema.sql` no tiene. |
 | `wrangler.toml` | Configuración del Worker: base, variables de modelo de IA (`IA_MODELO_*`, `IA_ESFUERZO_*`), orígenes permitidos y la tarea programada. |
 
 ---
@@ -395,7 +399,7 @@ Módulo `FlujoAdmin`. Lo consulta `admin.html` al abrir una campaña.
 
 | Comando (desde `worker/`) | Archivo | Qué cubre |
 |---|---|---|
-| `npm run test:unit` | `test/unit/*.test.mjs` | Sin red ni base: `cobertura.js`, `comun.js` + `ambito.js`, `estructura.js` y las reglas de `flujo.js` (`node --test`). |
+| `npm run test:unit` | `test/unit/*.test.mjs` | Sin red (SQLite en memoria con `schema.sql`): `cobertura.js`, `comun.js` + `ambito.js`, `estructura.js`, las reglas de `flujo.js`, PIN y acceso, documentos (HU01/HU02), extracción de precarga y borradores, matriz como única fuente (`matriz-sync.test.mjs`) y el desfase entre migraciones y `schema.sql` (`node --test`). |
 | `npm run test:flujo` | `test/flujo.mjs` | Integración del flujo del Supervisor: pasos, advertencias, aprobación y reapertura. Requiere `npm run dev`. |
 | `npm run test:usuarios` | `test/usuarios.mjs` | Integración desde la consola: alta y edición de personas, claves, equipo visible y catálogo. Requiere `npm run dev`. |
 | `npm run test:seguridad` | `test/seguridad.mjs` | Integración: permisos del Gerente y entradas inválidas en la carga con esqueleto. Requiere `npm run dev`. |

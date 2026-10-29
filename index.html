@@ -213,6 +213,12 @@
   .ck .tag-comp{margin:4px 6px 0 0;background:var(--ok);color:#fff}
   .ck .ayuda-adm{display:block;font-size:12.5px;color:var(--muted);margin-top:4px}
   .ck .acc{flex:none;display:flex;gap:5px;flex-wrap:wrap;justify-content:flex-end}
+  .ck .val{display:block;margin-top:6px}
+  .ck .tag-org{margin:0 0 4px;display:inline-block}
+  .ck .tag-org.ok{background:var(--ok);color:#fff}
+  .ck .val-tx{display:block;font-size:13.5px;line-height:1.45;padding:8px 10px;border-left:3px solid var(--navy);background:var(--panel);border-radius:0 8px 8px 0;color:var(--heading);white-space:pre-wrap;overflow-wrap:anywhere}
+  .ck .val-acc{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:5px}
+  .ck .val-acc .nota{margin:0}
   .btn-mini{appearance:none;cursor:pointer;background:var(--card);border:1.5px solid var(--field-line);color:var(--heading);border-radius:8px;padding:3px 9px;font-family:Montserrat,sans-serif;font-weight:600;font-size:12px;white-space:nowrap}
   .btn-mini:hover{border-color:var(--navy)} .btn-mini[disabled]{opacity:.5;cursor:default}
   .sug{background:var(--warn-bg);color:var(--warn);border-radius:10px;padding:10px 14px;font-size:14px;margin:10px 0 0}
@@ -1142,7 +1148,15 @@
   // Puntos que el equipo cubrió con documentos (solo se sabe cuáles, nunca lo que dicen).
   var AYUDA_ADM = 'Este requisito ya fue validado administrativamente, pero puedes ingresar información si deseas detallar o rectificar el punto.';
   function adminCubre(pid, id){ return !!pid && ((S.precarga || {})[pid] || []).indexOf(id) >= 0; }
-  function puntoListo(ck, id, pid){ var x = ck && ck[id]; return adminCubre(pid, id) || (!!x && (x.estado === 'cubierto' || x.estado === 'no_aplica')); }
+  // La descripción ya trabajada de cada punto (documentos del equipo, IA) viene de la matriz, la única fuente, y es de solo lectura: se actualiza
+  // sola con información nueva. Un punto que alguien ya confirmó vigente no se vuelve a pedir.
+  var ORIGEN_TXT = {documento:'Del documento del equipo', precarga:'Cargado por el equipo', ia:'Sugerido por IA', encuesta:'De la encuesta', consola:'Editado por el equipo',
+    importacion:'Del inventario cargado', inventario:'Del inventario anterior'};
+  function valorDe(pid, id){ return ((S.valores || {})[pid] || {})[id] || null; }
+  function puntoListo(ck, id, pid){
+    var x = ck && ck[id], v = valorDe(pid, id);
+    return adminCubre(pid, id) || !!(v && v.validado) || (!!x && (x.estado === 'cubierto' || x.estado === 'no_aplica'));
+  }
   function listosBloque(pid, b){ var ck = respuesta(pid, b.id).checklist || {}; return b.puntos.filter(function(pt){ return puntoListo(ck, pt[0], pid); }).length; }
   function totalPuntos(){ return BLOQUES.reduce(function(a, b){ return a + b.puntos.length; }, 0); }
   function listosProceso(pid){ return BLOQUES.reduce(function(a, b){ return a + listosBloque(pid, b); }, 0); }
@@ -1241,6 +1255,8 @@
           if (ay){ var abrir = ay.classList.contains('hidden'); ay.classList.toggle('hidden', !abrir); ad.setAttribute('aria-expanded', abrir ? 'true' : 'false'); }
           return;
         }
+        var ok = ev.target.closest('[data-val-ok]');
+        if (ok){ confirmarValor(p.id, q.id, ok.dataset.valOk, d, ok); return; }
         var bt = ev.target.closest('[data-punto]');
         if (bt) marcarPunto(p.id, q.id, bt.dataset.punto, bt.dataset.estado, bt);
       });
@@ -1343,15 +1359,16 @@
       var x = ck[pt[0]] || null, persona = !!(x && x.fuente === 'persona');
       var est = x ? x.estado : (revisado ? 'falta' : 'pendiente');
       var nota = '';
-      if (est === 'cubierto') nota = persona ? 'Marcaste que lo mencionaste' : (x.evidencia ? '«' + x.evidencia + '»' : '');
+      if (est === 'cubierto') nota = persona ? (x.evidencia === 'vigente' ? 'Confirmaste que la descripción sigue vigente' : 'Marcaste que lo mencionaste') : (x.evidencia ? '«' + x.evidencia + '»' : '');
       else if (est === 'no_aplica') nota = persona ? 'Marcaste que no aplica a tu proceso' : 'Dijiste que no aplica' + (x.evidencia ? ': «' + x.evidencia + '»' : '');
       else if (est === 'falta') nota = 'Todavía no lo mencionas';
       // Cubierto por Administrador / IA: se ve como listo aunque la persona no haya dicho nada; si además lo trata, queda «Complementado por ti».
-      var adm = adminCubre(pid, pt[0]), comp = adm && est === 'cubierto';
+      // Con una descripción visible, su etiqueta de origen es la única señal: la de «Completado por Administrador / IA» solo va en los puntos sin descripción.
+      var admRaw = adminCubre(pid, pt[0]), vl = valorDe(pid, pt[0]), adm = admRaw && !vl, comp = adm && est === 'cubierto';
       // Si otra persona de la sección ya cubrió este punto se avisa (sin su texto): se puede complementar, no es obligatorio.
       var oc = ((S.otros || {})[pid] || {})[pt[0]] || [];
       if (oc.length && (est === 'falta' || est === 'pendiente')) nota = 'Ya lo cubrió ' + nombresCorto(oc) + '; puedes complementarlo si quieres';
-      if (adm && (est === 'falta' || est === 'pendiente')){ est = 'cubierto'; nota = ''; }
+      if (admRaw && (est === 'falta' || est === 'pendiente')){ est = 'cubierto'; nota = ''; }
       var acc = '';
       if (persona) acc = '<button type="button" class="btn-mini" data-punto="' + esc(pt[0]) + '" data-estado="">Deshacer</button>';
       else if (!adm && (est === 'falta' || est === 'pendiente')){
@@ -1362,8 +1379,24 @@
       var marca = adm ? '<span class="adm-tags"><button type="button" class="tag tag-adm" data-adm="' + esc(pt[0]) + '" aria-expanded="false" title="' + esc(AYUDA_ADM) + '">Completado por Administrador / IA</button>' +
         (comp ? '<span class="tag tag-comp">Complementado por ti</span>' : '') + '</span><span class="ayuda-adm hidden" id="adm-' + esc(key) + '-' + esc(pt[0]) + '">' + esc(AYUDA_ADM) + '</span>' : '';
       if (oc.length) marca += '<span class="tag tag-otros" title="Otra persona de tu sección ya cubrió este punto. No ves lo que dijo.">Cubierto por ' + esc(nombresCorto(oc)) + '</span>';
-      return '<li class="' + est + (adm ? ' admin' : '') + '"><span class="caja" aria-hidden="true">' + (est === 'cubierto' ? '✓' : est === 'no_aplica' ? '–' : '') + '</span>' +
-        '<span class="t"><span class="sr">' + EST_TXT[est] + ': </span>' + esc(pt[1]) + (nota ? '<span class="nota">' + esc(nota) + '</span>' : '') + marca + '</span>' +
+      // Descripción ya trabajada de este punto (documentos del equipo e IA): solo lectura. Se actualiza sola cuando alguien cuenta algo nuevo del proceso;
+      // la persona solo confirma que sigue vigente.
+      var editor = '';
+      if (vl){
+        if (!vl.validado && est === 'falta'){ est = 'pendiente'; nota = ''; }   // lo precargado está por revisar, no «falta»
+        var estadoTag = vl.mbc ? '<span class="tag tag-org ok">Validado por MBC</span>' : vl.validado ? '<span class="tag tag-org ok">Revisado</span>' : '';
+        var aviso = vl.validado ? '' : vl.desactualizado
+          ? (S.campana && S.campana.ia_auto ? 'Hay respuestas nuevas que todavía no se reflejan aquí; se actualizará en unos minutos.' : 'Hay respuestas nuevas que todavía no se reflejan aquí; el equipo la actualizará.')
+          : admRaw ? 'Ya viene completado por el equipo. Confirma si sigue vigente; no se edita.' : 'Es un resumen automático y no se edita. Si algo cambió, cuéntalo en tu respuesta y se actualiza.';
+        if (vl.desactualizado && vl.validado && !vl.mbc) aviso = 'Hay respuestas nuevas que todavía no se reflejan aquí.';
+        editor = '<span class="val"><span class="tag tag-org">' + esc(ORIGEN_TXT[vl.origen] || 'Precargado') + '</span>' + estadoTag +
+          '<span class="val-tx" data-val="' + esc(pt[0]) + '">' + esc(vl.texto) + '</span>' +
+          '<span class="val-acc">' + (vl.mbc ? '' : '<button type="button" class="btn-mini" data-val-ok="' + esc(pt[0]) + '"' + (vl.validado ? ' disabled' : '') + '>' + (vl.validado ? 'Vigente ✓' : 'Sigue vigente') + '</button>') +
+          '<span class="nota" data-val-msg="' + esc(pt[0]) + '" aria-live="polite">' + esc(aviso) + '</span></span></span>';
+        if (vl.validado && est !== 'no_aplica') est = 'cubierto';
+      }
+      return '<li class="' + est + (admRaw ? ' admin' : '') + (vl ? ' precargado' : '') + '"><span class="caja" aria-hidden="true">' + (est === 'cubierto' ? '✓' : est === 'no_aplica' ? '–' : '') + '</span>' +
+        '<span class="t"><span class="sr">' + EST_TXT[est] + ': </span>' + esc(pt[1]) + (nota ? '<span class="nota">' + esc(nota) + '</span>' : '') + marca + editor + '</span>' +
         (acc ? '<span class="acc">' + acc + '</span>' : '') + '</li>';
     }).join('');
     // Estado del bloque según lo que cubrió el equipo: parcial o completo (la persona puede seguir sin escribir nada).
@@ -1428,10 +1461,29 @@
       return prom.then(function(){ return verificar(pid, b.id); });
     }, Promise.resolve());
   }
+  // La persona confirma que la descripción precargada sigue vigente (no se edita): queda validada y el punto cubierto.
+  function confirmarValor(pid, bid, punto, root, boton){
+    var msg = root.querySelector('[data-val-msg="' + CSS.escape(punto) + '"]');
+    if (boton) boton.disabled = true;
+    if (msg) msg.textContent = 'Guardando…';
+    api('/r/campo', {proceso_id: pid, punto: punto}).then(function(j){
+      S.valores = S.valores || {};
+      var m = (S.valores[pid] = S.valores[pid] || {});
+      if (j.valor) m[punto] = j.valor;
+      var r = respuesta(pid, bid), ck = Object.assign({}, r.checklist || {});
+      ck[punto] = {estado: 'cubierto', fuente: 'persona', evidencia: 'vigente'};
+      ponerChecklist(pid, bid, ck, r.sistemas);
+    }).catch(function(err){
+      if (boton) boton.disabled = false;
+      if (msg) msg.textContent = 'No se pudo guardar: ' + err.message;
+    });
+  }
   function marcarPunto(pid, bid, punto, est, boton){
     var key = pid + '-' + bid;
     if (boton) boton.disabled = true;
     api('/r/punto', {proceso_id: pid, pregunta: bid, punto: punto, estado: est}).then(function(j){
+      var vv = valorDe(pid, punto);
+      if (!est && vv && !vv.mbc) vv.validado = false;   // deshacer también revoca la confirmación de vigencia
       ponerChecklist(pid, bid, j.checklist);
       if (!est && respondida(pid, bid)) verificar(pid, bid);   // al deshacer, la IA vuelve a mirar ese punto
     }).catch(function(err){ if (boton) boton.disabled = false; estadoRev(key, err.message, 'warn'); });
