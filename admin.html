@@ -2561,6 +2561,11 @@
       if (e.estado === 'pendiente'){ s.sinEmpezar++; if (e.correo) s.correosPend.push(e.correo); }
       if (e.estado === 'enviado') s.terminaron++;
     });
+    // Secciones del esqueleto (hoja «Gerencias» de la plantilla) que aún no tienen procesos ni personas: también tienen su enlace.
+    (C.estructura || []).forEach(function(f){
+      if (!f.gerencia || !f.seccion) return;
+      if (!Object.keys(m).some(function(k){ return mismaArea(m[k].gerencia, f.gerencia) && mismaArea(m[k].seccion, f.seccion); })) obtener(f.gerencia, f.seccion).esqueleto = true;
+    });
     return Object.keys(m).map(function(k){ m[k].prio = prioridadSeccion(m[k]); return m[k]; })
       .sort(function(a, b){ return a.gerencia.localeCompare(b.gerencia, 'es') || a.seccion.localeCompare(b.seccion, 'es'); });
   }
@@ -2702,7 +2707,7 @@
   // Excel con el enlace de cada sección para pegarlo en las actas (una fila por sección).
   function exportarEnlacesSeccion(){
     if (!C.campana.codigo_publico || !C.campana.abierta){ alert('Activa el enlace abierto de la campaña para generar los enlaces de las secciones.'); return; }
-    var filas = resumenSecciones().filter(function(f){ return f.procesos || f.personas || f.noVigentes; }).map(function(f){
+    var filas = resumenSecciones().filter(function(f){ return f.procesos || f.personas || f.noVigentes || f.esqueleto; }).map(function(f){
       var v = ventanaDe(f.gerencia, f.seccion) || {};
       return {Gerencia: f.gerencia, 'Sección': f.seccion, Enlace: enlaceAbierto(f.gerencia, f.seccion), 'Disponible desde': v.abre || '', 'Plazo (referencia)': v.cierra || '',
         Responsables: C.encuestados.filter(function(e){ return mismaArea(e.gerencia, f.gerencia) && mismaArea(e.seccion, f.seccion); }).map(function(e){ return e.nombre; }).join(', ')};
@@ -3635,6 +3640,11 @@
       if (!asignados.length && !tomado.length) s.sinResp++;
     });
     C.encuestados.forEach(function(e){ obt(e.gerencia, e.seccion).personas.push({e: e, i: info[e.id]}); });
+    // Secciones del esqueleto (hoja «Gerencias» de la plantilla) sin procesos ni personas todavía: aparecen para copiar su enlace y agregar personas.
+    (C.estructura || []).forEach(function(f){
+      if (!f.gerencia || !f.seccion) return;
+      if (!Object.keys(m).some(function(k){ return mismaAreaCl(m[k].gerencia, f.gerencia) && mismaAreaCl(m[k].seccion, f.seccion); })) obt(f.gerencia, f.seccion);
+    });
     // Un Supervisor solo gestiona secciones donde tiene procesos: una persona de otra sección con un proceso suyo delegado no crea una sección aparte.
     return Object.keys(m).map(function(k){ return m[k]; }).filter(function(s){ return C.rol !== 'supervisor' || s.procs.length || s.noVigentes; });
   }
