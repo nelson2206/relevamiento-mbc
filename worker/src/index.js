@@ -2563,6 +2563,8 @@ async function rutaClienteCampana(env, actor, recarga) {
     q('SELECT pc.proceso_id, pc.bloque, pc.punto FROM precarga pc JOIN procesos p ON p.id=pc.proceso_id WHERE p.campana_id=?'),
     q('SELECT gerencia, seccion, abre, cierra, mensaje FROM ventanas WHERE campana_id=?')
   ]);
+  // Esqueleto (hoja «Gerencias» de la plantilla): secciones que aún no tienen procesos ni personas también se ven en el panel.
+  let estructura = await leerEstructura(env, camp.id);
   if (actor.rol === 'supervisor') {
     const amb = await ambitoDe(env, actor), vis = await personasVisibles(env, camp, amb);
     const veo = x => amb.procs.has(x.proceso_id) && vis.has(x.encuestado_id);
@@ -2571,6 +2573,7 @@ async function rutaClienteCampana(env, actor, recarga) {
     revisiones = revisiones.filter(veo); respuestas = respuestas.filter(veo); asignaciones = asignaciones.filter(veo);
     precarga = precarga.filter(x => amb.procs.has(x.proceso_id));
     ventanas = ventanas.filter(v => enSecs(amb, v.gerencia, v.seccion) || (!v.seccion && amb.filas.some(p => mismaArea(p.gerencia, v.gerencia))));
+    estructura = estructura.filter(f => f.seccion && enSecs(amb, f.gerencia, f.seccion));
   }
   const limpias = respuestas.map(r => {
     const ck = leerMatriz(r.checklist), sano = {};
@@ -2587,7 +2590,7 @@ async function rutaClienteCampana(env, actor, recarga) {
     supervisores: actor.rol === 'cliente' ? await listaSupervisores(env, camp.id) : undefined,
     campana: { id: camp.id, nombre: camp.nombre, cliente: camp.cliente, logo: camp.logo || '', creada: camp.creada,
       codigo_publico: camp.codigo_publico || '', abierta: camp.abierta ? 1 : 0, invitacion: camp.invitacion || '' },
-    encuestados, procesos, revisiones, respuestas: limpias, asignaciones, precarga, ventanas, estructurado: [], sistemas: [], bloques: BLOQUES, generado: ahora() };
+    encuestados, procesos, revisiones, respuestas: limpias, asignaciones, precarga, ventanas, estructura, estructurado: [], sistemas: [], bloques: BLOQUES, generado: ahora() };
 }
 
 // ---------------------------------------------------------------- escritura acotada del panel del cliente
