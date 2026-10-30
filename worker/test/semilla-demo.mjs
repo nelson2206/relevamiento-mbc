@@ -155,11 +155,13 @@ const multi = await admin('POST', '/a/usuario', { campana_id: cid, nombre: 'Elen
   secciones: [{ g: 'Operaciones', s: 'Planta' }, { g: 'Operaciones', s: 'Mantenimiento' }, { g: 'Operaciones', s: 'Logística' }] });
 const claveGerente = g => GERENTES.find(x => x.gerencia === g).clave;
 
-// Checklist de un proceso a nombre de una persona: «cuantos» puntos de los 16 (todos si se omite)
+// Checklist de un proceso a nombre de una persona: «cuantos» puntos de los 17 (todos si se omite)
 const sesion = await http('GET', '/r/sesion?k=' + persona('Operaciones', 'Planta').token);
-const PUNTOS = sesion.bloques.flatMap(b => b.puntos.map(x => [b.id, x[0]]));
+const PUNTOS = sesion.bloques.flatMap(b => b.puntos.map(x => [b.id, x[0], b.tipo === 'estructurada']));
 async function responder(p, pid, cuantos) {
-  for (const [b, pt] of PUNTOS.slice(0, cuantos == null ? PUNTOS.length : cuantos)) await http('POST', '/r/punto', { k: p.token, proceso_id: pid, pregunta: b, punto: pt, estado: 'cubierto' });
+  for (const [b, pt, opciones] of PUNTOS.slice(0, cuantos == null ? PUNTOS.length : cuantos)) await (opciones
+    ? http('POST', '/r/respuesta', { k: p.token, proceso_id: pid, pregunta: b, datos: { confidencial: 'no' } })   // la pregunta de opciones no admite marcas a mano
+    : http('POST', '/r/punto', { k: p.token, proceso_id: pid, pregunta: b, punto: pt, estado: 'cubierto' }));
 }
 async function delegarTodo(clave, gerencia) {
   const gerente = como(clave);

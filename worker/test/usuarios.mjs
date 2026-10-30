@@ -28,7 +28,9 @@ async function campana(etiqueta, procesos, esqueleto) {
 }
 const detalle = async c => admin('GET', '/a/campana?id=' + c.id);
 const asignadosDe = async (c, eid) => (await detalle(c)).asignaciones.filter(a => a.encuestado_id === eid && a.origen === 'consultor').map(a => a.proceso_id).sort();
-const responderTodo = async (token, pid) => { const ses = await http('GET', '/r/sesion?k=' + token); for (const b of ses.bloques) for (const x of b.puntos) await http('POST', '/r/punto', { k: token, proceso_id: pid, pregunta: b.id, punto: x[0], estado: 'cubierto' }); };
+const responderTodo = async (token, pid) => { const ses = await http('GET', '/r/sesion?k=' + token); for (const b of ses.bloques) for (const x of b.puntos) await (b.tipo === 'estructurada'
+  ? http('POST', '/r/respuesta', { k: token, proceso_id: pid, pregunta: b.id, datos: { confidencial: 'no' } })
+  : http('POST', '/r/punto', { k: token, proceso_id: pid, pregunta: b.id, punto: x[0], estado: 'cubierto' })); };
 
 try {
   const PROCS = [['a1', 'G', 'S1', 'Proceso A1'], ['a2', 'G', 'S1', 'Proceso A2'], ['b1', 'G', 'S2', 'Proceso B1'], ['c1', 'G', 'S3', 'Proceso C1'], ['d1', 'H', 'S9', 'Proceso D1']];

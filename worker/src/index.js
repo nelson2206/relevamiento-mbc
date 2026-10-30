@@ -30,6 +30,8 @@
  *   POST /r/respuesta            {k, proceso_id, pregunta, texto, sistemas[]}
  *   POST /r/verificar            {k, proceso_id, pregunta}   (la IA marca el checklist del bloque)
  *   POST /r/punto                {k, proceso_id, pregunta, punto, estado}   (la persona marca "lo mencioné" / "no aplica")
+ *   POST /r/confidencial         {k, proceso_id, texto}   (la IA propone las opciones de la pregunta de información confidencial desde lo que la persona dijo; no guarda)
+ *   POST /r/imagen?...&pregunta=bconf&finalidad=confidencial   cuerpo: imagen/PDF/DOCX -> {datos, completo, faltan}   (igual: propone, no guarda)
  *   POST /r/campo                {k, proceso_id, punto}   (la persona confirma que la descripción precargada sigue vigente; no se edita)
  *   GET  /a/campana/historial?id=&proceso_id=&campo=&origen=&actor=&desde=&hasta=&limite=&pagina=   historial de cambios de la matriz
  *   POST /r/transcribir?k=       cuerpo: audio WAV (bytes) -> {texto}
@@ -106,6 +108,7 @@ import { rutaFlujo, rutaFlujoCatalogo, rutaFlujoConfirmar, rutaFlujoRetroceder, 
 import { rutaDocumentoSubir, rutaDocumentos, rutaDocumentoArchivo, rutaDocumentoGerencia, rutaDocumentoAnalizar, rutaDocumentoProcesos, rutaUmbral,
   rutaDocumentoExtraer, rutaPrecargaBorrador, borradoresDeCampana, sentenciasRastroDeProcesos, sentenciasRastroDeCampana, borrarArchivosDeCampana } from './documentos.js';
 import { ambitoDe, enSecs, claveArea, registrarAccion } from './ambito.js';
+import { limpiarDatos, evaluar, resumenTexto, UBICACIONES, ESQUEMA_IA, PROMPT_IA, desdeSalidaIA } from './confidencial.js';
 import { PUNTO_CAMPO, ACTOR_IA, ACTOR_CONSOLA, actorEncuestado, sentenciasHistorial, conBorrados, ultimosEventos, puedeAutomatico, valoresDeProceso, validarCampoDeEncuesta, rutaHistorialMatriz } from './matriz-sync.js';
 import { HttpError, ahora, uid, txt, normal, mismaArea, log, mascara, igualSeguro, tokenNuevo, pinValido, salNueva, hashPin, verificarPin } from './comun.js';
 import { hashClaveSup, listaSupervisores, gestionarSupervisores, rutaPersonaPerfil, rutaUsuario, rutaClavesPerfiles, aplicarPerfil, asignarSeccionesYProcesos } from './usuarios.js';
@@ -148,6 +151,12 @@ const BLOQUES = [
       ['sistemas', 'Qué ERP, aplicativos o plataformas digitales usan, incluidas las de terceros (Toyota Brasil, Kinto, portal SUNAT) (su nombre)', 1],
       ['terceros', 'Con qué terceros se relacionan (proveedores, concesionarios, clientes, funcionarios públicos u otros), en qué actividades participa cada uno y de qué forma', 1]
     ] },
+  // Pregunta 3: estructurada (Sí/No, cuál y dónde se almacena). No lleva voz, archivos ni revisión de la IA: se responde con opciones.
+  { id: 'bconf', tipo: 'estructurada', t: 'Información altamente confidencial', opciones: UBICACIONES,
+    g: '¿El proceso gestiona actualmente información Altamente Confidencial (nómina de colaboradores, expedientes de personal, contratos estratégicos, presupuestos, rundown, lista de precios, datos personales, información de proyectos no divulgados, entre otros)? Si es así, indica cuál y dónde se almacena (puedes marcar varias opciones).',
+    puntos: [
+      ['confidencial', 'Si el proceso gestiona información altamente confidencial, cuál y dónde se almacena']
+    ] },
   { id: 'b3', t: 'Datos personales, documentación, estándares e indicadores',
     g: 'Cuéntanos si manejan datos de personas (de clientes, proveedores, trabajadores, dealers, funcionarios públicos u otros), qué datos y con qué objetivo los usan; qué documentos respaldan el proceso (procedimientos, formatos, reportes, informes finales, comprobantes de pago…); qué estándares aplican (primero uno oficial de TDP; luego uno global de TMC o de Mitsui & CO; y, si los hay, otros como NTP o ISO) y, si existen, con qué indicadores lo miden. La normativa legal solo si la mencionan.',
     puntos: [
@@ -162,6 +171,12 @@ const BLOQUES = [
 ];
 // q1..q6: formato anterior (6 preguntas), que se sigue aceptando y mostrando en la consola.
 const PREGUNTAS = ['q1', 'q2', 'q3', 'q4', 'q5', 'q6', ...BLOQUES.map(b => b.id)];
+// Los bloques de texto libre (voz, archivos, checklist que revisa la IA) y los estructurados (opciones) se tratan distinto.
+const BLOQUES_TEXTO = BLOQUES.filter(b => b.tipo !== 'estructurada');
+const esEstructurada = id => BLOQUES.some(b => b.id === id && b.tipo === 'estructurada');
+const MSG_ESTRUCTURADA = 'Esta pregunta se responde con opciones (o con voz o un archivo que la IA convierte en opciones): no admite marcas a mano ni revisión por bloque.';
+// Posición del bloque en la encuesta (las preguntas del formato anterior van primero).
+const ordenBloque = id => BLOQUES.findIndex(b => b.id === id);
 const ESTADOS_REVISION = ['vigente', 'cambio', 'no_participo', 'no_existe'];
 const PULSE_INGEST = 'https://pulse.mbc-latam.com/api/ai-usage';
 
@@ -357,7 +372,7 @@ async function rutaSesion(env, url) {
       FROM procesos WHERE campana_id=? AND fuera_alcance=0`).bind(e.campana_id).all(),
     env.DB.prepare('SELECT proceso_id, origen FROM asignaciones WHERE encuestado_id=?').bind(e.id).all(),
     env.DB.prepare('SELECT proceso_id, estado, comentario FROM revisiones WHERE encuestado_id=?').bind(e.id).all(),
-    env.DB.prepare('SELECT proceso_id, pregunta, texto, sistemas, checklist FROM respuestas WHERE encuestado_id=?').bind(e.id).all(),
+    env.DB.prepare('SELECT proceso_id, pregunta, texto, sistemas, checklist, datos FROM respuestas WHERE encuestado_id=?').bind(e.id).all(),
     env.DB.prepare('SELECT nombre, tipo FROM sistemas WHERE campana_id=? ORDER BY nombre').bind(e.campana_id).all(),
     env.DB.prepare('SELECT pc.proceso_id, pc.punto FROM precarga pc JOIN procesos p ON p.id=pc.proceso_id WHERE p.campana_id=?').bind(e.campana_id).all(),
     // Responsables asignados por el equipo (nombres sugeridos) y personas que ya empezaron a responder un proceso.
@@ -429,7 +444,7 @@ async function rutaSesion(env, url) {
   const respuestas = {};
   resps.results.forEach(r => {
     (respuestas[r.proceso_id] = respuestas[r.proceso_id] || {})[r.pregunta] = {
-      texto: r.texto, sistemas: JSON.parse(r.sistemas || '[]'), checklist: leerMatriz(r.checklist)
+      texto: r.texto, sistemas: JSON.parse(r.sistemas || '[]'), checklist: leerMatriz(r.checklist), datos: leerMatriz(r.datos)
     };
   });
   return {
@@ -585,10 +600,25 @@ async function rutaSoltar(env, b) {
   return { ok: true };
 }
 
+// Pregunta estructurada: se guarda lo marcado (aunque esté a medias) y el punto solo queda cubierto cuando la respuesta está completa.
+async function respuestaEstructurada(env, e, p, bloque, b) {
+  if (!b.datos || typeof b.datos !== 'object') throw new HttpError(400, 'Falta la respuesta');
+  const datos = limpiarDatos(b.datos), ev = evaluar(datos), punto = bloque.puntos[0][0];
+  const prev = await env.DB.prepare('SELECT checklist FROM respuestas WHERE encuestado_id=? AND proceso_id=? AND pregunta=?').bind(e.id, p.id, bloque.id).first();
+  const c = leerMatriz(prev && prev.checklist);
+  if (ev.completo) c[punto] = { estado: 'cubierto', fuente: 'persona', evidencia: resumenTexto(datos).slice(0, 200) }; else delete c[punto];
+  await env.DB.prepare(`INSERT INTO respuestas (encuestado_id, proceso_id, pregunta, checklist, datos, actualizado) VALUES (?,?,?,?,?,?)
+    ON CONFLICT(encuestado_id, proceso_id, pregunta) DO UPDATE SET checklist=excluded.checklist, datos=excluded.datos, actualizado=excluded.actualizado`)
+    .bind(e.id, p.id, bloque.id, JSON.stringify(c), JSON.stringify(datos), ahora()).run();
+  await marcarEnCurso(env, e);
+  return { ok: true, completo: ev.completo, faltan: ev.faltan, datos, checklist: c };
+}
+
 async function rutaRespuesta(env, b) {
   const e = await encuestadoPorToken(env, b.k);
   const p = await procesoPermitido(env, e, b.proceso_id);
   if (!PREGUNTAS.includes(b.pregunta)) throw new HttpError(400, 'Pregunta inválida');
+  if (esEstructurada(b.pregunta)) return respuestaEstructurada(env, e, p, BLOQUES.find(x => x.id === b.pregunta), b);
   const sistemas = Array.isArray(b.sistemas) ? b.sistemas.map(s => txt(s, 120)).filter(Boolean).slice(0, 60) : [];
   await env.DB.prepare(`INSERT INTO respuestas (encuestado_id, proceso_id, pregunta, texto, sistemas, actualizado) VALUES (?,?,?,?,?,?)
     ON CONFLICT(encuestado_id, proceso_id, pregunta) DO UPDATE SET texto=excluded.texto, sistemas=excluded.sistemas, actualizado=excluded.actualizado`)
@@ -1095,7 +1125,7 @@ async function rutaCampana(env, url) {
   ]);
   estructurado.forEach(x => { x.datos = JSON.parse(x.datos); });
   precarga.forEach(x => { x.archivos = JSON.parse(x.archivos || '[]'); });
-  respuestas.forEach(x => { x.sistemas = JSON.parse(x.sistemas || '[]'); x.checklist = leerMatriz(x.checklist); });
+  respuestas.forEach(x => { x.sistemas = JSON.parse(x.sistemas || '[]'); x.checklist = leerMatriz(x.checklist); x.datos = leerMatriz(x.datos); });
   procesos.forEach(x => { x.matriz = leerMatriz(x.matriz); x.matriz_ia = leerMatriz(x.matriz_ia); });
   const borr = await borradoresDeCampana(env, id);
   const sups = (await env.DB.prepare("SELECT id, encuestado_id, perfil, activo FROM supervisores WHERE campana_id=? AND encuestado_id<>''").bind(id).all()).results;
@@ -1466,6 +1496,7 @@ const CAMPOS = [
   ['otros_estandares', 'Otros estándares nacionales o internacionales (NTP, ISO u otros)'],
   ['kpis', 'Indicadores o KPIs existentes'],
   ['normativa', 'Normativa legal peruana que regula el proceso, solo si el área la mencionó'],
+  ['info_confidencial', 'Información altamente confidencial (SOLO para el análisis; no es una columna de la matriz): una o dos frases con lo que la persona marcó en la pregunta de información altamente confidencial: si el proceso la gestiona, cuál es y dónde se almacena. Usa solo lo marcado en esa pregunta; si dijo que no, escribe "No gestiona información altamente confidencial"; si no respondió, deja el estado vacío'],
   ['carga', 'Carga: "Sí" si es uno de los 3 procesos que más carga o esfuerzo generan al área, "No" si no; si lo dijeron, agrega la actividad que más tiempo o esfuerzo toma (formato «Sí: actividad»)']
 ];
 
@@ -1542,9 +1573,8 @@ const ORIGEN_TEXTO = { nuevo: 'agregado por un colaborador en la encuesta', cons
 
 function textoParaClaude(camp, p, encuestados, revisiones, respuestas, sistemas, precarga) {
   const PREG = { q1: 'Objetivo, inicio y fin', q2: 'Actividades y participantes', q3: 'Sistemas y manualidad',
-    q4: 'Terceros', q5: 'Datos personales', q6: 'Indicadores, normas y frecuencia',
-    b1: 'Bloque 1 · Objetivo, actividades, riesgos y aprobaciones', b2: 'Bloque 2 · Sistemas y terceros',
-    b3: 'Bloque 3 · Datos personales, documentación, estándares e indicadores' };
+    q4: 'Terceros', q5: 'Datos personales', q6: 'Indicadores, normas y frecuencia' };
+  BLOQUES.forEach((b, i) => { PREG[b.id] = 'Bloque ' + (i + 1) + ' · ' + b.t; });
   const lineas = [];
   lineas.push(`CLIENTE: ${camp.cliente}`);
   lineas.push(`PROCESO (ficha de partida):`);
@@ -1578,7 +1608,8 @@ function textoParaClaude(camp, p, encuestados, revisiones, respuestas, sistemas,
     const area = e.gerencia + ' / ' + e.seccion + (e.gerencia === p.gerencia && e.seccion === p.seccion ? ' (sección dueña)' : ' (otra área)');
     lineas.push(`=== COLABORADOR (cargo o rol: ${e.rol || 'no indicado'} · área: ${area}) ===`);
     if (rev) lineas.push(`Vigencia marcada: ${VIGENCIA_TEXTO[rev.estado] || rev.estado}${rev.comentario ? ' — comentario: ' + rev.comentario : ''}`);
-    resp.sort((a, b) => a.pregunta.localeCompare(b.pregunta)).forEach(r => {
+    resp.sort((a, b) => ordenBloque(a.pregunta) - ordenBloque(b.pregunta) || a.pregunta.localeCompare(b.pregunta)).forEach(r => {
+      if (esEstructurada(r.pregunta)) { lineas.push(`[${PREG[r.pregunta]}] ${resumenTexto(leerMatriz(r.datos)) || '(sin responder)'}`); return; }
       const sis = JSON.parse(r.sistemas || '[]');
       const ck = leerMatriz(r.checklist);
       const nap = Object.keys(PUNTO_TXT).filter(k => ck[k] && ck[k].estado === 'no_aplica').map(k => PUNTO_TXT[k]);
@@ -1872,6 +1903,7 @@ async function rutaVerificar(env, b, ctx) {
   const p = await procesoPermitido(env, e, b.proceso_id);
   const bloque = BLOQUES.find(x => x.id === b.pregunta);
   if (!bloque) throw new HttpError(400, 'Bloque inválido');
+  if (bloque.tipo === 'estructurada') throw new HttpError(400, MSG_ESTRUCTURADA);
   const r = await env.DB.prepare('SELECT texto, sistemas, checklist FROM respuestas WHERE encuestado_id=? AND proceso_id=? AND pregunta=?')
     .bind(e.id, p.id, bloque.id).first();
   const previo = leerMatriz(r && r.checklist);
@@ -2021,11 +2053,60 @@ function bloqueDeArchivo(a) {
   return { type: a.esPdf ? 'document' : 'image', source: { type: 'base64', media_type: a.tipo, data: aBase64(a.buf) } };
 }
 
+// Voz o archivo → opciones de la pregunta de información confidencial. La IA solo PROPONE: no se guarda nada aquí; la persona revisa las
+// opciones marcadas y las confirma (POST /r/respuesta). El audio ya llega transcrito (/r/transcribir) y el archivo no se conserva.
+async function interpretarConfidencial(env, ctx, e, p, contenido, que) {
+  const cfg = iaDe(env, 'imagen'), t0 = Date.now();
+  let msg;
+  try {
+    msg = await clienteClaude(env).beta.messages.stream({
+      model: cfg.modelo,
+      max_tokens: 1500,
+      betas: ['server-side-fallback-2026-07-01'],
+      fallbacks: 'default',
+      output_config: { effort: cfg.esfuerzo, format: { type: 'json_schema', schema: ESQUEMA_IA } },
+      system: PROMPT_IA,
+      messages: [{ role: 'user', content: [contenido, { type: 'text', text: `PROCESO: ${p.subproceso || p.proceso || p.macroproceso}` }] }]
+    }).finalMessage();
+  } catch (err) {
+    log('confidencial_error', { campana: e.campana_id, error: String((err && err.message) || err).slice(0, 200) });
+    throw new HttpError(502, `No pudimos interpretar ${que} en este momento. Intenta de nuevo en un minuto o marca las opciones a mano.`);
+  }
+  registrarIA(ctx, 'confidencial', msg, cfg, t0);
+  if (msg.stop_reason === 'refusal') throw new HttpError(422, 'No pudimos procesar eso. Marca las opciones a mano.');
+  if (msg.stop_reason === 'max_tokens') throw new HttpError(502, 'La lectura quedó incompleta. Reintenta.');
+  let s = {};
+  try { s = JSON.parse((msg.content.find(c => c.type === 'text') || {}).text || '{}'); }
+  catch (x) { throw new HttpError(502, 'La lectura devolvió un formato inesperado. Reintenta.'); }
+  const r = desdeSalidaIA(s);
+  log('confidencial', { campana: e.campana_id, respondio: !!r.datos.confidencial, completo: r.completo });
+  return { ok: true, datos: r.datos, completo: r.completo, faltan: r.faltan, motivo: r.motivo };
+}
+
+// POST /r/confidencial  {k, proceso_id, texto}   texto = lo que la persona dijo (transcripción de su voz) o escribió
+async function rutaConfidencial(env, b, ctx) {
+  const e = await encuestadoPorToken(env, b.k);
+  const p = await procesoPermitido(env, e, b.proceso_id);
+  const texto = txt(b.texto, MAX_TEXTO);
+  if (!texto) throw new HttpError(400, 'No hay nada que interpretar');
+  return interpretarConfidencial(env, ctx, e, p, { type: 'text', text: 'LO QUE LA PERSONA DIJO:\n' + texto }, 'lo que dijiste');
+}
+async function rutaImagenConfidencial(env, req, e, p, ctx) {
+  const a = await leerArchivoSubido(req, ['image/jpeg', 'image/png', 'image/webp', 'application/pdf', MIME_DOCX],
+    'Sube una imagen JPG, PNG o WEBP, un PDF o un documento Word (.docx)');
+  return interpretarConfidencial(env, ctx, e, p, bloqueDeArchivo(a), a.que);
+}
+
 async function rutaImagen(env, req, url, ctx) {
   const e = await encuestadoPorToken(env, url.searchParams.get('k'));
   const p = await procesoPermitido(env, e, url.searchParams.get('proceso_id'));
   const bloque = BLOQUES.find(x => x.id === url.searchParams.get('pregunta'));
   if (!bloque) throw new HttpError(400, 'Bloque inválido');
+  if (bloque.tipo === 'estructurada') {
+    if (url.searchParams.get('finalidad') !== 'confidencial') throw new HttpError(400, MSG_ESTRUCTURADA);
+    return rutaImagenConfidencial(env, req, e, p, ctx);
+  }
+  if (url.searchParams.get('finalidad') === 'confidencial') throw new HttpError(400, 'Esa finalidad es solo de la pregunta de información confidencial');
   const finalidad = FINALIDADES.includes(url.searchParams.get('finalidad')) ? url.searchParams.get('finalidad') : 'bloque';
   const { tipo, esPdf, esDocx, que, buf, doc } = await leerArchivoSubido(req, ['image/jpeg', 'image/png', 'image/webp', 'application/pdf', MIME_DOCX],
     'Sube una imagen JPG, PNG o WEBP, un PDF o un documento Word (.docx)');
@@ -2042,7 +2123,7 @@ async function rutaImagen(env, req, url, ctx) {
       messages: [{ role: 'user', content: [
         bloqueDeArchivo({ esDocx, esPdf, tipo, buf, doc }),
         { type: 'text', text: (finalidad === 'todo'
-          ? [`PROCESO: ${p.subproceso || p.proceso || p.macroproceso}`, ...BLOQUES.flatMap(b => ['', `BLOQUE ${b.id}: ${b.t}`, 'CHECKLIST:', ...b.puntos.map(([, t]) => '- ' + t)])]
+          ? [`PROCESO: ${p.subproceso || p.proceso || p.macroproceso}`, ...BLOQUES_TEXTO.flatMap(b => ['', `BLOQUE ${b.id}: ${b.t}`, 'CHECKLIST:', ...b.puntos.map(([, t]) => '- ' + t)])]
           : finalidad === 'bloque'
             ? [`PROCESO: ${p.subproceso || p.proceso || p.macroproceso}`, `BLOQUE: ${bloque.t}`, 'CHECKLIST:', ...bloque.puntos.map(([, t]) => '- ' + t)]
             : [`PROCESO: ${p.subproceso || p.proceso || p.macroproceso}`]).join('\n') }
@@ -2061,7 +2142,7 @@ async function rutaImagen(env, req, url, ctx) {
   log('imagen', { campana: e.campana_id, bloque: bloque.id, finalidad, relevante: !!s.relevante, bytes: buf.byteLength });
   if (finalidad === 'todo') {
     const bloques = {};
-    BLOQUES.forEach(b => { bloques[b.id] = s.relevante ? txt(s[b.id], 3000) : ''; });
+    BLOQUES_TEXTO.forEach(b => { bloques[b.id] = s.relevante ? txt(s[b.id], 3000) : ''; });
     return { ok: true, bloques, texto: Object.values(bloques).filter(Boolean).join(' '), motivo: s.relevante ? '' : txt(s.motivo, 300) };
   }
   return { ok: true, texto: s.relevante ? txt(s.texto, finalidad === 'transcribir' ? 6000 : 3000) : '', motivo: s.relevante ? '' : txt(s.motivo, 300) };
@@ -2072,9 +2153,9 @@ async function rutaImagen(env, req, url, ctx) {
 // Los puntos guardados salen en la encuesta como «cubiertos por el administrador». Los que tienen campo en la matriz (PUNTO_CAMPO)
 // también la alimentan, y la encuesta los muestra desde la matriz (sesión → valores) como descripción de solo lectura; la tabla precarga no se envía.
 const TIPOS_PRECARGA = ['image/jpeg', 'image/png', 'application/pdf', MIME_DOCX];
-const TODOS_PUNTOS = BLOQUES.flatMap(b => b.puntos.map(([id]) => id));
+const TODOS_PUNTOS = BLOQUES_TEXTO.flatMap(b => b.puntos.map(([id]) => id));
 const BLOQUE_DE_PUNTO = {};
-BLOQUES.forEach(b => b.puntos.forEach(([id]) => { BLOQUE_DE_PUNTO[id] = b.id; }));
+BLOQUES_TEXTO.forEach(b => b.puntos.forEach(([id]) => { BLOQUE_DE_PUNTO[id] = b.id; }));
 const PRECARGA_SCHEMA = {
   type: 'object',
   properties: {
@@ -2115,7 +2196,7 @@ async function extraerPrecarga(env, ctx, a, p) {
       messages: [{ role: 'user', content: [
         bloqueDeArchivo(a),
         { type: 'text', text: [`PROCESO: ${p.subproceso || p.proceso || p.macroproceso}`,
-          ...BLOQUES.flatMap(b => ['', `BLOQUE ${b.id}: ${b.t}`, 'CHECKLIST:', ...b.puntos.map(([id, t]) => `- ${id}: ${t}`)]),
+          ...BLOQUES_TEXTO.flatMap(b => ['', `BLOQUE ${b.id}: ${b.t}`, 'CHECKLIST:', ...b.puntos.map(([id, t]) => `- ${id}: ${t}`)]),
           '', 'GLOSARIO DE ESTÁNDARES DE LA CAMPAÑA: ' + estandaresDe(camp)].join('\n') }
       ] }]
     }).finalMessage();
@@ -2269,6 +2350,7 @@ async function rutaPunto(env, b) {
   const p = await procesoPermitido(env, e, b.proceso_id);
   const bloque = BLOQUES.find(x => x.id === b.pregunta);
   if (!bloque || !bloque.puntos.some(x => x[0] === b.punto)) throw new HttpError(400, 'Punto inválido');
+  if (bloque.tipo === 'estructurada') throw new HttpError(400, MSG_ESTRUCTURADA);
   if (!['cubierto', 'no_aplica', ''].includes(b.estado)) throw new HttpError(400, 'Estado inválido');
   if (b.estado === 'no_aplica' && !bloque.puntos.find(x => x[0] === b.punto)[2]) throw new HttpError(400, 'Este punto existe en todo proceso: cuéntalo en tu respuesta.');
   const r = await env.DB.prepare('SELECT checklist FROM respuestas WHERE encuestado_id=? AND proceso_id=? AND pregunta=?').bind(e.id, p.id, bloque.id).first();
@@ -2742,6 +2824,7 @@ export default {
         if (url.pathname === '/r/verificar') return json(await rutaVerificar(env, b, ctx), 200, h);
         if (url.pathname === '/r/punto') return json(await rutaPunto(env, b), 200, h);
         if (url.pathname === '/r/campo') return json(await rutaCampo(env, b), 200, h);
+        if (url.pathname === '/r/confidencial') return json(await rutaConfidencial(env, b, ctx), 200, h);
         if (url.pathname === '/r/enviar') return json(await rutaEnviar(env, b), 200, h);
       }
 

@@ -1,6 +1,6 @@
 -- Voz MBC · Relevamiento de procesos — base D1 (voz-relevamiento)
--- Base nueva: npx wrangler d1 execute voz-relevamiento --remote --file=schema.sql   (trae TODO el estado actual, hasta la migración 021:
---   NO apliques después las migraciones 002 a 021, que solo sirven para actualizar una base que ya existía).
+-- Base nueva: npx wrangler d1 execute voz-relevamiento --remote --file=schema.sql   (trae TODO el estado actual, hasta la migración 022:
+--   NO apliques después las migraciones 002 a 022, que solo sirven para actualizar una base que ya existía).
 -- Base existente: aplicar, en orden, las migraciones posteriores a la última que ya tiene (migracion-NNN.sql).
 -- El audio NUNCA se guarda: solo el texto que el encuestado revisa y confirma.
 
@@ -98,10 +98,11 @@ CREATE INDEX IF NOT EXISTS ix_asig_proceso ON asignaciones(proceso_id);
 CREATE TABLE IF NOT EXISTS respuestas (
   encuestado_id TEXT NOT NULL,
   proceso_id TEXT NOT NULL,
-  pregunta TEXT NOT NULL,        -- q1..q6
+  pregunta TEXT NOT NULL,        -- q1..q6 (formato anterior) o el id de un bloque de BLOQUES (b1, b2, bconf, b3)
   texto TEXT NOT NULL DEFAULT '',
   sistemas TEXT NOT NULL DEFAULT '[]',   -- JSON: sistemas del catálogo marcados (q3 o bloque 2)
   checklist TEXT NOT NULL DEFAULT '{}',  -- JSON por punto del bloque: {estado: cubierto/falta/no_aplica, fuente: ia/persona, evidencia}
+  datos TEXT NOT NULL DEFAULT '{}',      -- JSON de una pregunta estructurada (bconf: información altamente confidencial; migracion-022.sql)
   actualizado TEXT NOT NULL,
   PRIMARY KEY (encuestado_id, proceso_id, pregunta)
 );

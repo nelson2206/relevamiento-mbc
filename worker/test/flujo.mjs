@@ -109,8 +109,10 @@ try {
   const sinResp = await gerente('POST', '/c/flujo/confirmar', { paso: 3 });
   ok(sinResp.status === 409 && sinResp.faltan.length === 2, 'no continúa con procesos sin responder', sinResp);
   const sesion = await http('GET', '/r/sesion?k=' + token);
-  const puntos = sesion.bloques.flatMap(b => b.puntos.map(x => ({ bloque: b.id, punto: x[0] })));
-  for (const pr of [p1, p2]) for (const x of puntos) await http('POST', '/r/punto', { cuerpo: { k: token, proceso_id: pr, pregunta: x.bloque, punto: x.punto, estado: 'cubierto' } });
+  const puntos = sesion.bloques.flatMap(b => b.puntos.map(x => ({ bloque: b.id, punto: x[0], estructurada: b.tipo === 'estructurada' })));
+  // La pregunta de opciones (información confidencial) no admite marcas a mano: se responde con /r/respuesta.
+  for (const pr of [p1, p2]) for (const x of puntos) await http('POST', x.estructurada ? '/r/respuesta' : '/r/punto', { cuerpo: x.estructurada
+    ? { k: token, proceso_id: pr, pregunta: x.bloque, datos: { confidencial: 'no' } } : { k: token, proceso_id: pr, pregunta: x.bloque, punto: x.punto, estado: 'cubierto' } });
   f = await gerente('GET', '/c/flujo');
   ok(f.procesos.filter(p => p.estado === 'respondido').length === 2, 'los procesos con checklist completo cuentan como respondidos', f.procesos.map(p => p.estado));
   ok((await gerente('POST', '/c/flujo/confirmar', { paso: 3 })).ok, 'confirma el paso 3');

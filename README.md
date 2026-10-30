@@ -14,7 +14,7 @@ checklist por bloque, y el equipo consultor valida la matriz en una consola. Rep
 | `worker/` | El servidor: Cloudflare Worker + D1 + Workers AI (voz) + Claude. Migraciones `migracion-NNN.sql` y `schema.sql` |
 
 Desplegar el servidor (desde `worker/`): `npm install && npx wrangler deploy`. Secretos (nunca en el repo): `ADMIN_CODE`, `INTERNAL_CODE`
-(IA vía ProcessIQ) o `ANTHROPIC_API_KEY`. La base nueva: `npx wrangler d1 execute voz-relevamiento --remote --file=schema.sql` (trae el estado final: no apliques después las migraciones). Una base que ya existe se actualiza con las migraciones `migracion-NNN.sql` posteriores a la última que tiene, en orden y antes de desplegar (hoy hasta la 021).
+(IA vía ProcessIQ) o `ANTHROPIC_API_KEY`. La base nueva: `npx wrangler d1 execute voz-relevamiento --remote --file=schema.sql` (trae el estado final: no apliques después las migraciones). Una base que ya existe se actualiza con las migraciones `migracion-NNN.sql` posteriores a la última que tiene, en orden y antes de desplegar (hoy hasta la 022).
 
 ## Estado y relación con producción (TDP)
 

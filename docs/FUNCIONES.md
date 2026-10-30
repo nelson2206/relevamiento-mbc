@@ -65,7 +65,9 @@ Ninguna clave de Supervisor se guarda en claro: en la base solo queda su huella 
 | `POST /r/soltar` | `rutaSoltar` | Quitar un proceso de su lista y sus respuestas. |
 | `POST /r/revision` | `rutaRevision` | Marcar un proceso como vigente, con cambio o no existente. |
 | `POST /r/proceso` | `rutaProcesoNuevo` | Crear un proceso nuevo desde la encuesta. |
-| `POST /r/respuesta` | `rutaRespuesta` | Guardar el texto y los sistemas de un bloque. |
+| `POST /r/respuesta` | `rutaRespuesta` | Guardar el texto y los sistemas de un bloque. Para la pregunta estructurada `bconf` (información altamente confidencial) recibe `datos` en vez de texto: `respuestaEstructurada` (`confidencial.js`) lo limpia, lo guarda en `respuestas.datos` y deja el punto `cubierto` solo si la respuesta está completa («No», o «Sí» con cuál, ubicaciones y detalle de «Otro»). Devuelve `completo`, `faltan` y el checklist. Las marcas a mano y la revisión por bloque (`/r/punto`, `/r/verificar`) rechazan esa pregunta. |
+| `POST /r/confidencial` | `rutaConfidencial` → `interpretarConfidencial` | Responder la pregunta 3 **hablando**: recibe el texto ya transcrito (`/r/transcribir`) y la IA **propone** las opciones (Sí/No, cuál, ubicaciones, otro) con política de cero alucinación. No guarda nada: la persona revisa y confirma con `/r/respuesta`. |
+| `POST /r/imagen` (`pregunta=bconf&finalidad=confidencial`) | `rutaImagenConfidencial` | Lo mismo con un **archivo** (imagen, PDF o Word): valida el archivo, la IA propone las opciones y no se conserva el archivo. Esa finalidad es solo de la pregunta de opciones; las preguntas de texto la rechazan. |
 | `POST /r/verificar` | `rutaVerificar` | La IA marca el checklist del bloque (`unirSistemas`, `guardarChecklist`). |
 | `POST /r/punto` | `rutaPunto` | La persona marca un punto como «lo mencioné» o «no aplica». Deshacer una marca también revoca su confirmación de vigencia (queda en el historial). |
 | `POST /r/campo` | `rutaCampo` (`matriz-sync.js`) | HU03. La persona confirma que la descripción precargada de un punto sigue vigente. La descripción **no se edita** desde la encuesta (rechaza `texto` con 400): se actualiza sola cuando alguien cuenta algo nuevo y la IA estructura el proceso. Deja el punto cubierto y registra la validación en `matriz_historial`. |
@@ -228,7 +230,7 @@ Esta es la misma regla que usa la consola (`cobertura()` en `admin.html`), lleva
 | `cobertura.persona(pid, eid)` | Avance de una persona en un proceso: puntos listos, total y si está completo. |
 | `leerJson` · `puntoListo` · `tieneContenido` | Auxiliares. |
 
-Reglas: un proceso está **respondido** si alguien completó los puntos de sus 3 bloques, o si entre todas las personas y la precarga del equipo cubren todos los puntos. Está **en curso** si alguien lo tomó o empezó a responder. Está **no vigente** si solo hay marcas de «ya no se hace».
+Reglas: un proceso está **respondido** si alguien completó los puntos de todas sus preguntas (17 puntos), o si entre todas las personas y la precarga del equipo cubren todos los puntos. Está **en curso** si alguien lo tomó o empezó a responder. Está **no vigente** si solo hay marcas de «ya no se hace».
 
 ### 3.4 `estructura.js` — esqueleto Área > Gerencia > Sección
 
@@ -300,7 +302,7 @@ Perfiles: **Responsable** (responde sus procesos), **Supervisor** (su sección; 
 | Archivo | Qué es |
 |---|---|
 | `sitio.mjs` | Copia `index.html`, `admin.html`, los `flujo-*.js`, `usuarios-consola.js` e íconos a `worker/publico/` antes de desplegar. |
-| `schema.sql` y `migracion-002.sql` a `migracion-021.sql` | Esquema de la base D1. `schema.sql` trae el **estado final** (base nueva: solo ese archivo). Las migraciones sirven para actualizar una base existente: se aplican en orden y **antes** de desplegar. 017–018 (PIN y renovación de accesos), 019 (documentos), 020 (`matriz_historial`), 021 (`precarga_borrador` y `documento_extracciones`). `test/unit/esquema.test.mjs` falla si una migración crea algo que `schema.sql` no tiene. |
+| `schema.sql` y `migracion-002.sql` a `migracion-022.sql` | Esquema de la base D1. `schema.sql` trae el **estado final** (base nueva: solo ese archivo). Las migraciones sirven para actualizar una base existente: se aplican en orden y **antes** de desplegar. 017–018 (PIN y renovación de accesos), 019 (documentos), 020 (`matriz_historial`), 021 (`precarga_borrador` y `documento_extracciones`), 022 (`respuestas.datos`, para la pregunta estructurada). `test/unit/esquema.test.mjs` falla si una migración crea algo que `schema.sql` no tiene. |
 | `wrangler.toml` | Configuración del Worker: base, variables de modelo de IA (`IA_MODELO_*`, `IA_ESFUERZO_*`), orígenes permitidos y la tarea programada. |
 
 ---

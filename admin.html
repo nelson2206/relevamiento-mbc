@@ -145,7 +145,8 @@
   /* Las tres preguntas de la encuesta se distinguen por número y color en toda la ficha del proceso: 1 azul oscuro, 2 azul, 3 verde. */
   .bq-1{--bq:var(--navy); --bq-bg:var(--panel); --bq-t:#fff}
   .bq-2{--bq:var(--inf); --bq-bg:var(--inf-bg); --bq-t:var(--card)}
-  .bq-3{--bq:var(--ok); --bq-bg:var(--ok-bg); --bq-t:var(--card)}
+  .bq-3{--bq:var(--warn); --bq-bg:var(--warn-bg); --bq-t:var(--card)}   /* la 3.ª (información confidencial) lleva el color de aviso */
+  .bq-4{--bq:var(--ok); --bq-bg:var(--ok-bg); --bq-t:var(--card)}
   .bq{margin:22px 0 6px;border:1px solid var(--line);border-left:7px solid var(--bq);border-radius:10px;overflow:hidden}
   .bq-h{display:flex;align-items:center;gap:10px;padding:9px 12px;background:var(--bq-bg);font-family:Montserrat,sans-serif;font-weight:700;font-size:13.5px;color:var(--heading)}
   .bq-n{flex:none;width:26px;height:26px;border-radius:50%;background:var(--bq);color:var(--bq-t);display:grid;place-content:center;font-size:13px}
@@ -447,7 +448,7 @@
             <textarea id="inInvitacion" rows="12" aria-label="Texto de invitación de la campaña" style="min-height:200px"></textarea>
             <div class="row" style="margin-top:8px"><button class="btn btn-ghost btn-xs" id="btnInvitacion">Guardar texto</button><button class="btn btn-ghost btn-xs" id="btnInvitacionBase">Restablecer el texto base</button><span class="muted" id="msgInvitacion"></span></div>
             <h3 style="font-size:14px;margin-top:22px">Aplicaciones y sistemas de la campaña</h3>
-            <p class="muted">Es la lista que la persona ve en el bloque 2 para buscar y marcar (una por línea; opcional «Nombre | tipo»). Al guardar reemplaza la lista cargada por el equipo; se conservan las que la IA detectó o las personas agregaron. Lo que ya respondieron no cambia.</p>
+            <p class="muted">Es la lista que la persona ve en la pregunta «Sistemas y terceros» para buscar y marcar (una por línea; opcional «Nombre | tipo»). Al guardar reemplaza la lista cargada por el equipo; se conservan las que la IA detectó o las personas agregaron. Lo que ya respondieron no cambia.</p>
             <textarea id="inSistemas" rows="8" aria-label="Aplicaciones y sistemas de la campaña" style="min-height:140px"></textarea>
             <div class="row" style="margin-top:8px"><button class="btn btn-ghost btn-xs" id="btnSistemas">Guardar aplicaciones</button><span class="muted" id="msgSistemas"></span></div>
             <h3 style="font-size:14px;margin-top:22px">Glosario de estándares</h3>
@@ -507,8 +508,21 @@
   // Carpeta de la encuesta: la misma si la consola se abrió como ".../admin.html" o como ".../admin".
   var URL_ENCUESTA = new URL('./', location.href).href;
   var PREG = {q1:'Objetivo, inicio y fin', q2:'Actividades y participantes', q3:'Sistemas y manualidad', q4:'Terceros', q5:'Datos personales', q6:'Indicadores, normas y frecuencia',
-    b1:'Bloque 1 · Objetivo, actividades, riesgos y aprobaciones', b2:'Bloque 2 · Sistemas y terceros',
-    b3:'Bloque 3 · Datos personales, documentación, estándares e indicadores'};
+};
+  // Nombre de una pregunta: las del formato anterior (q1…q6) son fijas; las de la encuesta actual salen de su posición y su título.
+  function nomPreg(id){
+    var bl = C && C.bloques ? C.bloques : [], i = bl.map(function(b){ return b.id; }).indexOf(id);
+    return i >= 0 ? 'Pregunta ' + (i + 1) + ' · ' + bl[i].t : (PREG[id] || id);
+  }
+  // Lo que respondió la persona en una pregunta de opciones, en una frase.
+  function resumenDatos(r){
+    var d = r.datos || {}, b = (C.bloques || []).filter(function(x){ return x.id === r.pregunta; })[0];
+    if (!b || b.tipo !== 'estructurada' || !d.confidencial) return '';
+    if (d.confidencial === 'no') return 'No gestiona información altamente confidencial.';
+    var et = {}; (b.opciones || []).forEach(function(o){ et[o[0]] = o[1]; });
+    var donde = (d.ubicaciones || []).map(function(u){ return u === 'otro' && d.otro ? 'Otro: ' + d.otro : (et[u] || u); }).join(', ');
+    return 'Gestiona información altamente confidencial' + (d.cual ? ': ' + d.cual : '') + '.' + (donde ? ' Se almacena en: ' + donde + '.' : ' (falta indicar dónde se almacena)');
+  }
   var PREG_ANTES = ['q1', 'q2', 'q3', 'q4', 'q5', 'q6'];
   var ORIGEN_TXT = {encuestado:'La eligió', consultor:'Asignado por el equipo', inventario:'Inventario anterior (por nombre)'};
   // Campos que llena la IA al estructurar un proceso (mismas claves que la matriz; ver CAMPOS en el Worker).
@@ -765,7 +779,7 @@
   function desactualizado(pid){ var e = estructuradoDe(pid); return !!e && respuestasDe(pid).some(function(r){ return r.actualizado > e.generado; }); }
   function pendienteIA(pid){ return respuestasDe(pid).length > 0 && (!estructuradoDe(pid) || desactualizado(pid)); }
 
-  // Avance de una persona en un proceso: puntos del checklist listos (cubiertos o "no aplica") en los 3 bloques.
+  // Avance de una persona en un proceso: puntos del checklist listos (cubiertos o "no aplica") en todas las preguntas.
   // Quien respondió las 6 preguntas del formato anterior cuenta como completo.
   function totalPuntos(){ return (C.bloques || []).reduce(function(a, b){ return a + b.puntos.length; }, 0); }
   function puntoListo(ck, id){ var x = ck && ck[id]; return !!x && (x.estado === 'cubierto' || x.estado === 'no_aplica'); }
@@ -804,7 +818,7 @@
     });
     return Object.keys(cub).filter(function(k){ return validos[k]; }).length;
   }
-  // Cobertura de un proceso. Respondido: alguien completó el checklist de los 3 bloques. En curso: alguien lo
+  // Cobertura de un proceso. Respondido: alguien completó el checklist de todas las preguntas. En curso: alguien lo
   // tomó o empezó a responder. Ya no se hace: solo hay marcas de "ya no se hace". Sin cobertura: nadie lo tomó.
   function cobertura(pid){
     var revs = IX.rev[pid] || [], resp = IX.resp[pid] || {};
@@ -914,7 +928,7 @@
     $('#cobertura').innerHTML = total ? barraCob(cuenta, total) +
       '<div class="leyenda">' + ESTADO_ORDEN.map(function(k){ return '<span><i class="seg-' + k + '"></i>' + ESTADO_TXT[k] + ': <b>' + cuenta[k] + '</b></span>'; }).join('') +
       '<span>Cobertura: <b>' + pct(cuenta.respondido, vivos) + '</b> (' + cuenta.respondido + ' de ' + vivos + ' procesos vigentes respondidos)</span></div>' +
-      '<p class="definicion">Respondido: al menos una persona completó los 3 bloques (todos los puntos del checklist cubiertos o marcados «no aplica»). En curso: alguien lo eligió o empezó a responder. Sin cobertura: nadie lo ha tomado. Ya no se hace: solo hay marcas de que no existe.</p>' : '';
+      '<p class="definicion">Respondido: al menos una persona completó todas las preguntas (todos los puntos del checklist cubiertos o marcados «no aplica»). En curso: alguien lo eligió o empezó a responder. Sin cobertura: nadie lo ha tomado. Ya no se hace: solo hay marcas de que no existe.</p>' : '';
 
     var lista = listaMapa();
     var be = $('#btnExpMapa');
@@ -2177,7 +2191,7 @@
   // La persona ve el punto como «Completado por Administrador / IA», pero nunca este texto.
   var MIME_PRE = {jpg:'image/jpeg', jpeg:'image/jpeg', png:'image/png', pdf:'application/pdf', docx:'application/vnd.openxmlformats-officedocument.wordprocessingml.document'};
   // Pregunta 1, 2 o 3 de la encuesta (bloques b1, b2, b3); las del formato anterior (q1…q6) no tienen número.
-  function numBloque(id){ var i = (C.bloques || []).map(function(b){ return b.id; }).indexOf(id); return i >= 0 && i < 3 ? i + 1 : 0; }
+  function numBloque(id){ var i = (C.bloques || []).map(function(b){ return b.id; }).indexOf(id); return i >= 0 && i < 4 ? i + 1 : 0; }
   function marcaBloque(n){ return '<span class="bq-n" aria-hidden="true">' + n + '</span>'; }
   function bloqueHtml(b, cuerpo){
     var n = numBloque(b.id);
@@ -2196,8 +2210,8 @@
   }
   function leyendaPreguntas(){
     if (!(C.bloques || []).length) return '';
-    return '<div class="bq-leyenda"><span>Pregunta de la encuesta que llena cada campo:</span>' + (C.bloques || []).slice(0, 3).map(function(b, i){
-      return '<span class="bq-' + (i + 1) + '"><span class="bq-tag" style="margin:0">P' + (i + 1) + '</span> ' + esc(b.t) + '</span>'; }).join('') + '</div>';
+    return '<div class="bq-leyenda"><span>Pregunta de la encuesta que llena cada campo:</span>' + (C.bloques || []).slice(0, 4).map(function(b, i){
+      return '<span class="bq-' + (i + 1) + '"><span class="bq-tag" style="margin:0">P' + (i + 1) + '</span> ' + esc(b.t) + (b.tipo === 'estructurada' ? ' <span class="muted">(se responde con opciones; aún sin campo en la matriz)</span>' : '') + '</span>'; }).join('') + '</div>';
   }
   function seccionPrecarga(p){
     var pre = IX.pre[p.id] || {}, n = Object.keys(pre).length, bor = IX.bor[p.id] || [];
@@ -2207,6 +2221,7 @@
       '<div class="row"><input type="file" id="preArch" multiple accept=".jpg,.jpeg,.png,.pdf,.docx,image/jpeg,image/png,application/pdf" style="width:auto" aria-label="Documentos del proceso">' +
       '<button class="btn btn-xs" id="preExtraer">Extraer con IA</button><span class="muted" id="preMsg" aria-live="polite"></span></div>';
     (C.bloques || []).forEach(function(b){
+      if (b.tipo === 'estructurada') return;   // se responde con opciones: no se precarga desde documentos
       var cuerpo = '';
       b.puntos.forEach(function(pt){
         var x = pre[pt[0]];
@@ -2389,7 +2404,7 @@
     var conMarcas = function(r){ return Object.keys(r.checklist || {}).some(function(k){ return k.charAt(0) !== '_'; }); };
     var contaron = {};
     Object.keys(IX.todas[pid] || {}).forEach(function(eid){
-      var filas = IX.todas[pid][eid].filter(function(r){ return (r.texto || '').trim() || r.sistemas.length || conMarcas(r); });
+      var filas = IX.todas[pid][eid].filter(function(r){ return (r.texto || '').trim() || r.sistemas.length || conMarcas(r) || resumenDatos(r); });
       if (filas.length) contaron[eid] = filas;
     });
     if (Object.keys(contaron).length){
@@ -2397,10 +2412,10 @@
       Object.keys(contaron).forEach(function(eid){
         var en = IX.enc[eid] || {};
         h += '<div style="margin-top:10px"><b>' + esc(en.nombre) + '</b> <span class="muted">' + esc([en.rol, en.gerencia + ' · ' + en.seccion].filter(Boolean).join(' · ')) + '</span> ' + '<button class="btn-link" data-borrar-resp="' + esc(eid) + '">Borrar sus respuestas</button>' + '</div>';
-        contaron[eid].slice().sort(function(a,b){ return a.pregunta.localeCompare(b.pregunta); }).forEach(function(r){
+        contaron[eid].slice().sort(function(a,b){ return numBloque(a.pregunta) - numBloque(b.pregunta) || a.pregunta.localeCompare(b.pregunta); }).forEach(function(r){
           var ckr = resumenChecklist(r);
           var nb = numBloque(r.pregunta);
-          h += '<div class="resp' + (nb ? ' bq-resp bq-' + nb : '') + '"><b>' + (nb ? marcaBloque(nb) + 'Pregunta ' + nb + ' · ' : '') + esc(PREG[r.pregunta] || r.pregunta) + '</b> <span class="muted">' + esc(fecha(r.actualizado)) + '</span>\n' + (esc(r.texto) || '<span class="muted">(sin texto)</span>') + (r.sistemas.length ? '\nSistemas marcados: ' + esc(r.sistemas.join(', ')) : '') +
+          h += '<div class="resp' + (nb ? ' bq-resp bq-' + nb : '') + '"><b>' + (nb ? marcaBloque(nb) : '') + esc(nomPreg(r.pregunta)) + '</b> <span class="muted">' + esc(fecha(r.actualizado)) + '</span>\n' + (esc(r.texto || resumenDatos(r)) || '<span class="muted">(sin texto)</span>') + (r.sistemas.length ? '\nSistemas marcados: ' + esc(r.sistemas.join(', ')) : '') +
             (ckr ? '\n<span class="muted">' + esc(ckr) + '</span>' : '') + '</div>';
         });
       });
@@ -2483,7 +2498,7 @@
     'Como parte del inventario de procesos de {cliente}, te pedimos contarnos cómo funcionan los procesos de {area}.\n\n' +
     '1. Entra a este enlace (es el mismo para todo tu equipo): {enlace}\n' +
     '2. Elige tu nombre en la lista o escribe tu correo corporativo. Si no figuras, regístrate: tu sección ya viene marcada.\n' +
-    '3. Elige tus procesos y cuéntanos cada uno en 3 bloques, hablando o por escrito. Cada bloque te muestra lo que necesitamos saber y te avisa si falta algo. Todo se guarda solo y puedes volver cuando quieras, desde cualquier equipo, con el mismo enlace.\n' +
+    '3. Elige tus procesos y cuéntanos cada uno en sus preguntas, hablando, por escrito o marcando opciones. Cada pregunta te muestra lo que necesitamos saber y te avisa si falta algo. Todo se guarda solo y puedes volver cuando quieras, desde cualquier equipo, con el mismo enlace.\n' +
     '{apertura}{plazo}\n' +
     'No necesitas crear flujos nuevos: si ya existen SOP, flujos o procesos documentados, compártelos con el equipo consultor y los usamos para precargar la información.\n\n' +
     'Tus respuestas se usan solo para el inventario de procesos. Después te buscaremos para una reunión corta de validación.\n\nGracias,\nEquipo consultor';
@@ -3653,7 +3668,7 @@
     $('#clResumen').innerHTML = '<div class="kpis" style="margin-bottom:12px">' +
       [[Object.keys(gers).length, 'gerencias'], [secs.length, 'secciones'], [vig, 'procesos vigentes'], [C.encuestados.length, 'personas asignadas'], [pend, 'pendientes'], [prog, 'en progreso'], [resp, 'completados']].map(function(k){ return '<div class="kpi"><b>' + k[0] + '</b><span>' + k[1] + '</span></div>'; }).join('') + '</div>' +
       '<div class="row" style="align-items:stretch">' +
-      '<div class="cl-barra"><b>Información completada</b>' + ayuda('Procesos respondidos ÷ procesos vigentes. Un proceso está respondido cuando su checklist de los 3 bloques está completo (una persona o varias entre todas, con lo que aportó el equipo consultor). La cifra de puntos mide cuántos de los puntos del checklist de todos los procesos ya están cubiertos.') +
+      '<div class="cl-barra"><b>Información completada</b>' + ayuda('Procesos respondidos ÷ procesos vigentes. Un proceso está respondido cuando su checklist de todas las preguntas está completo (una persona o varias entre todas, con lo que aportó el equipo consultor). La cifra de puntos mide cuántos de los puntos del checklist de todos los procesos ya están cubiertos.') +
         '<div style="font-size:26px;font-family:Montserrat,sans-serif;font-weight:800;color:var(--heading)">' + pc(resp, vig) + '%</div>' + barraCl(resp, vig) +
         '<div class="muted">' + resp + ' de ' + vig + ' procesos respondidos · puntos del checklist cubiertos: ' + pc(pts, vig * tp) + '%</div></div>' +
       '<div class="cl-barra"><b>Procesos validados</b>' + ayuda('Procesos marcados como validados en la matriz (conformidad de la gerencia registrada por el equipo consultor) ÷ procesos vigentes. Los que solo están «actualizados» no cuentan como validados.') +
@@ -3878,7 +3893,7 @@
       '<p>' + esc(d.quien) + ' te delegó completar la información de ' + txtN + ' del inventario de procesos de ' + esc(d.cliente) + ':</p><ul>' + li + '</ul>' +
       '<p><b>Cómo completarlo</b></p><ol>' +
       '<li>Entra al enlace de tu sección: <a href="' + esc(d.enlace) + '">' + esc(d.enlace) + '</a>. Elige tu nombre en la lista y escribe tu PIN de 4 dígitos (si es tu primera vez, créalo ahí mismo). Puedes volver cuando quieras, desde cualquier equipo.</li>' +
-      '<li>Verás tus procesos; los que te delegaron aparecen primero. Elige cada uno y cuéntalo en 3 bloques, hablando o por escrito. Cada bloque te muestra lo que necesitamos saber y te avisa si falta algo. Todo se guarda solo.</li>' +
+      '<li>Verás tus procesos; los que te delegaron aparecen primero. Elige cada uno y cuéntalo en sus preguntas, hablando, por escrito o marcando opciones. Cada pregunta te muestra lo que necesitamos saber y te avisa si falta algo. Todo se guarda solo.</li>' +
       '<li>Si ya existen SOP, flujos o procesos documentados, compártelos con ' + esc(d.quien) + ': los usamos para precargar la información.</li></ol>' +
       (d.plazo ? '<p>Plazo de referencia: hasta el ' + esc(d.plazo) + '.</p>' : '') +
       '<p>Tus respuestas se usan solo para el inventario de procesos.</p><p>Gracias,<br>' + esc(d.quien) + '</p></div>';
@@ -4243,10 +4258,10 @@
       inv.push(fila); est.push(filaE);
       if (d) (d.preguntas_validacion || []).forEach(function(q, i){ preg.push({'Código': p.codigo, Gerencia: p.gerencia, 'Sección': p.seccion, Proceso: nombreProc(p), '#': i+1, Pregunta: q}); });
     });
-    var resp = C.respuestas.filter(function(r){ return ids[r.proceso_id] && ((r.texto || '').trim() || r.sistemas.length); }).map(function(r){
+    var resp = C.respuestas.filter(function(r){ return ids[r.proceso_id] && ((r.texto || '').trim() || r.sistemas.length || resumenDatos(r)); }).map(function(r){
       var p = C.procesos.filter(function(x){ return x.id === r.proceso_id; })[0] || {};
       var en = IX.enc[r.encuestado_id] || {};
-      return {'Código': p.codigo, Proceso: nombreProc(p), Encuestado: en.nombre, 'Área de la persona': (en.gerencia || '') + ' · ' + (en.seccion || ''), Rol: en.rol, Pregunta: PREG[r.pregunta] || r.pregunta, Respuesta: r.texto,
+      return {'Código': p.codigo, Proceso: nombreProc(p), Encuestado: en.nombre, 'Área de la persona': (en.gerencia || '') + ' · ' + (en.seccion || ''), Rol: en.rol, Pregunta: nomPreg(r.pregunta), Respuesta: r.texto || resumenDatos(r),
         'Sistemas marcados': r.sistemas.join(', '), Checklist: resumenChecklist(r), Fecha: fecha(r.actualizado)};
     });
     var ptxt = {};

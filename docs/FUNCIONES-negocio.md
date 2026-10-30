@@ -32,7 +32,7 @@ Resultado final: un inventario de procesos validado, por gerencia, con su respon
 - **Entrada por el enlace de la sección.** Cada sección tiene un solo enlace. Quien lo abre se registra con su nombre y apellido y un PIN de 4 dígitos, o elige su nombre en la lista y escribe su PIN para retomar su avance. Tras 5 intentos fallidos el acceso queda bloqueado hasta que MBC lo desbloquee en la consola; si alguien olvida su PIN, MBC lo restablece. Ya no se entregan enlaces personales. Los enlaces personales enviados antes quedan sin efecto (migración 018); si hace falta cerrar sesiones más adelante, el botón «Cerrar sesiones activas» de Personas y enlaces lo hace por campaña. También existe un enlace abierto para quien no encuentra su sección.
 - **Perfiles Supervisor y Gerente en pausa.** Todo el seguimiento se hace desde la consola de administrador. Las pantallas para crear o cambiar esos perfiles están ocultas; quien ya tiene uno lo conserva.
 - **Respuesta por voz o por texto.** La persona graba su explicación en tramos de dos minutos o la escribe. El audio se transcribe y se descarta; solo queda el texto, que la persona puede revisar y corregir.
-- **Revisión automática del contenido.** Por cada uno de los tres bloques (el proceso, sistemas y terceros, datos personales y estándares), la IA marca qué puntos quedaron cubiertos y cuáles faltan.
+- **Revisión automática del contenido.** Por cada pregunta escrita (el proceso, sistemas y terceros, datos personales y estándares), la IA marca qué puntos quedaron cubiertos y cuáles faltan. La pregunta de información altamente confidencial se responde marcando Sí o No, diciendo cuál y dónde se almacena, o bien hablando o subiendo un archivo: en ese caso la IA propone las opciones y la persona las revisa y confirma antes de que se guarden. Su respuesta alimenta el análisis del proceso.
 - **Material de apoyo.** La persona puede subir una imagen, un PDF o un Word. La IA lee lo que dice explícitamente y lo usa como respaldo, sin guardar la imagen.
 - **Procesos propios.** La persona puede agregar un proceso que no aparecía en el inventario, o quitar uno que no le corresponde.
 - **Cierre.** Al terminar, la persona envía su respuesta.
@@ -130,7 +130,7 @@ Los pasos se confirman en orden. Un paso puede volver a abrirse si cambia algo q
 |---|---|
 | **Campaña** | Proyecto de relevamiento de un cliente. |
 | **Matriz** | Ficha de cada proceso con sus campos (objetivo, actividades, sistemas, controles, etc.). |
-| **Checklist** | Lista de puntos que cada proceso debe cubrir, agrupados en tres bloques. |
+| **Checklist** | Lista de puntos que cada proceso debe cubrir, agrupados en cuatro preguntas (tres escritas y una de opciones sobre información altamente confidencial). |
 | **Precarga** | Documentación existente que cubre puntos del checklist. |
 | **Dicho / Inferido / Vacío** | Origen de cada dato de la matriz: lo mencionó la persona, lo dedujo la IA o no hay información. |
 | **Validación** | Revisión final de MBC sobre un proceso. |
