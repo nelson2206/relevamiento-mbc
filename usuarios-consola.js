@@ -1,17 +1,10 @@
-/* Consola de MBC · usuarios: crear y editar a una persona con su perfil, descargar enlaces personales con la clave de los Supervisores y Gerentes,
- * y mostrar las claves que genera una carga por Excel.
- *   Responsable: llena sus procesos (enlace personal) · Supervisor: su sección, llega hasta el avance · Gerente: su gerencia, da la validación final.
+/* Consola de MBC · usuarios: crear y editar a una persona (nombre, sección y procesos) y mostrar las claves que genera una carga por Excel.
+ * Los perfiles Supervisor y Gerente están en pausa: no se ofrecen al crear o editar, y quien ya tiene uno lo conserva.
  * Se carga desde admin.html y recibe lo que necesita de la consola en UsuariosConsola.iniciar().
  */
 (function(){
   'use strict';
   var X = null;   // lo que entrega la consola (api, datos, diálogos, correo…)
-  var TEXTO_PERFIL = {
-    responsable: 'Responsable: llena la encuesta de sus procesos con su enlace personal.',
-    supervisor: 'Supervisor: entra al panel con su clave; ve y delega lo de su sección y llega hasta el avance. La validación final la da el Gerente.',
-    gerente: 'Gerente: entra al panel con su clave; ve y delega todo lo de su gerencia, lleva el flujo de 4 pasos y da la validación final.'
-  };
-
   function esc(s){ return X.esc(s); }
   function sin(s){ return X.sinTildes(String(s == null ? '' : s).trim().replace(/\s+/g, ' ')); }
   function plural(n, uno, varios){ return n + ' ' + (n === 1 ? uno : varios); }
@@ -52,24 +45,18 @@
           ' <span class="muted">' + (n ? plural(n, 'proceso', 'procesos') : 'sin procesos todavía') + '</span></label>';
       }).join('') + '</div></div>';
     }).join('');
-    X.abrirDlg(en ? 'Editar usuario' : 'Nuevo usuario', en ? en.nombre : 'Datos de la persona, su perfil y los procesos que recibe',
+    X.abrirDlg(en ? 'Editar usuario' : 'Nuevo usuario', en ? en.nombre : 'Datos de la persona y los procesos que recibe',
       '<div class="grid2"><div><label for="ucNom">Nombre completo</label><input type="text" id="ucNom" maxlength="150" value="' + esc(en ? en.nombre : '') + '"></div>' +
       '<div><label for="ucCor">Correo</label><input type="email" id="ucCor" maxlength="150" value="' + esc(en ? en.correo : '') + '"></div></div>' +
-      '<div class="grid2"><div><label for="ucRol">Cargo o rol (opcional)</label><input type="text" id="ucRol" maxlength="60" value="' + esc(en ? en.rol : '') + '"></div>' +
-      '<div><label for="ucPerfil">Perfil</label><select id="ucPerfil">' + [['responsable', 'Responsable'], ['supervisor', 'Supervisor'], ['gerente', 'Gerente']].map(function(o){
-        return '<option value="' + o[0] + '"' + (o[0] === perfil ? ' selected' : '') + '>' + o[1] + '</option>'; }).join('') + '</select></div></div>' +
-      '<p class="muted" id="ucTextoPerfil" style="margin:4px 0 0"></p>' +
+      '<div class="grid2"><div><label for="ucRol">Cargo o rol (opcional)</label><input type="text" id="ucRol" maxlength="60" value="' + esc(en ? en.rol : '') + '"></div></div>' +
       '<div class="grid2"><div><label for="ucGer">Gerencia principal</label><input type="text" id="ucGer" list="dlGer" maxlength="150" autocomplete="off" value="' + esc(en ? en.gerencia : '') + '"></div>' +
       '<div><label for="ucSec">Sección principal</label><input type="text" id="ucSec" list="dlSec" maxlength="150" autocomplete="off" value="' + esc(en ? en.seccion : '') + '"></div></div>' +
-      '<p class="muted" style="margin:2px 0 0">Un Supervisor o Gerente se puede crear aunque su sección o gerencia todavía no tenga procesos: si no existe, se agrega al esqueleto.</p>' +
       '<h4 style="font-size:13px;margin:14px 0 4px">Secciones: recibe todos sus procesos a la vez' + (en ? ' <span class="muted" style="font-weight:500">(se suman a lo que ya tiene: ' + plural(Object.keys(asign).length, 'proceso asignado', 'procesos asignados') + ')</span>' : '') + '</h4>' +
       '<label style="display:flex;gap:8px;align-items:center;font-weight:500"><input type="checkbox" id="ucPrincipal" style="width:auto"' + (en ? '' : ' checked') + '> Asignarle todos los procesos de su sección principal</label>' +
       '<div id="ucArbol" style="max-height:26vh;overflow:auto;border:1px solid var(--line);border-radius:10px;padding:4px 10px;margin-top:6px">' + (arbolHtml || '<p class="muted">Todavía no hay gerencias ni secciones en la campaña.</p>') + '</div>' +
       '<label for="ucBusP" style="margin-top:10px">Procesos específicos (opcional)</label><input type="search" id="ucBusP" placeholder="Busca un proceso por nombre o código…" autocomplete="off"><div id="ucResP"></div><div id="ucChips" class="row" style="margin-top:6px"></div>' +
       '<div class="row" style="margin-top:14px"><button type="button" class="btn" id="ucOk">' + (en ? 'Guardar cambios' : 'Crear usuario') + '</button><span class="muted" id="ucMsg" role="status"></span></div>');
     var $ = function(s){ return document.querySelector(s); }, procs = C.procesos;
-    var textoPerfil = function(){ $('#ucTextoPerfil').textContent = TEXTO_PERFIL[$('#ucPerfil').value] + ($('#ucPerfil').value !== 'responsable' ? ' Al guardar se muestra su clave una sola vez.' : ''); };
-    textoPerfil(); $('#ucPerfil').addEventListener('change', textoPerfil);
     var chips = function(){
       $('#ucChips').innerHTML = Object.keys(selP).map(function(pid){
         var p = procs.filter(function(q){ return q.id === pid; })[0];
@@ -90,7 +77,7 @@
       var b = this, ger = $('#ucGer').value.trim(), sec = $('#ucSec').value.trim();
       var secciones = Array.prototype.map.call(document.querySelectorAll('#ucArbol input:checked'), function(i){ return {g: i.dataset.g, s: i.dataset.s}; });
       if ($('#ucPrincipal').checked && ger && sec) secciones.push({g: ger, s: sec});
-      var cuerpo = {campana_id: C.campana.id, nombre: $('#ucNom').value, correo: $('#ucCor').value, rol: $('#ucRol').value, perfil: $('#ucPerfil').value, gerencia: ger, seccion: sec, secciones: secciones, procesos: Object.keys(selP)};
+      var cuerpo = {campana_id: C.campana.id, nombre: $('#ucNom').value, correo: $('#ucCor').value, rol: $('#ucRol').value, perfil: perfil, gerencia: ger, seccion: sec, secciones: secciones, procesos: Object.keys(selP)};
       if (en) cuerpo.id = en.id;
       b.disabled = true; $('#ucMsg').textContent = 'Guardando…';
       X.api('/a/usuario', cuerpo).then(function(j){
@@ -103,35 +90,6 @@
         });
       }).catch(function(err){ b.disabled = false; $('#ucMsg').textContent = err.message; });
     });
-  }
-
-  // ---------------------------------------------------------------- descarga de enlaces personales
-  // Para Supervisor y Gerente se incluye la dirección del panel y su clave. Como la clave no se puede leer (solo se guarda su huella), al descargar
-  // se genera una nueva y la anterior deja de servir: por eso se pide confirmación antes.
-  function descargarEnlaces(boton){
-    var C = X.datos(), conCuenta = C.encuestados.filter(function(e){ return e.perfil === 'supervisor' || e.perfil === 'gerente'; });
-    var armar = function(claves){
-      var porId = {}; (claves || []).forEach(function(c){ porId[c.encuestado_id] = c.clave; });
-      var panel = X.enlaceCliente();
-      var filas = C.encuestados.map(function(en){
-        var esCuenta = en.perfil === 'supervisor' || en.perfil === 'gerente';
-        return {Nombre: en.nombre, Correo: en.correo, Gerencia: en.gerencia, 'Sección': en.seccion, Rol: en.rol, Perfil: en.perfil === 'gerente' ? 'Gerente' : en.perfil === 'supervisor' ? 'Supervisor' : 'Responsable',
-          Origen: en.origen === 'abierto' ? 'Enlace abierto' : 'Carga', 'Enlace de la encuesta': X.enlace(en), 'Enlace del panel': esCuenta ? panel : '', 'Clave personal': esCuenta ? (porId[en.id] || '(no incluida: genera una nueva en la consola)') : ''};
-      });
-      var ws = XLSX.utils.json_to_sheet(filas);
-      ws['!cols'] = [{wch:28},{wch:30},{wch:18},{wch:22},{wch:14},{wch:12},{wch:14},{wch:80},{wch:60},{wch:26}];
-      var wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, 'Enlaces');
-      XLSX.writeFile(wb, 'Enlaces encuesta - ' + C.campana.nombre + '.xlsx');
-    };
-    if (!conCuenta.length) return armar([]);
-    var activo = !!C.campana.cliente_activo && !!C.campana.codigo_cliente;
-    var texto = 'Hay ' + plural(conCuenta.length, 'Supervisor o Gerente', 'Supervisores y Gerentes') + ' en la lista. Sus claves no se pueden leer después de entregadas, así que para incluirlas se generará una clave NUEVA para cada uno y la anterior dejará de servir.' +
-      (activo ? '' : '\n\nOjo: el acceso del cliente de la campaña está apagado; esas claves no entran hasta que lo actives en «Carga y configuración».') +
-      '\n\nAceptar: incluir las claves nuevas.\nCancelar: descargar sin claves (las claves actuales no cambian).';
-    if (!window.confirm(texto)) return armar([]);
-    boton.disabled = true;
-    X.api('/a/personas/claves', {campana_id: C.campana.id, encuestado_ids: conCuenta.map(function(e){ return e.id; })}).then(function(j){ armar(j.claves); })
-      .catch(function(err){ window.alert(err.message); }).then(function(){ boton.disabled = false; });
   }
 
   // ---------------------------------------------------------------- claves que devuelve una carga por Excel
@@ -153,5 +111,5 @@
     document.getElementById('clCerrar').onclick = function(){ document.getElementById('dlg').close(); };
   }
 
-  window.UsuariosConsola = {iniciar: iniciar, abrir: abrir, descargarEnlaces: descargarEnlaces, mostrarClaves: mostrarClaves};
+  window.UsuariosConsola = {iniciar: iniciar, abrir: abrir, mostrarClaves: mostrarClaves};
 })();

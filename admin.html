@@ -142,6 +142,21 @@
   .campo .v{white-space:pre-wrap}
   .campo .ev{color:var(--muted);font-size:12.5px;margin-top:3px}
   .resp{background:var(--panel);border-radius:10px;padding:10px 12px;margin:6px 0;white-space:pre-wrap;font-size:13.5px}
+  /* Las tres preguntas de la encuesta se distinguen por número y color en toda la ficha del proceso: 1 azul oscuro, 2 azul, 3 verde. */
+  .bq-1{--bq:var(--navy); --bq-bg:var(--panel); --bq-t:#fff}
+  .bq-2{--bq:var(--inf); --bq-bg:var(--inf-bg); --bq-t:var(--card)}
+  .bq-3{--bq:var(--ok); --bq-bg:var(--ok-bg); --bq-t:var(--card)}
+  .bq{margin:22px 0 6px;border:1px solid var(--line);border-left:7px solid var(--bq);border-radius:10px;overflow:hidden}
+  .bq-h{display:flex;align-items:center;gap:10px;padding:9px 12px;background:var(--bq-bg);font-family:Montserrat,sans-serif;font-weight:700;font-size:13.5px;color:var(--heading)}
+  .bq-n{flex:none;width:26px;height:26px;border-radius:50%;background:var(--bq);color:var(--bq-t);display:grid;place-content:center;font-size:13px}
+  .bq-c{padding:0 12px 8px}
+  .bq-tag{display:inline-block;margin-left:6px;padding:0 7px;border-radius:6px;background:var(--bq);color:var(--bq-t);font-family:Montserrat,sans-serif;font-size:11px;font-weight:700;line-height:18px;vertical-align:middle}
+  .bq-leyenda{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:8px 0;font-size:12.5px;color:var(--muted)}
+  .bq-c .campo:last-child{border-bottom:0}
+  .resp.bq-resp{border-left:7px solid var(--bq);border-radius:0 10px 10px 0;margin-top:12px}
+  .resp.bq-resp b{display:inline-flex;align-items:center;gap:7px;color:var(--heading)}
+  .bq-fila th{background:var(--bq-bg);border-left:7px solid var(--bq);text-align:left;color:var(--heading);font-size:12.5px}
+  .bq-fila .bq-n{width:22px;height:22px;font-size:12px;margin-right:6px;display:inline-grid;vertical-align:middle}
   .resp b{font-family:Montserrat,sans-serif;font-size:12px;color:var(--heading)}
   dialog{border:none;border-radius:16px;padding:0;max-width:980px;width:calc(100% - 24px);background:var(--card);color:var(--ink)}
   dialog::backdrop{background:rgba(0,20,50,.55)}
@@ -274,6 +289,9 @@
   .ayuda:hover,.ayuda:focus-visible{border-color:var(--navy);color:var(--navy)}
   @media (max-width:600px){ .ayuda:hover::after,.ayuda:focus::after{position:fixed;left:16px;right:16px;width:auto;top:auto;margin-top:8px} }
   .ayuda:hover::after,.ayuda:focus::after{content:attr(data-tip);position:absolute;z-index:40;left:0;top:calc(100% + 6px);width:min(360px,78vw);background:var(--navy);color:#fff;border-radius:8px;padding:9px 11px;font:400 12.5px/1.4 "Trebuchet MS","Segoe UI",sans-serif;text-align:left;white-space:normal;box-shadow:0 6px 18px rgba(0,0,0,.28)}
+  .sec-nav{display:flex;gap:18px;margin:0 0 14px;font-size:14px}
+  .sec-nav a{font-weight:700}
+  .sec-t{font-size:17px;margin:4px 0 10px}
 </style>
 <script>
 // Migración a https://relevamiento.mbc-latam.com (2026-10-23): quien entra por la dirección antigua pasa a la nueva, con su mismo enlace.
@@ -332,6 +350,7 @@
         <button class="tab" role="tab" data-tab="barrido" aria-selected="false">Plan de barrido</button>
         <button class="tab" role="tab" data-tab="encuestados" aria-selected="false">Personas y enlaces</button>
         <button class="tab" role="tab" data-tab="entrevistas" aria-selected="false">Entrevistas</button>
+        <button class="tab" role="tab" data-tab="documentos" aria-selected="false">Documentos</button>
         <button class="tab" role="tab" data-tab="carga" aria-selected="false">Carga y configuración</button>
       </div>
 
@@ -373,6 +392,7 @@
       <div id="tBarrido" class="hidden"></div>
       <div id="tEntrevistas" class="hidden"></div>
       <div id="tEncuestados" class="hidden"></div>
+      <div id="tDocumentos" class="hidden"></div>
 
       <div id="tCarga" class="hidden">
         <div class="grid2">
@@ -409,6 +429,19 @@
             <p class="muted">Los Supervisores los crea y administra la administradora del cliente desde su panel. Aquí ves quiénes son, qué alcance tienen y todo lo que delegaron.</p>
             <div class="row"><button class="btn btn-ghost btn-xs" id="btnTraza">Ver supervisores y trazabilidad</button><span class="muted" id="msgTraza" role="status"></span></div>
             <div id="cnTraza"></div>
+            <h3 style="font-size:14px;margin-top:22px">Historial de cambios de la matriz</h3>
+            <p class="muted">Cada cambio a un campo de la matriz, venga de la IA, de un documento, de la encuesta o de esta consola: quién lo hizo, cuándo, el valor anterior y el nuevo. Una validación aparece como «Validó» sin cambio de valor.</p>
+            <div class="row">
+              <div><label for="hiOrigen">Origen</label><select id="hiOrigen"><option value="">Todos</option><option value="ia">IA</option><option value="documento">Documento</option><option value="precarga">Precarga del equipo</option><option value="encuesta">Encuesta</option><option value="consola">Consola</option><option value="importacion">Importación</option></select></div>
+              <div><label for="hiActor">Quién</label><input type="search" id="hiActor" placeholder="Nombre"></div>
+              <div><label for="hiCampo">Campo</label><input type="search" id="hiCampo" placeholder="p. ej. objetivo"></div>
+              <div><label for="hiDesde">Desde</label><input type="date" id="hiDesde"></div>
+              <div><label for="hiHasta">Hasta</label><input type="date" id="hiHasta"></div>
+              <button class="btn btn-ghost btn-xs" id="btnHistorial" style="align-self:end">Ver historial</button>
+              <button class="btn btn-ghost btn-xs hidden" id="btnHistorialXls" style="align-self:end">Exportar a Excel</button>
+              <span class="muted" id="msgHistorial" role="status"></span>
+            </div>
+            <div id="cnHistorial"></div>
             <h3 style="font-size:14px;margin-top:22px">Texto de invitación</h3>
             <p class="muted">Es el texto que se copia en «Invitar» y en el acta de cada gerencia. Marcas que se reemplazan: <code>{cliente}</code>, <code>{gerencia}</code>, <code>{seccion}</code>, <code>{area}</code> (la sección o, si no hay, la gerencia), <code>{enlace}</code>, <code>{apertura}</code> y <code>{plazo}</code>.</p>
             <textarea id="inInvitacion" rows="12" aria-label="Texto de invitación de la campaña" style="min-height:200px"></textarea>
@@ -458,6 +491,7 @@
 <script src="flujo-gerente.js"></script>
 <script src="flujo-admin.js"></script>
 <script src="usuarios-consola.js"></script>
+<script src="documentos-consola.js"></script>
 <script>
 'use strict';
 (function(){
@@ -659,12 +693,19 @@
   // Usuarios (usuarios-consola.js): crear y editar personas con su perfil, descargar enlaces con claves y mostrar las claves de una carga.
   function iniciarUsuarios(){
     if (!window.UsuariosConsola) return;
-    window.UsuariosConsola.iniciar({api: api, datos: function(){ return C; }, esc: esc, sinTildes: sinTildes, abrirDlg: abrirDlgCl, enlaceCliente: function(){ return enlaceCliente(); }, enlace: enlace,
+    window.UsuariosConsola.iniciar({api: api, datos: function(){ return C; }, esc: esc, sinTildes: sinTildes, abrirDlg: abrirDlgCl, enlaceCliente: function(){ return enlaceCliente(); },
       recargar: function(){ return abrir(C.campana.id); }, accesoPerfil: function(en, j){ dialogoAccesoPerfil(en, j); },
       aviso: function(t){ var m = $('#selMsg'); if (m) m.textContent = t; }});
   }
+  // Documentos (documentos-consola.js): carga masiva, bandeja y clasificación con IA.
+  function iniciarDocumentos(){
+    if (!window.DocumentosConsola) return;
+    window.DocumentosConsola.iniciar({api: api, datos: function(){ return C; }, esc: esc, fecha: fecha, base: function(){ return API; }, codigo: function(){ return CODIGO; },
+      recargarCampana: function(){ return abrir(C.campana.id); }, abrirProceso: function(pid){ detalle(pid); }});
+  }
   function cargarFlujoAdmin(){
     iniciarUsuarios();
+    iniciarDocumentos();
     if (!window.FlujoAdmin) return;
     window.FlujoAdmin.iniciar({api: api, esc: esc, fecha: fecha, campanaId: function(){ return C.campana.id; }, alCambiar: repintarFlujoAdmin});
     window.FlujoAdmin.cargar(C.campana.id).then(repintarFlujoAdmin);
@@ -714,6 +755,8 @@
     });
     C.estructurado.forEach(function(x){ IX.est[x.proceso_id] = x; });
     (C.precarga || []).forEach(function(x){ (IX.pre[x.proceso_id] = IX.pre[x.proceso_id] || {})[x.punto] = x; });
+    IX.bor = {};   // borradores de precarga que salieron de un documento al confirmar su proceso (aún no llegan a la encuesta)
+    (C.precarga_borrador || []).forEach(function(x){ (IX.bor[x.proceso_id] = IX.bor[x.proceso_id] || []).push(x); });
   }
 
   function respuestasDe(pid){ var m = IX.resp[pid] || {}, out = []; Object.keys(m).forEach(function(k){ out = out.concat(m[k]); }); return out; }
@@ -802,10 +845,11 @@
   document.querySelector('.tabs').addEventListener('click', function(e){
     var t = e.target.closest('.tab'); if (!t) return;
     Array.prototype.forEach.call(document.querySelectorAll('.tab'), function(x){ x.setAttribute('aria-selected', x === t ? 'true' : 'false'); });
-    [['mapa','#tMapa'], ['matriz','#tMatriz'], ['barrido','#tBarrido'], ['entrevistas','#tEntrevistas'], ['encuestados','#tEncuestados'], ['carga','#tCarga']].forEach(function(k){
+    [['mapa','#tMapa'], ['matriz','#tMatriz'], ['barrido','#tBarrido'], ['entrevistas','#tEntrevistas'], ['encuestados','#tEncuestados'], ['documentos','#tDocumentos'], ['carga','#tCarga']].forEach(function(k){
       $(k[1]).classList.toggle('hidden', t.dataset.tab !== k[0]);
     });
     if (t.dataset.tab === 'entrevistas') pintarEntrevistas();
+    if (t.dataset.tab === 'documentos' && window.DocumentosConsola) window.DocumentosConsola.pintar($('#tDocumentos'));
     ajustarAncho();
   });
 
@@ -1167,7 +1211,7 @@
     if (p.creado_por === e.id) return true;
     var propia = C.asignaciones.filter(function(a){ return a.encuestado_id === e.id && a.proceso_id === p.id; })[0];
     if (propia) return propia.origen !== 'excluido';
-    return p.fuente !== 'nuevo' && igualArea(e.gerencia, g) && igualArea(e.seccion, sc);
+    return igualArea(e.gerencia, g) && igualArea(e.seccion, sc);
   }
   function impactoPersonas(ps, g, sc){
     var dejan = {}, veran = {}, conResp = {};
@@ -2049,6 +2093,7 @@
     if (f.length) h += '<p class="msg warn" style="margin:8px 0">Faltan datos obligatorios: ' + esc(f.map(function(x){ return x[1]; }).join(', ')) + '.</p>';
     if (Object.keys(sug).length) h += '<div class="row" style="margin:8px 0"><button class="btn btn-ghost btn-xs" type="button" id="mUsarIA">Completar los campos vacíos con la IA</button>' +
       '<span class="muted">Las sugerencias aparecen bajo cada campo; revísalas antes de guardar.</span></div>';
+    h += leyendaPreguntas();
     GRUPOS.forEach(function(g){
       var campos = MATRIZ.filter(function(c){ return c[2] === g[0] && !ES_APROB_COL[c[0]]; });
       h += '<details class="mgrupo"' + (g[0] !== 'id' ? ' open' : '') + '><summary>' + esc(g[1]) + '</summary><div class="mgrid">';
@@ -2063,7 +2108,7 @@
         } else {
           campo = '<input type="text" id="' + id + '" data-k="' + k + '" value="' + esc(v) + '">';
         }
-        h += '<div class="mcampo' + (LARGOS[k] ? ' ancho' : '') + '"><label for="' + id + '">' + esc(c[3]) + etiquetaOblig(k) + marcaIA(ia[k]) + '</label>' + campo +
+        h += '<div class="mcampo' + (LARGOS[k] ? ' ancho' : '') + '"><label for="' + id + '">' + esc(c[3]) + etiquetaOblig(k) + etiquetaPregunta(k) + marcaIA(ia[k]) + '</label>' + campo +
           (s && s.valor && s.valor !== v ? '<div class="sug"><span class="chip ' + (s.estado === 'dicho' ? 'c-ok' : 'c-inf') + '">IA · ' + esc(s.estado) + '</span> ' + esc(s.valor) +
             ' <button type="button" class="btn-link" data-usar="' + k + '">Usar</button></div>' : '') + '</div>';
       });
@@ -2131,22 +2176,69 @@
   // El equipo sube documentos del proceso; la IA extrae solo lo que dicen de forma explícita y se revisa antes de guardar.
   // La persona ve el punto como «Completado por Administrador / IA», pero nunca este texto.
   var MIME_PRE = {jpg:'image/jpeg', jpeg:'image/jpeg', png:'image/png', pdf:'application/pdf', docx:'application/vnd.openxmlformats-officedocument.wordprocessingml.document'};
+  // Pregunta 1, 2 o 3 de la encuesta (bloques b1, b2, b3); las del formato anterior (q1…q6) no tienen número.
+  function numBloque(id){ var i = (C.bloques || []).map(function(b){ return b.id; }).indexOf(id); return i >= 0 && i < 3 ? i + 1 : 0; }
+  function marcaBloque(n){ return '<span class="bq-n" aria-hidden="true">' + n + '</span>'; }
+  function bloqueHtml(b, cuerpo){
+    var n = numBloque(b.id);
+    return '<section class="bq bq-' + n + '" aria-label="Pregunta ' + n + ': ' + esc(b.t) + '"><div class="bq-h">' + marcaBloque(n) + '<span>Pregunta ' + n + ' · ' + esc(b.t) + '</span></div><div class="bq-c">' + cuerpo + '</div></section>';
+  }
+  // Campo de la matriz → pregunta de la encuesta que lo alimenta (por el mapa punto → campo del servidor).
+  function preguntaDeCampo(k){
+    var r = 0;
+    (C.bloques || []).forEach(function(b){ b.puntos.forEach(function(pt){ if ((C.punto_campo || {})[pt[0]] === k) r = numBloque(b.id); }); });
+    return r;
+  }
+  function etiquetaPregunta(k){
+    var n = preguntaDeCampo(k); if (!n) return '';
+    var b = (C.bloques || [])[n - 1];
+    return '<span class="bq-tag bq-' + n + '" title="Se llena con la pregunta ' + n + ' de la encuesta: ' + esc(b ? b.t : '') + '">P' + n + '</span>';
+  }
+  function leyendaPreguntas(){
+    if (!(C.bloques || []).length) return '';
+    return '<div class="bq-leyenda"><span>Pregunta de la encuesta que llena cada campo:</span>' + (C.bloques || []).slice(0, 3).map(function(b, i){
+      return '<span class="bq-' + (i + 1) + '"><span class="bq-tag" style="margin:0">P' + (i + 1) + '</span> ' + esc(b.t) + '</span>'; }).join('') + '</div>';
+  }
   function seccionPrecarga(p){
-    var pre = IX.pre[p.id] || {}, n = Object.keys(pre).length;
-    var h = '<details id="dPre" style="margin:14px 0"' + (n ? ' open' : '') + '><summary style="cursor:pointer;font-weight:700;font-size:14px">Precarga desde documentos con IA <span class="muted" style="font-weight:600">· ' + n + ' de ' + totalPuntos() + ' puntos cubiertos</span></summary>' +
+    var pre = IX.pre[p.id] || {}, n = Object.keys(pre).length, bor = IX.bor[p.id] || [];
+    var h = '<details id="dPre" style="margin:14px 0"' + (n || bor.length ? ' open' : '') + '><summary style="cursor:pointer;font-weight:700;font-size:14px">Precarga desde documentos con IA <span class="muted" style="font-weight:600">· ' + n + ' de ' + totalPuntos() + ' puntos cubiertos' + (bor.length ? ' · <b>' + bor.length + ' borradores por revisar</b>' : '') + '</span></summary>' + borradoresHtml(p, bor) +
       '<p class="muted">Sube documentos de este proceso (JPG, PNG, PDF o Word .docx; hasta 10 MB, imágenes hasta 6 MB). La IA solo completa lo que el documento dice de forma explícita y deja vacío lo demás. Revisa, corrige y guarda: ' +
-      'la persona verá esos puntos como «Completado por Administrador / IA», pero no verá este texto, y podrá complementarlos cuando responda.</p>' +
+      'lo que guardes pasa a la matriz como descripción del punto (si nadie la escribió antes): la persona la verá como resumen de solo lectura, con su origen, para confirmar que sigue vigente.</p>' +
       '<div class="row"><input type="file" id="preArch" multiple accept=".jpg,.jpeg,.png,.pdf,.docx,image/jpeg,image/png,application/pdf" style="width:auto" aria-label="Documentos del proceso">' +
       '<button class="btn btn-xs" id="preExtraer">Extraer con IA</button><span class="muted" id="preMsg" aria-live="polite"></span></div>';
     (C.bloques || []).forEach(function(b){
-      h += '<h4 style="font-size:13px;margin:14px 0 4px">' + esc(b.t) + '</h4>';
+      var cuerpo = '';
       b.puntos.forEach(function(pt){
         var x = pre[pt[0]];
-        h += '<div class="campo"><div class="k">' + esc(pt[1]) + '</div><div><textarea data-pre="' + esc(pt[0]) + '" rows="2" style="width:100%;min-height:46px" aria-label="Lo que dicen los documentos sobre: ' + esc(pt[1]) + '">' + esc(x ? x.texto : '') + '</textarea>' +
-          '<div class="ev" id="preev-' + esc(pt[0]) + '">' + (x && x.archivos && x.archivos.length ? esc('De: ' + x.archivos.join(', ')) : '') + '</div></div></div>';
+        cuerpo += '<div class="campo"><div class="k">' + esc(pt[1]) + '</div><div><textarea data-pre="' + esc(pt[0]) + '" rows="2" style="width:100%;min-height:46px" aria-label="Lo que dicen los documentos sobre: ' + esc(pt[1]) + '">' + esc(x ? x.texto : '') + '</textarea>' +
+          '<div class="ev" id="preev-' + esc(pt[0]) + '">' + (x && x.archivos && x.archivos.length ? esc('De: ' + x.archivos.join(', ')) : '') + '</div>' + vigenteMatriz(p, pt[0], x) + '</div></div>';
       });
+      h += bloqueHtml(b, cuerpo);
     });
     return h + '<div class="row" style="margin-top:10px"><button class="btn" id="preGuardar">Guardar precarga</button><span class="muted">Un punto sin texto queda sin precarga.</span></div></details>';
+  }
+  // Lo que la encuesta muestra hoy en ese punto (la matriz es la única fuente). Si difiere de la precarga, se avisa por qué.
+  function vigenteMatriz(p, punto, x){
+    var campo = (C.punto_campo || {})[punto]; if (!campo) return '';
+    var v = String((p.matriz || {})[campo] || '').trim(); if (!v) return '';
+    var igual = x && x.texto && x.texto.trim() === v;
+    return '<div class="ev">' + (igual ? 'En la matriz: igual a la precarga.' : 'En la matriz hoy (es lo que ve la persona): «' + esc(v.length > 220 ? v.slice(0, 220) + '…' : v) + '»' +
+      (x && x.texto ? '. La precarga no la reemplazó porque ya la escribió una persona o la fila está validada.' : '')) + '</div>';
+  }
+  // Borradores extraídos de un documento al confirmar su proceso: el administrador los revisa (puede corregir el texto) antes de que lleguen a la matriz.
+  function borradoresHtml(p, bor){
+    if (!bor.length) return '';
+    var etiqueta = {}; (C.bloques || []).forEach(function(b){ b.puntos.forEach(function(pt){ etiqueta[pt[0]] = pt[1]; }); });
+    return '<div class="card" style="margin:10px 0;border-left:4px solid var(--accent)"><b>Borradores por revisar (' + bor.length + ')</b>' +
+      '<p class="muted" style="margin:4px 0 8px">La IA los extrajo de los documentos de este proceso. Hasta que los apruebes no llegan a la matriz ni a la encuesta. Puedes corregir el texto antes de aprobar.</p>' +
+      bor.map(function(b){
+        return '<div class="campo" data-borrador="' + esc(b.id) + '"><div class="k">' + esc(etiqueta[b.punto] || b.punto) + '</div><div>' +
+          '<textarea data-bor-texto="' + esc(b.id) + '" rows="2" style="width:100%;min-height:46px" aria-label="Borrador: ' + esc(etiqueta[b.punto] || b.punto) + '">' + esc(b.texto) + '</textarea>' +
+          '<div class="ev">De: ' + esc(b.documento) + ' · «' + esc(b.cita) + '»</div>' +
+          '<div class="row" style="margin-top:4px"><button class="btn btn-xs" data-bor-acc="aprobar" data-bor="' + esc(b.id) + '">Aprobar</button>' +
+          '<button class="btn btn-ghost btn-xs" data-bor-acc="descartar" data-bor="' + esc(b.id) + '">Descartar</button></div></div></div>';
+      }).join('') +
+      '<div class="row" style="margin-top:8px"><button class="btn" data-bor-acc="aprobar-todos">Aprobar todos</button><button class="btn btn-ghost" data-bor-acc="descartar-todos">Descartar todos</button><span class="muted" id="borMsg" aria-live="polite"></span></div></div>';
   }
   function activarPrecarga(p){
     var det = $('#dPre'); if (!det) return;
@@ -2197,11 +2289,27 @@
           (res.sinDatos.length ? 'Sin datos: ' + res.sinDatos.join(', ') + '. ' : '') + (res.errores.length ? 'No se pudo leer: ' + res.errores.join(' · ') : ''));
       });
     });
+    det.addEventListener('click', function(ev){
+      var b = ev.target.closest('[data-bor-acc]'); if (!b) return;
+      var acc = b.dataset.borAcc, todos = acc.indexOf('-todos') > 0, ids = todos ? (IX.bor[p.id] || []).map(function(x){ return x.id; }) : [b.dataset.bor];
+      var accion = acc.indexOf('aprobar') === 0 ? 'aprobar' : 'descartar', m = $('#borMsg') || $('#preMsg');
+      var decisiones = ids.map(function(id){
+        var t = det.querySelector('[data-bor-texto="' + id + '"]'), o = (IX.bor[p.id] || []).filter(function(x){ return x.id === id; })[0];
+        var d = {id: id, accion: accion}; if (accion === 'aprobar' && t && o && t.value !== o.texto) d.texto = t.value; return d;
+      });
+      Array.prototype.forEach.call(det.querySelectorAll('[data-bor-acc]'), function(x){ x.disabled = true; });
+      m.textContent = 'Guardando…';
+      api('/a/precarga/borrador', {proceso_id: p.id, decisiones: decisiones}).then(function(j){
+        var aviso = j.bloqueados && j.bloqueados.length ? ' ' + j.bloqueados.length + ' no llegaron a la matriz porque ya los escribió una persona o la fila está validada.' : '';
+        return abrir(C.campana.id).then(function(){ detalle(p.id); var n = $('#preMsg'); if (n) n.textContent = (accion === 'aprobar' ? 'Aprobado: ' + j.escritos.length + ' en la matriz.' : 'Descartado.') + aviso; });
+      }).catch(function(err){ Array.prototype.forEach.call(det.querySelectorAll('[data-bor-acc]'), function(x){ x.disabled = false; }); m.textContent = err.message; });
+    });
     $('#preGuardar').addEventListener('click', function(){
       var puntos = Array.prototype.map.call(det.querySelectorAll('[data-pre]'), function(t){ return {punto: t.dataset.pre, texto: t.value, archivos: arch[t.dataset.pre] || []}; });
       bloquear(true); msg('Guardando…');
       api('/a/precarga', {proceso_id: p.id, puntos: puntos}).then(function(j){
-        return abrir(C.campana.id).then(function(){ detalle(p.id); $('#preMsg').textContent = 'Guardado: ' + j.precarga.length + ' puntos cubiertos. La persona los verá como «Completado por Administrador / IA».'; });
+        return abrir(C.campana.id).then(function(){ detalle(p.id); $('#preMsg').textContent = 'Guardado: ' + j.precarga.length + ' puntos cubiertos; ' + (j.escritos || []).length + ' llegaron a la matriz.' +
+          ((j.bloqueados || []).length ? ' ' + j.bloqueados.length + ' no la reemplazaron porque ya los escribió una persona o la fila está validada (mira «En la matriz hoy» bajo cada punto).' : ''); });
       }).catch(function(err){ bloquear(false); msg(err.message); });
     });
   }
@@ -2214,6 +2322,7 @@
     $('#dlgT').textContent = (p.codigo ? p.codigo + ' · ' : '') + nombreProc(p);
     $('#dlgS').textContent = [p.gerencia, p.seccion, p.macroproceso, p.proceso !== nombreProc(p) ? p.proceso : ''].filter(Boolean).join(' › ') + ' · ' + (FUENTE_TXT[p.fuente] || p.fuente);
     var h = '<div class="row" style="margin-bottom:12px"><span class="chip ' + {respondido:'c-ok', en_curso:'c-inf', sin_cobertura:'c-mut', no_vigente:'c-mut'}[cb.estado] + '">' + ESTADO_TXT[cb.estado] + '</span>' +
+      (pendienteIA(pid) ? '<span class="chip c-warn" title="La descripción que ven las personas en la encuesta todavía no incluye las respuestas más recientes">Respuestas nuevas sin estructurar</span>' : '') +
       '<button class="btn btn-xs" id="dEstr"' + (rs.length ? '' : ' disabled title="Todavía nadie respondió"') + '>' + (e ? 'Regenerar con IA' : 'Estructurar con IA') + '</button>' +
       '<button class="btn btn-ghost btn-xs" id="dEditar">Editar</button>' +
       '<button class="btn btn-ghost btn-xs" id="dExportar" title="Descarga un Excel con la matriz, el análisis, las respuestas y la precarga de este proceso">Exportar proceso (Excel)</button>' +
@@ -2268,7 +2377,10 @@
     if (Object.keys(cubrio).length){
       var cb2 = cobertura(pid);
       h += '<h3 style="font-size:14px;margin-top:18px">Quién cubrió cada punto del checklist' + (cb2.combinada ? ' <span class="chip c-ok">cobertura combinada: entre varias personas completan el proceso</span>' : '') + '</h3><div class="tblwrap"><table><thead><tr><th scope="col">Punto</th><th scope="col">Cubierto por</th></tr></thead><tbody>';
-      (C.bloques || []).forEach(function(b){ b.puntos.forEach(function(pt){
+      (C.bloques || []).forEach(function(b){
+        var nb = numBloque(b.id);
+        if (nb) h += '<tr class="bq-fila bq-' + nb + '"><th colspan="2" scope="colgroup">' + marcaBloque(nb) + 'Pregunta ' + nb + ' · ' + esc(b.t) + '</th></tr>';
+        b.puntos.forEach(function(pt){
         h += '<tr><td>' + esc(pt[1]) + '</td><td>' + (cubrio[pt[0]] ? esc(cubrio[pt[0]].join(', ')) : '<span class="muted">—</span>') + '</td></tr>';
       }); });
       h += '</tbody></table></div>';
@@ -2287,7 +2399,8 @@
         h += '<div style="margin-top:10px"><b>' + esc(en.nombre) + '</b> <span class="muted">' + esc([en.rol, en.gerencia + ' · ' + en.seccion].filter(Boolean).join(' · ')) + '</span> ' + '<button class="btn-link" data-borrar-resp="' + esc(eid) + '">Borrar sus respuestas</button>' + '</div>';
         contaron[eid].slice().sort(function(a,b){ return a.pregunta.localeCompare(b.pregunta); }).forEach(function(r){
           var ckr = resumenChecklist(r);
-          h += '<div class="resp"><b>' + esc(PREG[r.pregunta] || r.pregunta) + '</b> <span class="muted">' + esc(fecha(r.actualizado)) + '</span>\n' + (esc(r.texto) || '<span class="muted">(sin texto)</span>') + (r.sistemas.length ? '\nSistemas marcados: ' + esc(r.sistemas.join(', ')) : '') +
+          var nb = numBloque(r.pregunta);
+          h += '<div class="resp' + (nb ? ' bq-resp bq-' + nb : '') + '"><b>' + (nb ? marcaBloque(nb) + 'Pregunta ' + nb + ' · ' : '') + esc(PREG[r.pregunta] || r.pregunta) + '</b> <span class="muted">' + esc(fecha(r.actualizado)) + '</span>\n' + (esc(r.texto) || '<span class="muted">(sin texto)</span>') + (r.sistemas.length ? '\nSistemas marcados: ' + esc(r.sistemas.join(', ')) : '') +
             (ckr ? '\n<span class="muted">' + esc(ckr) + '</span>' : '') + '</div>';
         });
       });
@@ -2530,7 +2643,7 @@
 
     $('#bToggle').addEventListener('click', function(){ cambiarEnlace({abierta: !activo}); });
     if ($('#bRenovar')) $('#bRenovar').addEventListener('click', function(){
-      if (confirm('Se generará un enlace nuevo y el actual dejará de funcionar. Quienes ya se registraron siguen entrando con su enlace personal. ¿Continuar?')) cambiarEnlace({regenerar: true});
+      if (confirm('Se generará un enlace nuevo y el actual dejará de funcionar. Quienes ya se registraron entran con su nombre y su PIN en el enlace nuevo de su sección. ¿Continuar?')) cambiarEnlace({regenerar: true});
     });
     $('#bDominioG').addEventListener('click', function(){ cambiarEnlace({dominio: $('#bDominio').value}); });
     var timer = null;
@@ -2826,7 +2939,6 @@
   });
 
   // ------------------------------------------------------------ personas y enlaces
-  function enlace(en){ return URL_ENCUESTA + '?k=' + en.token; }
   function mismaArea(a, b){ return sinTildes(a).replace(/\s+/g, ' ').trim() === sinTildes(b).replace(/\s+/g, ' ').trim(); }
   // Procesos que la persona ve en su encuesta: los de su sección, los asignados, los que eligió y los que agregó.
   function listaPersona(en){
@@ -2835,8 +2947,8 @@
     C.revisiones.forEach(function(r){ if (r.encuestado_id === en.id) revs[r.proceso_id] = r; });
     var out = [];
     C.procesos.forEach(function(p){
-      var sec = p.fuente !== 'nuevo' && mismaArea(p.gerencia, en.gerencia) && mismaArea(p.seccion, en.seccion);
       var propio = p.creado_por === en.id;
+      var sec = !propio && mismaArea(p.gerencia, en.gerencia) && mismaArea(p.seccion, en.seccion);   // también lo que agregó otra persona de su sección
       if (asig[p.id] === 'excluido') return;   // lo quitó el equipo: se ve aparte, en «Quitados de su lista»
       if (!sec && !propio && !asig[p.id]) return;
       var rv = revs[p.id];
@@ -2877,6 +2989,43 @@
     });
     return m;
   }
+  // Gerencias → Secciones: cada sección tiene su propio enlace; las personas se registran ahí con su nombre y un PIN.
+  function htmlEnlacesSeccion(){
+    var c = C.campana, activo = !!c.abierta && !!c.codigo_publico, porG = {}, vistos = {};
+    var sumar = function(g, sec, n){
+      var k = sinTildes(g) + '|' + sinTildes(sec);
+      if (!g || !sec) return;
+      if (!vistos[k]){ vistos[k] = {gerencia: g, seccion: sec, personas: 0}; (porG[g] = porG[g] || []).push(vistos[k]); }
+      vistos[k].personas += n;
+    };
+    resumenSecciones().forEach(function(r){ if (r.seccion) sumar(r.gerencia, r.seccion, 0); });
+    C.encuestados.forEach(function(en){ sumar(en.gerencia, en.seccion, 0); });
+    C.encuestados.forEach(function(en){ var v = vistos[sinTildes(en.gerencia) + '|' + sinTildes(en.seccion)]; if (v) v.personas++; });
+    var gers = Object.keys(porG).sort(function(a, b){ return a.localeCompare(b, 'es'); });
+    var h = '<h3 id="secEnlaces" class="sec-t" style="margin-top:34px">Gerencias → Secciones</h3>' +
+      '<p class="muted" style="margin-top:0">Cada sección tiene su propio enlace. Quien lo abre se registra con su nombre y apellido y un PIN de 4 dígitos, y vuelve a su avance con el mismo enlace.' +
+      (activo ? '' : ' <b>Activa el enlace abierto de la campaña en el Plan de barrido para poder copiarlos.</b>') + '</p>';
+    if (!gers.length) return h + '<p class="muted">Todavía no hay gerencias ni secciones: carga el Excel del esqueleto o el inventario.</p>';
+    gers.forEach(function(g){
+      var secs = porG[g].sort(function(a, b){ return a.seccion.localeCompare(b.seccion, 'es'); });
+      h += '<details class="cl" open data-hg="' + esc(sinTildes(g).trim()) + '" style="margin-bottom:10px"><summary><b>' + esc(g) + '</b> <span class="muted">· ' + secs.length + (secs.length === 1 ? ' sección' : ' secciones') + '</span></summary>' +
+        '<div class="tblwrap"><table><thead><tr><th scope="col">Sección</th><th scope="col" class="num">Personas</th><th scope="col">Enlace</th><th scope="col"></th></tr></thead><tbody>';
+      secs.forEach(function(x){
+        var url = enlaceAbierto(x.gerencia, x.seccion);
+        h += '<tr data-hs="' + esc(sinTildes(x.seccion).trim()) + '"><td><b>' + esc(x.seccion) + '</b></td><td class="num">' + x.personas + '</td>' +
+          '<td>' + (activo ? '<span class="enlace">' + esc(url) + '</span>' : '<span class="muted">Enlace abierto desactivado</span>') + '</td>' +
+          '<td><div class="row" style="flex-wrap:nowrap"><button class="btn btn-ghost btn-xs" data-hub-copiar="1" data-g="' + esc(x.gerencia) + '" data-s="' + esc(x.seccion) + '"' + (activo ? '' : ' disabled') + ' aria-label="Copiar el enlace de ' + esc(x.gerencia + ' · ' + x.seccion) + '">Copiar enlace</button>' +
+          (activo ? '<a class="btn btn-ghost btn-xs" href="' + esc(url) + '" target="_blank" rel="noopener">Abrir</a>' : '') + '</div></td></tr>';
+      });
+      h += '</tbody></table></div></details>';
+    });
+    return h;
+  }
+  $('#tEncuestados').addEventListener('click', function(e){
+    var b = e.target.closest('[data-hub-copiar]'); if (!b) return;
+    copiar(enlaceAbierto(b.dataset.g, b.dataset.s), b);
+  });
+
   function pintarEncuestados(){
     var info = infoPersonas();
     var cuenta = {'': C.encuestados.length, sin_empezar: 0, en_curso: 0, completado: 0, inactiva: 0};
@@ -2885,21 +3034,33 @@
     C.encuestados.forEach(function(en){ var c = (en.correo || '').toLowerCase(); if (c) porCorreo[c] = (porCorreo[c] || 0) + 1; });
     C.procesos.forEach(function(p){ if (p.fuente !== 'nuevo') areasProc[sinTildes(p.gerencia) + '|' + sinTildes(p.seccion)] = 1; });
     var repetidos = Object.keys(porCorreo).filter(function(c){ return porCorreo[c] > 1; }).length;
-    var h = '<div class="sum-p" role="group" aria-label="Resumen de participantes. Pulsa uno para filtrar la lista">' +
+    var h = '<nav class="sec-nav" aria-label="Secciones de esta pestaña"><a href="#secUsuarios">Usuarios registrados</a><a href="#secEnlaces">Gerencias → Secciones</a></nav>' +
+      '<h3 id="secUsuarios" class="sec-t">Usuarios registrados</h3>' +
+      '<div class="sum-p" role="group" aria-label="Resumen de participantes. Pulsa uno para filtrar la lista">' +
       [['', 'Total participantes'], ['sin_empezar', 'Sin empezar'], ['en_curso', 'En curso'], ['completado', 'Completados'], ['inactiva', 'Inactivos (más de ' + DIAS_INACTIVA + ' días)']].map(function(k){
         return '<button type="button" data-fp="' + k[0] + '" aria-pressed="false"' + (k[0] === 'inactiva' ? ' class="inact"' : '') + '><b>' + cuenta[k[0]] + '</b>' + k[1] + '</button>';
       }).join('') + '</div>';
-    h += '<div class="row" style="margin-bottom:10px"><button class="btn btn-xs" id="btnNuevoUsuario">+ Nuevo usuario</button><button class="btn btn-ghost btn-xs" id="btnEnlacesXls">Descargar enlaces personales (Excel)</button>' +
-      '<span class="muted">Cada enlace es personal: da acceso a las respuestas de esa persona. Envíalo solo a ella. Los enlaces abren <code>' + esc(URL_ENCUESTA) + '</code></span></div>';
+    h += '<div class="row" style="margin-bottom:10px"><button class="btn btn-xs" id="btnNuevoUsuario">+ Nuevo usuario</button><button class="btn btn-ghost btn-xs" id="btnRenovarAccesos" title="Invalida los enlaces personales y las sesiones abiertas de esta campaña">Cerrar sesiones activas</button><span class="muted">Las personas entran por el enlace de su sección, con su nombre y un PIN de 4 dígitos. Si alguien se bloquea (5 intentos) o olvida su PIN, desbloquéalo o restablécelo aquí.</span></div>';
     if (repetidos) h += '<p class="msg warn">' + repetidos + (repetidos === 1 ? ' correo aparece' : ' correos aparecen') + ' más de una vez. Deja un solo registro por persona (el del enlace que le enviaste) y borra los demás: «Seleccionar duplicados» marca los repetidos sin respuestas. Las cargas nuevas ya no duplican: si el correo existe, actualizan su área.</p>';
     var conNombres = C.procesos.some(function(p){ return (p.personas || '').trim(); });
+    // Gerencias y secciones para filtrar: las de las personas y las del mapa de procesos (aunque aún no tengan a nadie).
+    var arbolF = {};
+    C.encuestados.concat(C.procesos).forEach(function(x){
+      if (!x.gerencia) return;
+      var k = sinTildes(x.gerencia).trim(), g = arbolF[k] = arbolF[k] || {nombre: x.gerencia, secs: {}};
+      if (x.seccion){ var ks = sinTildes(x.seccion).trim(); if (!g.secs[ks]) g.secs[ks] = x.seccion; }
+    });
+    var opcionesGer = '<option value="">Todas las gerencias</option>' + Object.keys(arbolF).sort(function(a, b){ return arbolF[a].nombre.localeCompare(arbolF[b].nombre, 'es'); }).map(function(k){
+      return '<option value="' + esc(k) + '">' + esc(arbolF[k].nombre) + '</option>'; }).join('');
     h += '<div class="row" style="margin-bottom:8px"><input type="search" id="pBuscar" placeholder="Buscar por nombre, correo o área…" style="width:280px" aria-label="Buscar personas" value="' + esc(FP.texto) + '">' +
+      '<select id="pGer" aria-label="Filtrar por gerencia" style="width:auto;max-width:240px">' + opcionesGer + '</select>' +
+      '<select id="pSec" aria-label="Filtrar por sección" style="width:auto;max-width:240px"></select>' +
       (conNombres ? '<button class="btn btn-navy btn-xs" id="btnAsigInv" title="A cada persona se le agregan los procesos donde figura con su nombre en el inventario anterior">Asignar procesos según el inventario anterior</button>' : '') +
       '<button class="btn btn-xs" id="btnBorrarSel" disabled>Borrar seleccionados</button>' +
       (repetidos ? '<button class="btn btn-ghost btn-xs" id="btnSelDup">Seleccionar duplicados</button>' : '') +
       '<span class="muted" id="selMsg"></span></div>' +
       '<div class="row" style="margin-bottom:8px"><span class="muted" id="pCuenta" aria-live="polite"></span><span id="pArea"></span></div>';
-    h += '<div class="tblwrap"><table><thead><tr><th scope="col"><input type="checkbox" id="selTodos" aria-label="Seleccionar a todas las personas que se ven"></th><th scope="col">Nombre</th><th scope="col">Gerencia · sección</th><th scope="col">Rol o cargo</th><th scope="col">Origen</th><th scope="col">Estado</th><th scope="col" class="num">Avance</th><th scope="col" class="num">Respuestas</th><th scope="col">Última actividad</th><th scope="col">Perfil</th><th scope="col"></th></tr></thead><tbody>';
+    h += '<div class="tblwrap"><table><thead><tr><th scope="col"><input type="checkbox" id="selTodos" aria-label="Seleccionar a todas las personas que se ven"></th><th scope="col">Nombre</th><th scope="col">Gerencia · sección</th><th scope="col">Rol o cargo</th><th scope="col">Origen</th><th scope="col">Estado</th><th scope="col" class="num">Avance</th><th scope="col" class="num">Respuestas</th><th scope="col">Última actividad</th><th scope="col"></th></tr></thead><tbody>';
     C.encuestados.forEach(function(en){
       var i = info[en.id], av = i.av, ep = ESTADO_P[i.estado];
       var n = C.respuestas.filter(function(r){ return r.encuestado_id === en.id && (r.texto || '').trim(); }).length;
@@ -2907,7 +3068,9 @@
       var sinArea = !areasProc[sinTildes(en.gerencia) + '|' + sinTildes(en.seccion)];
       var ult = en.actualizado ? fecha(en.actualizado) : (en.creado ? 'Sin actividad · cargado el ' + String(en.creado).slice(0, 10) : '—');
       h += '<tr' + (i.inactiva ? ' class="inactivo"' : '') + ' data-estado="' + i.estado + '" data-inactiva="' + (i.inactiva ? '1' : '0') + '" data-ger="' + esc(sinTildes(en.gerencia).trim()) + '" data-sec="' + esc(sinTildes(en.seccion).trim()) + '" data-texto="' + esc(sinTildes([en.nombre, en.correo, en.gerencia, en.seccion, en.rol].join(' '))) + '"><td><input type="checkbox" data-sel="' + esc(en.id) + '" data-resp="' + n + '" aria-label="Seleccionar a ' + esc(en.nombre) + '"></td>' +
-        '<td><b>' + esc(en.nombre) + '</b><div class="muted">' + esc(en.correo) + '</div>' + (dup ? '<span class="chip c-warn">Correo repetido</span>' : '') + '</td>' +
+        '<td><b>' + esc(en.nombre) + '</b><div class="muted">' + esc(en.correo) + '</div>' + (dup ? '<span class="chip c-warn">Correo repetido</span>' : '') +
+          (en.bloqueado ? '<div><span class="chip c-warn">Bloqueado por intentos</span></div>' : !en.tiene_pin ? '<div><span class="chip">Sin PIN</span></div>' : '') +
+          (en.ultimo_acceso ? '<div class="muted">Último ingreso: ' + esc(fecha(en.ultimo_acceso)) + '</div>' : '') + '</td>' +
         '<td>' + esc(en.gerencia + ' · ' + en.seccion) + (sinArea ? '<div><span class="chip c-warn" title="Ningún proceso del mapa tiene esta gerencia y sección: la persona tendrá que buscar sus procesos">Área sin procesos</span></div>' : '') + '</td><td>' + esc(en.rol) + '</td>' +
         '<td>' + (en.origen === 'abierto' ? 'Enlace abierto' : 'Carga') + '</td>' +
         '<td><span class="chip ' + ep[1] + '">' + ep[0] + '</span>' +
@@ -2915,12 +3078,12 @@
         '<td class="num">' + (av.total ? '<b>' + av.pct + '%</b><span class="pbar" role="img" aria-label="' + av.hechos + ' de ' + av.total + ' procesos completos"><i style="width:' + av.pct + '%"></i></span>' +
           '<div class="muted">' + av.hechos + ' de ' + av.total + (av.total === 1 ? ' proceso' : ' procesos') + '</div>' + (av.porMarcar ? '<div class="muted">' + av.porMarcar + ' por marcar</div>' : '') : '<span class="muted">Sin procesos asignados</span>') + '</td>' +
         '<td class="num">' + n + '</td><td>' + (i.inactiva ? '<b>' + esc(ult) + '</b>' : esc(ult)) + '</td>' +
-        '<td>' + celdaPerfil(en) + '</td>' +
-        '<td><div class="row" style="flex-wrap:nowrap"><button class="btn btn-ghost btn-xs" data-editar="' + esc(en.id) + '">Editar</button><button class="btn btn-ghost btn-xs" data-procs="' + esc(en.id) + '">Procesos</button><button class="btn btn-ghost btn-xs" data-copiar="' + esc(en.token) + '">Copiar enlace</button>' +
+        '<td style="min-width:230px"><div class="row" style="flex-wrap:wrap"><button class="btn btn-ghost btn-xs" data-editar="' + esc(en.id) + '">Editar</button><button class="btn btn-ghost btn-xs" data-procs="' + esc(en.id) + '">Procesos</button><button class="btn btn-ghost btn-xs" data-pin="' + esc(en.id) + '" data-nombre="' + esc(en.nombre) + '">Restablecer PIN</button><button class="btn btn-ghost btn-xs" data-desbloq="' + esc(en.id) + '" data-nombre="' + esc(en.nombre) + '"' + (en.bloqueado ? '' : ' hidden') + '>Desbloquear</button>' +
         '<button class="btn-link" data-quitar="' + esc(en.id) + '">Borrar</button></div></td></tr>';
     });
-    if (!C.encuestados.length) h += '<tr><td colspan="11" class="muted">Todavía no hay personas: carga el Excel o activa el enlace abierto.</td></tr>';
+    if (!C.encuestados.length) h += '<tr><td colspan="10" class="muted">Todavía no hay personas: carga el Excel o activa el enlace abierto.</td></tr>';
     h += '</tbody></table></div>';
+    h += htmlEnlacesSeccion();
     $('#tEncuestados').innerHTML = h;
     var marcar = marcarSeleccion;
     // Búsqueda y filtros se combinan: una fila se ve solo si cumple todo. Lo que se oculta se desmarca para no borrarlo sin querer.
@@ -2933,6 +3096,24 @@
         tr.classList.toggle('hidden', !ok);
         if (ok) vis++; else { var cb = tr.querySelector('[data-sel]'); if (cb) cb.checked = false; }
       });
+      // Los selectores reflejan el filtro (también cuando viene de «Ver responsables») y la lista de secciones depende de la gerencia.
+      var kg = sinTildes(FP.ger).trim(), selG = $('#pGer'), selS = $('#pSec');
+      selG.value = arbolF[kg] ? kg : '';
+      var secs = {};
+      Object.keys(arbolF).forEach(function(k){ if (!kg || k === kg) Object.keys(arbolF[k].secs).forEach(function(ks){ secs[ks] = arbolF[k].secs[ks]; }); });
+      selS.innerHTML = '<option value="">' + 'Todas las secciones' + '</option>' + Object.keys(secs).sort(function(a, b){ return secs[a].localeCompare(secs[b], 'es'); }).map(function(k){
+        return '<option value="' + esc(k) + '">' + esc(secs[k]) + '</option>'; }).join('');
+      selS.value = secs[sinTildes(FP.sec).trim()] ? sinTildes(FP.sec).trim() : '';
+      if (FP.sec && !selS.value) FP.sec = '';
+      var ks = sinTildes(FP.sec).trim();
+      Array.prototype.forEach.call(document.querySelectorAll('#tEncuestados details[data-hg]'), function(d){
+        var okG = !kg || d.dataset.hg === kg, visibles = 0;
+        Array.prototype.forEach.call(d.querySelectorAll('tr[data-hs]'), function(tr){
+          var ok = okG && (!ks || tr.dataset.hs === ks);
+          tr.classList.toggle('hidden', !ok); if (ok) visibles++;
+        });
+        d.classList.toggle('hidden', !visibles);
+      });
       $('#pCuenta').textContent = filas.length ? vis + ' de ' + filas.length + (filas.length === 1 ? ' persona' : ' personas') : '';
       Array.prototype.forEach.call(document.querySelectorAll('#tEncuestados [data-fp]'), function(b){ b.setAttribute('aria-pressed', String(b.dataset.fp === FP.estado)); });
       $('#pArea').innerHTML = FP.ger ? '<span class="chip c-inf">Área: ' + esc(FP.ger + (FP.sec ? ' · ' + FP.sec : '')) + '</span> <button type="button" class="btn-link" id="pAreaQuitar">Quitar este filtro</button>' : '';
@@ -2944,6 +3125,8 @@
       b.addEventListener('click', function(){ FP.estado = FP.estado === b.dataset.fp ? '' : b.dataset.fp; filtrarPersonas(); });
     });
     $('#pBuscar').addEventListener('input', function(){ FP.texto = this.value; filtrarPersonas(); });
+    $('#pGer').addEventListener('change', function(){ FP.ger = this.value ? this.options[this.selectedIndex].text : ''; FP.sec = ''; filtrarPersonas(); });
+    $('#pSec').addEventListener('change', function(){ FP.sec = this.value ? this.options[this.selectedIndex].text : ''; filtrarPersonas(); });
     filtrarPersonas();
     if ($('#btnAsigInv')) $('#btnAsigInv').addEventListener('click', function(){
       if (!confirm('A cada persona cargada se le agregan a su lista los procesos donde figura con su nombre y apellido en el inventario anterior. ' +
@@ -2977,8 +3160,24 @@
       var sel = Array.prototype.map.call(document.querySelectorAll('#tEncuestados [data-sel]:checked'), function(x){ return {id: x.dataset.sel, resp: +x.dataset.resp}; });
       borrarPersonas(sel.map(function(x){ return x.id; }), sel.filter(function(x){ return x.resp > 0; }).length, this);
     });
-    $('#btnEnlacesXls').addEventListener('click', function(){ window.UsuariosConsola.descargarEnlaces(this); });
     $('#btnNuevoUsuario').addEventListener('click', function(){ window.UsuariosConsola.abrir(null); });
+    $('#btnRenovarAccesos').addEventListener('click', function(){
+      if (!confirm('Se cierran todas las sesiones y se invalidan los enlaces personales de esta campaña (los que se enviaron antes dejan de servir). Nadie pierde su avance: cada persona vuelve a entrar con su nombre y su PIN en el enlace de su sección. ¿Continuar?')) return;
+      var b = this; b.disabled = true;
+      api('/a/campana/renovar-accesos', {campana_id: C.campana.id}).then(function(j){
+        var m = $('#selMsg'); if (m) m.textContent = 'Sesiones cerradas: ' + j.personas + (j.personas === 1 ? ' persona' : ' personas') + ' deben volver a ingresar con su PIN.';
+        b.disabled = false;
+      }).catch(function(err){ b.disabled = false; alert(err.message); });
+    });
+    Array.prototype.forEach.call(document.querySelectorAll('#tEncuestados [data-desbloq]'), function(b){ b.addEventListener('click', function(){
+      b.disabled = true;
+      api('/a/encuestado/pin', {encuestado_id: b.dataset.desbloq, accion: 'desbloquear'}).then(function(){ abrir(C.campana.id); }).catch(function(err){ b.disabled = false; alert(err.message); });
+    }); });
+    Array.prototype.forEach.call(document.querySelectorAll('#tEncuestados [data-pin]'), function(b){ b.addEventListener('click', function(){
+      if (!confirm('Se borrará el PIN de ' + b.dataset.nombre + ': tendrá que crear uno nuevo en su próximo ingreso. ¿Continuar?')) return;
+      b.disabled = true;
+      api('/a/encuestado/pin', {encuestado_id: b.dataset.pin}).then(function(){ b.textContent = 'PIN restablecido ✓'; }).catch(function(err){ b.disabled = false; alert(err.message); });
+    }); });
     Array.prototype.forEach.call(document.querySelectorAll('#tEncuestados [data-editar]'), function(b){ b.addEventListener('click', function(){ window.UsuariosConsola.abrir(b.dataset.editar); }); });
   }
   function marcarSeleccion(){
@@ -3119,14 +3318,7 @@
     });
   }
 
-  // ------------------------------------------------------------ perfil de cada persona (responsable / supervisor / gerente)
-  var PERFILES = [['responsable', 'Responsable'], ['supervisor', 'Supervisor'], ['gerente', 'Gerente']];
-  function celdaPerfil(en){
-    var p = en.perfil || 'responsable';
-    return '<select data-perfil="' + esc(en.id) + '" aria-label="Perfil de ' + esc(en.nombre) + '" style="min-width:118px">' +
-      PERFILES.map(function(x){ return '<option value="' + x[0] + '"' + (x[0] === p ? ' selected' : '') + '>' + x[1] + '</option>'; }).join('') + '</select>' +
-      (p !== 'responsable' ? '<div><button type="button" class="btn-link" data-nclave="' + esc(en.id) + '" title="Genera una clave nueva; la anterior deja de servir">Nueva clave</button></div>' : '');
-  }
+  // ------------------------------------------------------------ acceso de Supervisor / Gerente (perfiles ocultos por ahora: solo se conservan los existentes)
   function textoPerfil(p){
     return p === 'gerente' ? 'Gerente: ve y delega todo lo de su gerencia, lleva el flujo de 4 pasos y da la validación final.' :
       'Supervisor: ve y delega lo de su sección y llega hasta el avance; la validación final la da el Gerente.';
@@ -3154,31 +3346,7 @@
     }
     if (!$('#dlg').open) $('#dlg').showModal();
   }
-  function cambiarPerfil(en, perfil, regenerar, sel){
-    var antes = en.perfil || 'responsable';
-    if (sel) sel.disabled = true;
-    return api('/a/persona/perfil', {campana_id: C.campana.id, encuestado_id: en.id, perfil: perfil, regenerar: !!regenerar}).then(function(j){
-      en.perfil = j.perfil; C.supervisores = j.supervisores || C.supervisores;
-      pintarEncuestados();
-      if (j.perfil !== 'responsable') dialogoAccesoPerfil(en, j);
-    }).catch(function(err){
-      alert(err.message); en.perfil = antes; pintarEncuestados();
-    });
-  }
-  $('#tEncuestados').addEventListener('change', function(e){
-    var sel = e.target.closest('[data-perfil]'); if (!sel) return;
-    var en = C.encuestados.filter(function(x){ return x.id === sel.dataset.perfil; })[0]; if (!en) return;
-    var nuevo = sel.value, antes = en.perfil || 'responsable';
-    if (nuevo === antes) return;
-    var msg = nuevo === 'responsable' ? '¿Quitar el acceso de supervisión a ' + en.nombre + '? Su clave deja de servir. Lo que ya hizo queda registrado.' :
-      '¿Dar a ' + en.nombre + ' el perfil de ' + (nuevo === 'gerente' ? 'Gerente de «' + en.gerencia + '»' : 'Supervisor de «' + en.gerencia + ' · ' + en.seccion + '»') + '? Se genera una clave de acceso para entregársela.';
-    if (!confirm(msg)){ sel.value = antes; return; }
-    cambiarPerfil(en, nuevo, false, sel);
-  });
-
   $('#tEncuestados').addEventListener('click', function(e){
-    var nc = e.target.closest('[data-nclave]');
-    if (nc){ var pe = C.encuestados.filter(function(x){ return x.id === nc.dataset.nclave; })[0]; if (pe && confirm('Se genera una clave nueva para ' + pe.nombre + ' y la anterior deja de servir. ¿Continuar?')) cambiarPerfil(pe, pe.perfil, true, null); return; }
     var pr = e.target.closest('[data-procs]');
     if (pr) return procesosPersona(pr.dataset.procs);
     var q = e.target.closest('[data-quitar]');
@@ -3186,9 +3354,6 @@
       var n = C.respuestas.filter(function(r){ return r.encuestado_id === q.dataset.quitar && (r.texto || '').trim(); }).length;
       return borrarPersonas([q.dataset.quitar], n ? 1 : 0, q);
     }
-    var b = e.target.closest('[data-copiar]'); if (!b) return;
-    var en = C.encuestados.filter(function(x){ return x.token === b.dataset.copiar; })[0];
-    copiar(enlace(en), b);
   });
 
   // ------------------------------------------------------------ carga Excel
@@ -3196,10 +3361,10 @@
     var wb = XLSX.utils.book_new();
     var ger = XLSX.utils.aoa_to_sheet([['area','gerencia','seccion'],['Operaciones','Logística','Importaciones'],['Operaciones','Logística','Almacenes'],['Soporte','Finanzas','Tesorería']]);
     ger['!cols'] = [{wch:20},{wch:22},{wch:24}];
-    var enc = XLSX.utils.aoa_to_sheet([['nombre','correo','gerencia','seccion','rol','perfil'],['Ejemplo Apellido','ejemplo@empresa.com','Logística','Importaciones','líder','responsable'],['Ejemplo Apellido','ejemplo@empresa.com','Logística','Almacenes','',''],['Otra Persona','otra@empresa.com','Finanzas','Tesorería','jefa','supervisor']]);
+    var enc = XLSX.utils.aoa_to_sheet([['nombre','correo','gerencia','seccion','rol'],['Ejemplo Apellido','ejemplo@empresa.com','Logística','Importaciones','líder'],['Ejemplo Apellido','ejemplo@empresa.com','Logística','Almacenes',''],['Otra Persona','otra@empresa.com','Finanzas','Tesorería','jefa']]);
     var pro = XLSX.utils.aoa_to_sheet([['codigo','gerencia','seccion','macroproceso','proceso','subproceso','descripcion'],['LOG.02.03','Logística','Importaciones','Abastecimiento de vehículos','Importación de vehículos','Desaduanaje','(opcional) descripción del inventario anterior']]);
     var sis = XLSX.utils.aoa_to_sheet([['nombre','tipo'],['SAP S/4HANA','ERP'],['Portal SUNAT','Portal de tercero']]);
-    enc['!cols'] = [{wch:26},{wch:28},{wch:18},{wch:22},{wch:10},{wch:14}];
+    enc['!cols'] = [{wch:26},{wch:28},{wch:18},{wch:22},{wch:10}];
     pro['!cols'] = [{wch:12},{wch:18},{wch:22},{wch:28},{wch:28},{wch:28},{wch:40}];
     XLSX.utils.book_append_sheet(wb, ger, 'Gerencias'); XLSX.utils.book_append_sheet(wb, enc, 'Encuestados'); XLSX.utils.book_append_sheet(wb, pro, 'Procesos'); XLSX.utils.book_append_sheet(wb, sis, 'Sistemas');
     XLSX.writeFile(wb, 'Plantilla carga relevamiento.xlsx');
@@ -3560,23 +3725,15 @@
   }
   function barraSeccionCl(s){
     var activo = !!C.campana.abierta && !!C.campana.codigo_publico, d = ' data-g="' + esc(s.gerencia) + '" data-s="' + esc(s.seccion) + '"';
-    var ids = s.personas.map(function(x){ return x.e.id; }).join(',');
     return '<div class="row acc-cl" style="margin:4px 0 8px">' +
       (activo ? '<button type="button" class="btn btn-xs" data-ca="enlace-sec"' + d + '>Copiar enlace de la sección</button><button type="button" class="btn btn-ghost btn-xs" data-ca="invitacion"' + d + '>Copiar invitación</button>'
               : (C.rol === 'cliente' ? '<button type="button" class="btn btn-xs" data-ca="activar"' + d + '>Activar el enlace de la sección</button>' : '<span class="muted">El enlace de la sección aún no está activo: pídele al administrador que lo active.</span>')) +
-      (s.personas.length ? '<button type="button" class="btn btn-ghost btn-xs" data-ca="enlaces-sec" data-ids="' + esc(ids) + '">Copiar enlaces personales (' + s.personas.length + ')</button>' : '') +
       '<button type="button" class="btn btn-ghost btn-xs" data-ca="agregar"' + d + '>+ Agregar responsables</button></div>';
   }
   function copiarAsyncCl(texto, boton){
     var ok = function(){ var antes = boton.dataset.t || boton.textContent; boton.dataset.t = antes; boton.textContent = 'Copiado ✓'; setTimeout(function(){ boton.textContent = antes; }, 1600); };
     if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(texto).then(ok, function(){ window.prompt('Copia el texto:', texto); });
     else window.prompt('Copia el texto:', texto);
-  }
-  function copiarEnlacesCl(ids, boton, conNombre){
-    boton.disabled = true;
-    apiCl('/c/enlaces', {encuestado_ids: ids}).then(function(j){
-      copiarAsyncCl(j.enlaces.map(function(x){ return (conNombre ? x.nombre + ': ' : '') + URL_ENCUESTA + '?k=' + x.token; }).join('\n'), boton);
-    }).catch(function(err){ avisoCl(err.message, true); }).then(function(){ boton.disabled = false; });
   }
   function abrirDlgCl(titulo, sub, html){
     $('#dlgT').textContent = titulo; $('#dlgS').textContent = sub || '';
@@ -3588,7 +3745,7 @@
   function dialogoPersonaCl(g, s){
     var n = procsSeccionCl(g, s).length;
     abrirDlgCl('Agregar responsables · ' + s, g + ' · ' + s,
-      '<p class="muted" style="margin-top:0">Escribe una persona por línea: <b>Nombre completo, correo, cargo</b> (el correo y el cargo son opcionales). Podrán entrar con el enlace de la sección o con su enlace personal.</p>' +
+      '<p class="muted" style="margin-top:0">Escribe una persona por línea: <b>Nombre completo, correo, cargo</b> (el correo y el cargo son opcionales). Entrarán con el enlace de la sección, eligiendo su nombre y con su PIN.</p>' +
       '<label for="cpTexto">Personas</label><textarea id="cpTexto" rows="6" placeholder="Ana Pérez, ana.perez@empresa.com, Jefa de la sección"></textarea>' +
       '<label style="display:flex;gap:8px;align-items:center;font-weight:500;margin-top:8px"><input type="checkbox" id="cpAsig" style="width:auto" checked> Asignarles los ' + n + (n === 1 ? ' proceso' : ' procesos') + ' de la sección</label>' +
       '<div class="row" style="margin-top:12px"><button type="button" class="btn" id="cpOk">Agregar</button><span class="muted" id="cpMsg" role="status"></span></div>');
@@ -3681,8 +3838,6 @@
     else if (a === 'procesos-per') dialogoProcesosPersonaCl(id);
     else if (a === 'enlace-sec') copiarAsyncCl(enlaceAbierto(g, s), b);
     else if (a === 'invitacion') copiarAsyncCl(textoInvitacion(g, s), b);
-    else if (a === 'enlace-per') copiarEnlacesCl([id], b, false);
-    else if (a === 'enlaces-sec') copiarEnlacesCl(b.dataset.ids.split(','), b, true);
     else if (a === 'eml-per'){
       var pidsP = asignadosCl(id);
       if (!pidsP.length){ avisoCl('Esa persona todavía no tiene procesos delegados: asígnale procesos primero.', true); return; }
@@ -3717,12 +3872,12 @@
   function htmlCorreoDelegacion(d){
     var n = d.procesos.length, txtN = n + (n === 1 ? ' proceso' : ' procesos');
     var li = d.procesos.slice(0, 20).map(function(p){ return '<li>' + (p.codigo ? '<b>' + esc(p.codigo) + '</b> · ' : '') + esc(nombreProc(p)) + ' <span style="color:#667085">(' + esc(p.seccion) + ')</span></li>'; }).join('') +
-      (n > 20 ? '<li>y ' + (n - 20) + ' más (los verás en tu enlace)</li>' : '');
+      (n > 20 ? '<li>y ' + (n - 20) + ' más (los verás al ingresar)</li>' : '');
     return '<div style="font-family:Segoe UI,Calibri,Arial,sans-serif;font-size:14px;color:#1b2a41;line-height:1.55">' +
       '<p>Hola ' + esc(primerNombreCl(d.nombre)) + ':</p>' +
       '<p>' + esc(d.quien) + ' te delegó completar la información de ' + txtN + ' del inventario de procesos de ' + esc(d.cliente) + ':</p><ul>' + li + '</ul>' +
       '<p><b>Cómo completarlo</b></p><ol>' +
-      '<li>Entra a tu enlace personal: <a href="' + esc(d.enlace) + '">' + esc(d.enlace) + '</a>. Es solo tuyo y puedes volver a entrar cuando quieras, desde cualquier equipo.</li>' +
+      '<li>Entra al enlace de tu sección: <a href="' + esc(d.enlace) + '">' + esc(d.enlace) + '</a>. Elige tu nombre en la lista y escribe tu PIN de 4 dígitos (si es tu primera vez, créalo ahí mismo). Puedes volver cuando quieras, desde cualquier equipo.</li>' +
       '<li>Verás tus procesos; los que te delegaron aparecen primero. Elige cada uno y cuéntalo en 3 bloques, hablando o por escrito. Cada bloque te muestra lo que necesitamos saber y te avisa si falta algo. Todo se guarda solo.</li>' +
       '<li>Si ya existen SOP, flujos o procesos documentados, compártelos con ' + esc(d.quien) + ': los usamos para precargar la información.</li></ol>' +
       (d.plazo ? '<p>Plazo de referencia: hasta el ' + esc(d.plazo) + '.</p>' : '') +
@@ -3739,7 +3894,7 @@
         var procs = en.pids.map(function(id){ return C.procesos.filter(function(q){ return q.id === id; })[0]; }).filter(Boolean);
         var v = ventanaDe(e.gerencia, e.seccion), n = procs.length;
         var html = htmlCorreoDelegacion({nombre: x.nombre, procesos: procs.map(function(p){ return {codigo: p.codigo, macroproceso: p.macroproceso, proceso: p.proceso, subproceso: p.subproceso, seccion: p.seccion}; }),
-          enlace: URL_ENCUESTA + '?k=' + x.token, quien: quienFirmaCl(), cliente: C.campana.cliente, plazo: v && v.cierra ? fechaLargaCl(v.cierra) : ''});
+          enlace: enlaceAbierto(e.gerencia, e.seccion), quien: quienFirmaCl(), cliente: C.campana.cliente, plazo: v && v.cierra ? fechaLargaCl(v.cierra) : ''});
         if (!x.correo) sinCorreo.push(x.nombre);
         setTimeout(function(){ bajarEml('Delegación - ' + x.nombre, construirEml(x.correo, x.nombre, 'Relevamiento de procesos ' + C.campana.cliente + ': te delegaron ' + n + (n === 1 ? ' proceso' : ' procesos'), html)); }, i * 500);
       });
@@ -3765,7 +3920,9 @@
   }
 
   // ---- Supervisores y trazabilidad
-  var ACCION_TXT = {flujo_paso_confirmado: 'Confirmó un paso', flujo_pasos_reiniciados: 'Reinició pasos por un cambio', flujo_retroceso: 'Retrocedió un paso', flujo_aprobacion_final: 'Dio la validación final', flujo_reabierto: 'MBC reabrió la validación final', proceso_agregado: 'Agregó un proceso', proceso_quitado: 'Quitó un proceso', proceso_restaurado: 'Restauró un proceso', proceso_incorporado: 'Eligió procesos del inventario', proceso_soltado: 'Soltó un proceso', delegar: 'Delegó procesos', quitar_delegacion: 'Quitó una delegación', personas_agregadas: 'Agregó personas', enlace_copiado: 'Copió enlaces', correo_generado: 'Generó correos',
+  var ACCION_TXT = {documento_carga: 'Cargó un documento', documento_gerencia: 'Cambió la gerencia de un documento', documento_analisis: 'Analizó un documento con IA', documento_analisis_error: 'Falló el análisis de un documento',
+    documento_clasificacion: 'Clasificó un documento', documento_precarga: 'Extrajo la precarga de un documento', documento_precarga_error: 'Falló la extracción de un documento', documento_precarga_revision: 'Revisó borradores de precarga', documento_umbral: 'Cambió el umbral de confianza',
+    flujo_paso_confirmado: 'Confirmó un paso', flujo_pasos_reiniciados: 'Reinició pasos por un cambio', flujo_retroceso: 'Retrocedió un paso', flujo_aprobacion_final: 'Dio la validación final', flujo_reabierto: 'MBC reabrió la validación final', proceso_agregado: 'Agregó un proceso', proceso_quitado: 'Quitó un proceso', proceso_restaurado: 'Restauró un proceso', proceso_incorporado: 'Eligió procesos del inventario', proceso_soltado: 'Soltó un proceso', delegar: 'Delegó procesos', quitar_delegacion: 'Quitó una delegación', personas_agregadas: 'Agregó personas', enlace_copiado: 'Copió enlaces', correo_generado: 'Generó correos',
     enlace_abierto_activado: 'Activó el enlace abierto', supervisor_creado: 'Creó un supervisor', supervisor_editado: 'Editó un supervisor', supervisor_activado: 'Activó un supervisor',
     supervisor_desactivado: 'Desactivó un supervisor', supervisor_clave_nueva: 'Generó una clave nueva'};
   function alcanceTextoCl(al){
@@ -3824,13 +3981,38 @@
       .catch(function(err){ $('#msgTraza').textContent = err.message; }).then(function(){ b.disabled = false; });
   });
 
+  // ---- Historial de cambios de la matriz (HU03)
+  var HISTORIAL = [];
+  var ORIGEN_HIST = {ia: 'IA', documento: 'Documento', precarga: 'Precarga del equipo', encuesta: 'Encuesta', consola: 'Consola', importacion: 'Importación'};
+  function filaHistorial(c){
+    return {Fecha: fecha(c.creado), Quién: c.actor_nombre || '', Origen: ORIGEN_HIST[c.origen] || c.origen, 'Código': c.codigo || '', Proceso: c.subproceso || c.proceso || c.macroproceso || '',
+      Campo: c.campo, Acción: c.tipo === 'validacion' ? 'Validó' : 'Cambió', 'Valor anterior': c.tipo === 'validacion' ? '' : c.anterior, 'Valor nuevo': c.nuevo};
+  }
+  $('#btnHistorial').addEventListener('click', function(){
+    var b = this, q = ['id=' + encodeURIComponent(C.campana.id), 'limite=300'];
+    [['hiOrigen', 'origen'], ['hiActor', 'actor'], ['hiCampo', 'campo'], ['hiDesde', 'desde'], ['hiHasta', 'hasta']].forEach(function(x){ var v = $('#' + x[0]).value.trim(); if (v) q.push(x[1] + '=' + encodeURIComponent(v)); });
+    b.disabled = true; $('#msgHistorial').textContent = 'Cargando…';
+    api('/a/campana/historial?' + q.join('&')).then(function(j){
+      HISTORIAL = j.cambios;
+      $('#msgHistorial').textContent = j.cambios.length + (j.cambios.length === 1 ? ' cambio' : ' cambios') + (j.hay_mas ? ' (los 300 más recientes; afina los filtros)' : '');
+      $('#btnHistorialXls').classList.toggle('hidden', !j.cambios.length);
+      $('#cnHistorial').innerHTML = j.cambios.length ? '<div class="tblwrap"><table><thead><tr><th scope="col">Fecha</th><th scope="col">Quién</th><th scope="col">Origen</th><th scope="col">Proceso</th><th scope="col">Campo</th><th scope="col">Valor anterior</th><th scope="col">Valor nuevo</th></tr></thead><tbody>' +
+        j.cambios.map(function(c){
+          return '<tr><td>' + esc(fecha(c.creado)) + '</td><td>' + esc(c.actor_nombre || '') + '</td><td>' + esc(ORIGEN_HIST[c.origen] || c.origen) + '</td><td>' + (c.codigo ? '<span class="muted">' + esc(c.codigo) + '</span> ' : '') + esc(c.subproceso || c.proceso || c.macroproceso || '') + '</td>' +
+            '<td>' + esc(c.campo) + '</td><td>' + (c.tipo === 'validacion' ? '<span class="muted">—</span>' : esc(c.anterior)) + '</td><td>' + (c.tipo === 'validacion' ? '<span class="chip c-ok">Validó</span> ' : '') + esc(c.nuevo) + '</td></tr>';
+        }).join('') + '</tbody></table></div>' : '<p class="muted">No hay cambios con esos filtros.</p>';
+    }).catch(function(err){ $('#msgHistorial').textContent = err.message; }).then(function(){ b.disabled = false; });
+  });
+  $('#btnHistorialXls').addEventListener('click', function(){
+    var wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(HISTORIAL.length ? HISTORIAL.map(filaHistorial) : [{'(sin datos)': ''}]), 'Historial');
+    XLSX.writeFile(wb, nombreArchivo('Historial de la matriz - ' + C.campana.nombre));
+  });
+
   function pintarAdminCl(){
     var el = $('#clAdmin');
     if (C.rol !== 'cliente'){ el.classList.add('hidden'); el.innerHTML = ''; return; }
     el.classList.remove('hidden');
-    el.innerHTML = '<details class="cl cl-ger" data-k="adm:sup"' + (CLOPEN['adm:sup'] ? ' open' : '') + '><summary>Supervisores<span class="cl-cifras"><span>' + C.supervisores.length + (C.supervisores.length === 1 ? ' supervisor' : ' supervisores') + '</span></span></summary><div class="cl-cuerpo" id="clSupCuerpo"></div></details>' +
-      '<details class="cl cl-ger" data-k="adm:traza"' + (CLOPEN['adm:traza'] ? ' open' : '') + ' style="margin-top:10px"><summary>Trazabilidad de delegaciones</summary><div class="cl-cuerpo" id="clTrazaCuerpo"><p class="muted">Ábrelo para ver quién delegó qué.</p></div></details>';
-    pintarSupervisoresCl();
+    el.innerHTML =       '<details class="cl cl-ger" data-k="adm:traza"' + (CLOPEN['adm:traza'] ? ' open' : '') + ' style="margin-top:10px"><summary>Trazabilidad de delegaciones</summary><div class="cl-cuerpo" id="clTrazaCuerpo"><p class="muted">Ábrelo para ver quién delegó qué.</p></div></details>';
     if (CLOPEN['adm:traza']) cargarTrazaCl();
   }
   function cargarTrazaCl(){
@@ -3991,7 +4173,7 @@
                 (x.i.inactiva ? ' <span class="chip c-warn"><span aria-hidden="true">⚠ </span>' + x.i.dias + ' días sin actividad</span>' : '') + '</td>' +
                 '<td class="num">' + (x.i.av.total ? x.i.av.pct + '% <span class="muted">(' + x.i.av.hechos + ' de ' + x.i.av.total + ')</span>' : '—') + '</td>' +
                 '<td>' + esc(x.e.actualizado ? fecha(x.e.actualizado) : 'Sin actividad') + '</td>' +
-                '<td class="acc-cl"><button type="button" class="btn btn-ghost btn-xs" data-ca="enlace-per" data-id="' + esc(x.e.id) + '" aria-label="Copiar el enlace personal de ' + esc(x.e.nombre) + '">Copiar enlace</button> ' +
+                '<td class="acc-cl">' +
                 '<button type="button" class="btn btn-ghost btn-xs" data-ca="procesos-per" data-id="' + esc(x.e.id) + '" aria-label="Asignar procesos a ' + esc(x.e.nombre) + '">Procesos…</button> ' +
                 '<button type="button" class="btn btn-ghost btn-xs" data-ca="eml-per" data-id="' + esc(x.e.id) + '" aria-label="Descargar el correo de ' + esc(x.e.nombre) + ' para Outlook">Correo (.eml)</button></td></tr>';
             }).join('') + '</tbody></table></div>' : '<p class="muted">Esta sección todavía no tiene personas asignadas.</p>';

@@ -30,6 +30,8 @@
  *   POST /r/respuesta            {k, proceso_id, pregunta, texto, sistemas[]}
  *   POST /r/verificar            {k, proceso_id, pregunta}   (la IA marca el checklist del bloque)
  *   POST /r/punto                {k, proceso_id, pregunta, punto, estado}   (la persona marca "lo mencioné" / "no aplica")
+ *   POST /r/campo                {k, proceso_id, punto}   (la persona confirma que la descripción precargada sigue vigente; no se edita)
+ *   GET  /a/campana/historial?id=&proceso_id=&campo=&origen=&actor=&desde=&hasta=&limite=&pagina=   historial de cambios de la matriz
  *   POST /r/transcribir?k=       cuerpo: audio WAV (bytes) -> {texto}
  *   POST /r/imagen?k=&proceso_id=&pregunta=   cuerpo: imagen JPEG/PNG/WEBP (bytes) -> {texto}   (la IA la lee; no se guarda)
  *   POST /r/enviar               {k}
@@ -48,8 +50,16 @@
  *   POST /a/proceso/mover        {campana_id, proceso_ids[], gerencia, seccion, macroproceso?} | {campana_id, movimientos[]} (constructor del mapa; movimientos restaura)
  *   POST /a/campana/sistemas     {campana_id, sistemas: ["Nombre" | "Nombre | tipo"] o texto con una por línea}   (catálogo de aplicaciones: reemplaza lo cargado por el equipo)
  *   POST /a/precarga/extraer?proceso_id=&nombre=   cuerpo: archivo JPG/PNG/PDF/DOCX (bytes) -> {puntos[{id, texto, cita}]}   (la IA extrae solo lo explícito; no guarda)
- *   POST /a/precarga             {proceso_id, puntos[{punto, texto, archivos[]}]}   (guarda la precarga; texto vacío la quita del punto)
+ *   POST /a/precarga             {proceso_id, puntos[{punto, texto, archivos[]}]}   (guarda la precarga y la refleja en la matriz; devuelve escritos y bloqueados; texto vacío la quita del punto)
+ *   POST /a/documentos?campana_id=&gerencia=&nombre=   cuerpo: UN archivo JPG/PNG/PDF/DOCX (bytes); queda en R2 como «pendiente» de clasificar (carga masiva: el navegador manda uno por uno)
+ *   GET  /a/documentos?campana_id=&gerencia=&estado=&estado_ia=&desde=&hasta=&q=&confianza=baja|sin&orden=confianza   bandeja con sus procesos y el umbral
+ *   GET  /a/documentos/archivo?id=       el archivo, para abrirlo antes de clasificar
+ *   POST /a/documentos/gerencia {id, gerencia} | /a/documentos/analizar {id} (la IA propone procesos con confianza) | /a/documentos/procesos {id, procesos[]} (lista final: confirma, quita y agrega;
+ *        lo recién confirmado lanza la extracción de la precarga en segundo plano: queda como borrador)
+ *   POST /a/documentos/extraer {id, proceso_id}   (extrae o reextrae la precarga de un proceso confirmado)  |  POST /a/precarga/borrador {proceso_id, decisiones[{id, accion:'aprobar'|'descartar', texto?}]}
+ *   POST /a/campana/umbral       {campana_id, umbral 0..1}   (bajo ese valor la clasificación se resalta como de baja confianza)
  *   POST /r/identificar          {c, g?, s?, id | correo}   (enlace de sección: la persona elige su nombre o escribe su correo y entra a su registro)
+ *   POST /a/campana/renovar-accesos {campana_id}   cierra las sesiones y enlaces personales de la campaña (cada persona entra de nuevo con su PIN)
  *   POST /a/encuestado           {campana_id, personas[{nombre, correo?, gerencia, seccion, rol?}]}   (alta rápida de responsables, sin enlace personal)
  *   POST /a/ventana              {campana_id, gerencia, seccion, abre?, cierra?, mensaje?}   (disponibilidad de una sección: abre bloquea antes; cierra es solo plazo)
  *   POST /a/campana/invitacion   {campana_id, invitacion}   (texto de invitación; vacío = texto base)
@@ -93,8 +103,11 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { leerEstructura, prepararEstructura, asegurarEstructura, areasDeEstructura } from './estructura.js';
 import { rutaFlujo, rutaFlujoCatalogo, rutaFlujoConfirmar, rutaFlujoRetroceder, rutaFlujoProceso, rutaFlujoAdmin, rutaFlujoReabrir, guardarCambio } from './flujo.js';
+import { rutaDocumentoSubir, rutaDocumentos, rutaDocumentoArchivo, rutaDocumentoGerencia, rutaDocumentoAnalizar, rutaDocumentoProcesos, rutaUmbral,
+  rutaDocumentoExtraer, rutaPrecargaBorrador, borradoresDeCampana, sentenciasRastroDeProcesos, sentenciasRastroDeCampana, borrarArchivosDeCampana } from './documentos.js';
 import { ambitoDe, enSecs, claveArea, registrarAccion } from './ambito.js';
-import { HttpError, ahora, uid, txt, normal, mismaArea, log, mascara, igualSeguro, tokenNuevo } from './comun.js';
+import { PUNTO_CAMPO, ACTOR_IA, ACTOR_CONSOLA, actorEncuestado, sentenciasHistorial, conBorrados, ultimosEventos, puedeAutomatico, valoresDeProceso, validarCampoDeEncuesta, rutaHistorialMatriz } from './matriz-sync.js';
+import { HttpError, ahora, uid, txt, normal, mismaArea, log, mascara, igualSeguro, tokenNuevo, pinValido, salNueva, hashPin, verificarPin } from './comun.js';
 import { hashClaveSup, listaSupervisores, gestionarSupervisores, rutaPersonaPerfil, rutaUsuario, rutaClavesPerfiles, aplicarPerfil, asignarSeccionesYProcesos } from './usuarios.js';
 
 // Modelo de IA y esfuerzo por tarea: se cambian en wrangler.toml [vars] sin tocar el código (por defecto, Claude Sonnet 5.5).
@@ -331,11 +344,16 @@ async function procesoPermitido(env, e, procesoId) {
   return p;
 }
 
+// Un proceso es «de su sección» si está en su gerencia y sección, sea del inventario o agregado por cualquier persona de la
+// sección: lo que alguien agrega lo ven todos al refrescar. El que agregó la persona misma no cuenta aquí: es «propio» y se
+// muestra en su parte 2.
+const deSuSeccion = (p, e) => mismaArea(p.gerencia, e.gerencia) && mismaArea(p.seccion, e.seccion) && !(p.fuente === 'nuevo' && p.creado_por === e.id);
+
 async function rutaSesion(env, url) {
   const e = await encuestadoPorToken(env, url.searchParams.get('k'));
-  const [camp, procs, asig, revs, resps, sis, pre, asigCons, respOtros] = await Promise.all([
-    env.DB.prepare('SELECT nombre, cliente, logo FROM campanas WHERE id=?').bind(e.campana_id).first(),
-    env.DB.prepare(`SELECT id, codigo, gerencia, seccion, macroproceso, proceso, subproceso, descripcion, fuente, creado_por, orden
+  const [camp, procs, asig, revs, resps, sis, pre, asigCons, respOtros, ultimas, analisis] = await Promise.all([
+    env.DB.prepare('SELECT nombre, cliente, logo, ia_auto FROM campanas WHERE id=?').bind(e.campana_id).first(),
+    env.DB.prepare(`SELECT id, codigo, gerencia, seccion, macroproceso, proceso, subproceso, descripcion, fuente, creado_por, orden, matriz, actualizado_en, validacion
       FROM procesos WHERE campana_id=? AND fuera_alcance=0`).bind(e.campana_id).all(),
     env.DB.prepare('SELECT proceso_id, origen FROM asignaciones WHERE encuestado_id=?').bind(e.id).all(),
     env.DB.prepare('SELECT proceso_id, estado, comentario FROM revisiones WHERE encuestado_id=?').bind(e.id).all(),
@@ -344,7 +362,10 @@ async function rutaSesion(env, url) {
     env.DB.prepare('SELECT pc.proceso_id, pc.punto FROM precarga pc JOIN procesos p ON p.id=pc.proceso_id WHERE p.campana_id=?').bind(e.campana_id).all(),
     // Responsables asignados por el equipo (nombres sugeridos) y personas que ya empezaron a responder un proceso.
     env.DB.prepare("SELECT a.proceso_id, a.encuestado_id, x.nombre FROM asignaciones a JOIN encuestados x ON x.id=a.encuestado_id WHERE x.campana_id=? AND a.origen='consultor'").bind(e.campana_id).all(),
-    env.DB.prepare("SELECT DISTINCT r.proceso_id, x.nombre FROM respuestas r JOIN encuestados x ON x.id=r.encuestado_id WHERE x.campana_id=? AND x.id<>? AND (trim(r.texto)<>'' OR r.sistemas<>'[]')").bind(e.campana_id, e.id).all()
+    env.DB.prepare("SELECT DISTINCT r.proceso_id, x.nombre FROM respuestas r JOIN encuestados x ON x.id=r.encuestado_id WHERE x.campana_id=? AND x.id<>? AND (trim(r.texto)<>'' OR r.sistemas<>'[]')").bind(e.campana_id, e.id).all(),
+    // Última respuesta con texto de cada proceso y cuándo se estructuró por última vez: si la respuesta es más nueva, la descripción está desactualizada.
+    env.DB.prepare("SELECT r.proceso_id, MAX(r.actualizado) AS ultima FROM respuestas r JOIN encuestados x ON x.id=r.encuestado_id WHERE x.campana_id=? AND trim(r.texto)<>'' GROUP BY r.proceso_id").bind(e.campana_id).all(),
+    env.DB.prepare('SELECT proceso_id, generado FROM estructurado WHERE campana_id=?').bind(e.campana_id).all()
   ]);
   // «excluido»: el equipo quitó de su lista un proceso de su sección (no le corresponde).
   const excluidos = new Set(asig.results.filter(a => a.origen === 'excluido').map(a => a.proceso_id));
@@ -352,9 +373,9 @@ async function rutaSesion(env, url) {
   // Procesos que el equipo le asignó o que le corresponden por su nombre en el inventario anterior.
   const asignadoPor = {};
   asig.results.forEach(a => { if (a.origen && a.origen !== 'encuestado' && a.origen !== 'excluido') asignadoPor[a.proceso_id] = a.origen; });
-  // Su sección (sin los nuevos que agregó otra persona), lo que eligió con el buscador y lo que agregó.
+  // Su sección (del inventario o agregados por cualquier persona de la sección), lo que eligió con el buscador y lo que agregó.
   // La sección se compara normalizada: una diferencia de mayúsculas o tildes en la carga no deja a nadie sin procesos.
-  const enSeccion = p => p.fuente !== 'nuevo' && mismaArea(p.gerencia, e.gerencia) && mismaArea(p.seccion, e.seccion);
+  const enSeccion = p => deSuSeccion(p, e);
   const orden = (a, b) => (a.orden - b.orden) || normal(a.macroproceso).localeCompare(normal(b.macroproceso))
     || normal(a.proceso).localeCompare(normal(b.proceso)) || normal(a.subproceso).localeCompare(normal(b.subproceso));
   const mios = new Set(asig.results.filter(a => a.origen === 'consultor').map(a => a.proceso_id));
@@ -375,6 +396,18 @@ async function rutaSesion(env, url) {
   // Puntos del checklist que el equipo ya cubrió con documentos: solo sus ids (el texto es interno).
   const precarga = {}, visibles = new Set(procesos.map(x => x.id));
   pre.results.forEach(x => { if (visibles.has(x.proceso_id)) (precarga[x.proceso_id] = precarga[x.proceso_id] || []).push(x.punto); });
+  // Lo ya trabajado de cada proceso (IA, documentos, equipo, otras validaciones) desde la matriz, la única fuente: la persona
+  // lo conserva, lo edita o lo reemplaza. Solo los campos con punto en el checklist; nunca el resto de la matriz.
+  const eventos = await ultimosEventos(env, { campana_id: e.campana_id }), valores = {};
+  const ultimaResp = {}, generadoEn = {};
+  ultimas.results.forEach(x => { ultimaResp[x.proceso_id] = x.ultima; });
+  analisis.results.forEach(x => { generadoEn[x.proceso_id] = x.generado; });
+  const desactualizado = pid => !!ultimaResp[pid] && (!generadoEn[pid] || ultimaResp[pid] > generadoEn[pid]);
+  procs.results.forEach(p => {
+    if (!visibles.has(p.id)) return;
+    const v = valoresDeProceso(p, leerMatriz(p.matriz), eventos[p.id], { desactualizado: desactualizado(p.id) });
+    if (Object.keys(v).length) valores[p.id] = v;
+  });
   // Puntos del checklist que otras personas ya cubrieron en los procesos que esta persona responde: solo sus nombres, nunca su texto.
   const activos = revs.results.filter(r => (r.estado === 'vigente' || r.estado === 'cambio') && visibles.has(r.proceso_id)).map(r => r.proceso_id);
   const otros = {};
@@ -403,7 +436,7 @@ async function rutaSesion(env, url) {
     ok: true,
     campana: camp,
     encuestado: { nombre: e.nombre, gerencia: e.gerencia, seccion: e.seccion, rol: e.rol, estado: e.estado, origen: e.origen },
-    procesos, revisiones, respuestas, precarga, otros,
+    procesos, revisiones, respuestas, precarga, otros, valores,
     sistemas: sis.results,
     bloques: BLOQUES,
     fuera_alcance: (await env.DB.prepare('SELECT COUNT(*) AS n FROM procesos WHERE campana_id=? AND fuera_alcance=1').bind(e.campana_id).first()).n,
@@ -520,7 +553,7 @@ async function rutaElegir(env, b) {
   if (!procesos.length) throw new HttpError(404, 'Proceso no encontrado');
   await marcarEnCurso(env, e);
   const vista = p => Object.assign(publico(p), {
-    enSeccion: mismaArea(p.gerencia, e.gerencia) && mismaArea(p.seccion, e.seccion) && p.fuente !== 'nuevo',
+    enSeccion: deSuSeccion(p, e),
     propio: p.fuente === 'nuevo' && p.creado_por === e.id,
     elegido: true
   });
@@ -545,6 +578,7 @@ async function rutaSoltar(env, b) {
   if (p.fuente === 'nuevo' && p.creado_por === e.id && !otros.n) {
     st.push(env.DB.prepare('DELETE FROM estructurado WHERE proceso_id=?').bind(p.id));
     st.push(env.DB.prepare('DELETE FROM precarga WHERE proceso_id=?').bind(p.id));
+    st.push(...sentenciasRastroDeProcesos(env, 'SELECT ?', [p.id]));
     st.push(env.DB.prepare('DELETE FROM procesos WHERE id=?').bind(p.id));
   }
   await env.DB.batch(st);
@@ -663,27 +697,78 @@ async function rutaAbierta(env, url) {
     if (!nombreSec) throw new HttpError(404, 'Este enlace ya no es válido. Pide uno nuevo al equipo consultor.');
     const v = estadoVentana(await ventanaDe(env, camp.id, area.gerencia, nombreSec));
     const bloqueada = v.estado === 'antes';
-    const resp = bloqueada ? [] : (await env.DB.prepare('SELECT id, nombre, rol, gerencia, seccion FROM encuestados WHERE campana_id=? ORDER BY nombre').bind(camp.id).all()).results
-      .filter(x => mismaArea(x.gerencia, area.gerencia) && mismaArea(x.seccion, nombreSec)).map(x => ({ id: x.id, nombre: x.nombre, rol: x.rol }));
+    let resp = [];
+    if (!bloqueada) {
+      // Avance de cada persona (solo cifras): «X de N confirmados» = procesos de la sección con su relación marcada.
+      const [pers, procs, revs, excl] = await Promise.all([
+        env.DB.prepare('SELECT id, nombre, rol, gerencia, seccion, actualizado, ultimo_acceso FROM encuestados WHERE campana_id=? ORDER BY nombre').bind(camp.id).all(),
+        env.DB.prepare('SELECT id, gerencia, seccion, fuente, fuera_alcance, creado_por FROM procesos WHERE campana_id=?').bind(camp.id).all(),
+        env.DB.prepare('SELECT r.encuestado_id, r.proceso_id FROM revisiones r JOIN encuestados e ON e.id=r.encuestado_id WHERE e.campana_id=?').bind(camp.id).all(),
+        env.DB.prepare("SELECT a.encuestado_id, a.proceso_id FROM asignaciones a JOIN encuestados e ON e.id=a.encuestado_id WHERE e.campana_id=? AND a.origen='excluido'").bind(camp.id).all()
+      ]);
+      const base = procs.results.filter(p => !p.fuera_alcance && mismaArea(p.gerencia, area.gerencia) && mismaArea(p.seccion, nombreSec));
+      resp = pers.results.filter(x => mismaArea(x.gerencia, area.gerencia) && mismaArea(x.seccion, nombreSec)).map(x => {
+        const fuera = new Set(excl.results.filter(a => a.encuestado_id === x.id).map(a => a.proceso_id));
+        const suyos = new Set(base.filter(p => !fuera.has(p.id) && p.creado_por !== x.id).map(p => p.id));
+        const hechos = revs.results.filter(r => r.encuestado_id === x.id && suyos.has(r.proceso_id)).length;
+        return { id: x.id, nombre: x.nombre, rol: x.rol, acceso: x.ultimo_acceso || x.actualizado || '', confirmados: hechos, total: suyos.size };
+      });
+    }
     salida.seccion = { gerencia: area.gerencia, seccion: nombreSec, bloqueada, mensaje: bloqueada ? mensajeAntes(v) : '', responsables: resp };
   }
   return salida;
 }
 
-// Enlace de sección: la persona elige su nombre en la lista o escribe su correo corporativo y entra a su registro (sin verificación adicional).
+// Verificación ligera con PIN de 4 dígitos (RNF-01). Quien aún no tiene PIN (cargado por Excel o registrado antes)
+// lo crea en su primer ingreso con el mismo envío. 5 fallos seguidos bloquean a la persona hasta que MBC la desbloquee desde la
+// consola (pin_bloqueo no vacío); además cada IP tiene su propio límite temporal.
+const PIN_FALLOS_MAX = 5;
+const MSG_PIN = 'Los datos no coinciden. Revisa tu PIN o pide a la consultora que lo restablezca.';
+async function exigirPin(env, e, pin, ip) {
+  const ventana = Math.floor(Date.now() / 600000), clave = 'r:' + String(ip || 'sin-ip').slice(0, 60), limite = (Number(env.LIMITE_INTENTOS) || 15) * 2;
+  const bloqueada = () => new HttpError(423, 'Tu acceso está bloqueado por intentos fallidos. Pide al equipo MBC que lo desbloquee.', { bloqueado: true });
+  const fila = await env.DB.prepare('SELECT n FROM login_intentos WHERE ip=? AND ventana=?').bind(clave, ventana).first();
+  if (fila && fila.n >= limite) throw new HttpError(429, 'Demasiados intentos. Espera unos minutos y vuelve a intentar.');
+  if (e.pin_bloqueo) throw bloqueada();
+  if (!e.pin_hash) {   // primer ingreso: crea su PIN. Solo gana el primer envío: si otro lo creó en paralelo, este se rechaza.
+    if (!pinValido(pin)) throw new HttpError(400, 'Crea un PIN de 4 dígitos.', { requierePin: 'crear' });
+    const sal = salNueva();
+    const hecho = await env.DB.prepare("UPDATE encuestados SET pin_hash=?, pin_sal=?, pin_fallos=0, pin_bloqueo='' WHERE id=? AND pin_hash='' RETURNING id").bind(await hashPin(pin, sal), sal, e.id).first();
+    if (!hecho) throw new HttpError(409, 'Esta persona ya creó su PIN. Vuelve a elegir tu nombre e ingresa con él.', { requierePin: 'pedir' });
+    return 'creado';
+  }
+  if (!pinValido(pin)) throw new HttpError(400, 'Escribe tu PIN de 4 dígitos.', { requierePin: 'pedir' });
+  // El intento se cuenta ANTES de comparar el PIN y de forma atómica: así una ráfaga de envíos en paralelo no puede probar más de
+  // 5 PIN (solo los 5 primeros llegan a compararse; el resto se rechaza como bloqueado).
+  const intento = await env.DB.prepare("UPDATE encuestados SET pin_fallos = pin_fallos + 1 WHERE id=? AND pin_bloqueo='' RETURNING pin_fallos").bind(e.id).first();
+  const bloquear = () => env.DB.prepare("UPDATE encuestados SET pin_bloqueo=? WHERE id=? AND pin_bloqueo=''").bind(ahora(), e.id).run();
+  if (!intento) throw bloqueada();
+  if (intento.pin_fallos > PIN_FALLOS_MAX) { await bloquear(); throw bloqueada(); }
+  if (await verificarPin(pin, e.pin_sal, e.pin_hash)) {
+    await env.DB.prepare("UPDATE encuestados SET pin_fallos=0 WHERE id=? AND pin_bloqueo=''").bind(e.id).run();
+    return 'ok';
+  }
+  await env.DB.batch([
+    env.DB.prepare('INSERT INTO login_intentos (ip, ventana, n) VALUES (?,?,1) ON CONFLICT(ip, ventana) DO UPDATE SET n=n+1').bind(clave, ventana),
+    env.DB.prepare('DELETE FROM login_intentos WHERE ventana < ?').bind(ventana - 6)
+  ]);
+  if (intento.pin_fallos >= PIN_FALLOS_MAX) {
+    await bloquear();
+    throw new HttpError(423, 'Superaste los 5 intentos: tu acceso quedó bloqueado. Pide al equipo MBC que lo desbloquee.', { bloqueado: true });
+  }
+  throw new HttpError(401, MSG_PIN, { requierePin: 'pedir' });
+}
+const tocarAcceso = (env, e) => env.DB.prepare('UPDATE encuestados SET ultimo_acceso=? WHERE id=?').bind(ahora(), e.id).run();
+
+// Enlace de sección: la persona elige su nombre en la lista y entra a su registro con su PIN.
 async function rutaIdentificar(env, b) {
   const camp = await campanaAbierta(env, b.c);
-  let e = null;
-  if (b.id) {
-    e = await env.DB.prepare('SELECT * FROM encuestados WHERE id=? AND campana_id=?').bind(txt(b.id, 60), camp.id).first();
-  } else {
-    const correo = txt(b.correo, 150).toLowerCase();
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(correo)) throw new HttpError(400, 'Escribe un correo válido.');
-    e = await env.DB.prepare('SELECT * FROM encuestados WHERE campana_id=? AND lower(correo)=?').bind(camp.id, correo).first();
-  }
-  if (!e) throw new HttpError(404, b.id ? 'No encontramos a esa persona. Actualiza la página y elige de nuevo.' : 'No encontramos ese correo en esta encuesta. Elige tu nombre en la lista o regístrate.');
+  const e = await env.DB.prepare('SELECT * FROM encuestados WHERE id=? AND campana_id=?').bind(txt(b.id, 60), camp.id).first();
+  if (!e) throw new HttpError(404, 'No encontramos a esa persona. Actualiza la página y elige de nuevo.');
   await exigirVentanaAbierta(env, camp.id, e.gerencia, e.seccion);
-  log('identificar', { campana: camp.id, por: b.id ? 'nombre' : 'correo' });
+  const pin = await exigirPin(env, e, b.pin, b._ip);
+  await tocarAcceso(env, e);
+  log('identificar', { campana: camp.id, pin });
   return { ok: true, k: e.token, nombre: e.nombre };
 }
 
@@ -721,20 +806,15 @@ async function rutaBuscar(env, url) {
 
 async function rutaRegistro(env, b) {
   const camp = await campanaAbierta(env, b.c);
-  const nombre = txt(b.nombre, 150), correo = txt(b.correo, 150).toLowerCase();
+  const nombre = txt(b.nombre, 150);
   const gerencia = txt(b.gerencia, 150), seccion = txt(b.seccion, 150);
   if (nombre.length < 3) throw new HttpError(400, 'Escribe tu nombre y apellido.');
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(correo)) throw new HttpError(400, 'Escribe un correo válido.');
-  const dominio = (camp.dominio || '').trim().toLowerCase().replace(/^@/, '');
-  if (dominio && !correo.endsWith('@' + dominio)) throw new HttpError(400, 'Usa tu correo corporativo (@' + dominio + ').');
   if (!gerencia || !seccion) throw new HttpError(400, 'Indica tu gerencia y tu sección.');
-  // Un correo, una persona: si ya está registrada, entra a su registro (no se crea otro).
-  const ya = await env.DB.prepare('SELECT * FROM encuestados WHERE campana_id=? AND lower(correo)=?').bind(camp.id, correo).first();
-  if (ya) {
-    await exigirVentanaAbierta(env, camp.id, ya.gerencia, ya.seccion);
-    log('registro_existente', { campana: camp.id });
-    return { ok: true, k: ya.token, nombre: ya.nombre, existente: true };
-  }
+  // Un nombre, una persona en la sección (RN-06): quien ya se registró entra eligiendo su nombre en la lista, con su PIN.
+  const mismos = (await env.DB.prepare('SELECT nombre, gerencia, seccion FROM encuestados WHERE campana_id=?').bind(camp.id).all()).results
+    .some(x => normal(x.nombre) === normal(nombre) && mismaArea(x.gerencia, gerencia) && mismaArea(x.seccion, seccion));
+  if (mismos) throw new HttpError(409, 'Ya hay alguien registrado con ese nombre en esta sección. Si eres tú, elígelo en la lista e ingresa con tu PIN; si no, agrega tu segundo apellido.');
+  if (!pinValido(b.pin)) throw new HttpError(400, 'Crea un PIN de 4 dígitos.', { requierePin: 'crear' });
   await exigirVentanaAbierta(env, camp.id, gerencia, seccion);
   if (b.fija) {   // enlace de sección: la sección debe existir en el mapa
     const areas = await areasDeCampana(env, camp.id), area = areas.find(a => mismaArea(a.gerencia, gerencia));
@@ -742,9 +822,9 @@ async function rutaRegistro(env, b) {
   }
 
   const ids = [...new Set(Array.isArray(b.procesos) ? b.procesos.map(x => txt(x, 60)).filter(Boolean) : [])].slice(0, 60);
-  const id = uid(), token = tokenNuevo(), t = ahora();
-  await env.DB.prepare(`INSERT INTO encuestados (id, campana_id, token, nombre, correo, gerencia, seccion, rol, estado, actualizado, origen, creado)
-    VALUES (?,?,?,?,?,?,?,?,?,?,'abierto',?)`).bind(id, camp.id, token, nombre, correo, gerencia, seccion, txt(b.cargo, 80), ids.length ? 'en_curso' : 'pendiente', t, t).run();
+  const id = uid(), token = tokenNuevo(), t = ahora(), sal = salNueva();
+  await env.DB.prepare(`INSERT INTO encuestados (id, campana_id, token, nombre, gerencia, seccion, rol, estado, actualizado, origen, creado, pin_hash, pin_sal, ultimo_acceso)
+    VALUES (?,?,?,?,?,?,?,?,?,'abierto',?,?,?,?)`).bind(id, camp.id, token, nombre, gerencia, seccion, txt(b.cargo, 80), ids.length ? 'en_curso' : 'pendiente', t, t, await hashPin(b.pin, sal), sal, t).run();
   const e = { id, campana_id: camp.id };
   const elegidos = ids.length ? await asignarProcesos(env, e, ids, 'encuestado') : [];
   // Procesos donde figura con su nombre en el inventario anterior: quedan en su lista para que confirme su relación.
@@ -853,6 +933,7 @@ async function rutaImportar(env, b) {
     st.push(env.DB.prepare('DELETE FROM encuestados WHERE campana_id=?').bind(camp.id));
     st.push(env.DB.prepare('DELETE FROM estructurado WHERE campana_id=?').bind(camp.id));
     st.push(env.DB.prepare('DELETE FROM precarga WHERE proceso_id IN (SELECT id FROM procesos WHERE campana_id=?)').bind(camp.id));
+    st.push(...sentenciasRastroDeProcesos(env, 'SELECT id FROM procesos WHERE campana_id=?', [camp.id]));
     st.push(env.DB.prepare('DELETE FROM procesos WHERE campana_id=?').bind(camp.id));
     st.push(env.DB.prepare('DELETE FROM sistemas WHERE campana_id=?').bind(camp.id));
     st.push(env.DB.prepare('DELETE FROM estructura WHERE campana_id=?').bind(camp.id));
@@ -952,6 +1033,7 @@ async function rutaImportar(env, b) {
         .bind(gerencia, seccion, txt(x.macroproceso, 200), txt(x.proceso, 200), txt(x.subproceso, 200),
           txt(x.descripcion, 1500), txt(x.descripcion, 1500), personas, personas, JSON.stringify(matriz), JSON.stringify(matriz), JSON.stringify(iaPrev),
           val, val, txt(x.validado_por, 150), val, t, t, id));
+      st.push(...sentenciasHistorial(env, { id, campana_id: camp.id }, mPrev, Object.assign({}, mPrev, matriz), ACTOR_CONSOLA, 'importacion'));
       nPAct++;
       return;
     }
@@ -985,7 +1067,7 @@ async function rutaImportar(env, b) {
       try {
         asignados += await asignarSeccionesYProcesos(env, camp.id, p.id, p.extras, []);
         if (p.perfil) {
-          const r = await aplicarPerfil(env, campCompleta, p, p.perfil, { secciones: p.extras });
+          const r = await aplicarPerfil(env, campCompleta, p, p.perfil, { secciones: p.extras.length ? p.extras : undefined });
           if (r.clave) claves.push({ encuestado_id: p.id, nombre: p.nombre, correo: p.correo, perfil: p.perfil, clave: r.clave });
         }
       } catch (e) { avisosPerfil.push(p.nombre + ': ' + (e instanceof HttpError ? e.message : 'no se pudo dar el perfil')); }
@@ -1001,7 +1083,7 @@ async function rutaCampana(env, url) {
   if (!camp) throw new HttpError(404, 'Campaña no encontrada');
   const q = s => env.DB.prepare(s).bind(id).all().then(r => r.results);
   const [encuestados, procesos, revisiones, respuestas, asignaciones, sistemas, estructurado, precarga, ventanas] = await Promise.all([
-    q('SELECT id, token, nombre, correo, gerencia, seccion, rol, estado, actualizado, origen, creado FROM encuestados WHERE campana_id=? ORDER BY gerencia, seccion, nombre'),
+    q("SELECT id, token, nombre, correo, gerencia, seccion, rol, estado, actualizado, origen, creado, ultimo_acceso, pin_hash<>'' AS tiene_pin, pin_bloqueo<>'' AS bloqueado FROM encuestados WHERE campana_id=? ORDER BY gerencia, seccion, nombre"),
     q('SELECT * FROM procesos WHERE campana_id=? ORDER BY gerencia, seccion, orden, macroproceso, proceso, subproceso'),
     q('SELECT r.* FROM revisiones r JOIN encuestados e ON e.id=r.encuestado_id WHERE e.campana_id=?'),
     q('SELECT r.* FROM respuestas r JOIN encuestados e ON e.id=r.encuestado_id WHERE e.campana_id=?'),
@@ -1015,9 +1097,10 @@ async function rutaCampana(env, url) {
   precarga.forEach(x => { x.archivos = JSON.parse(x.archivos || '[]'); });
   respuestas.forEach(x => { x.sistemas = JSON.parse(x.sistemas || '[]'); x.checklist = leerMatriz(x.checklist); });
   procesos.forEach(x => { x.matriz = leerMatriz(x.matriz); x.matriz_ia = leerMatriz(x.matriz_ia); });
+  const borr = await borradoresDeCampana(env, id);
   const sups = (await env.DB.prepare("SELECT id, encuestado_id, perfil, activo FROM supervisores WHERE campana_id=? AND encuestado_id<>''").bind(id).all()).results;
   encuestados.forEach(e => { const sp = sups.find(x => x.encuestado_id === e.id && x.activo); e.perfil = sp ? sp.perfil : 'responsable'; e.sup_id = sp ? sp.id : ''; });
-  return { ok: true, campana: camp, encuestados, procesos, revisiones, respuestas, asignaciones, sistemas, estructurado, precarga, ventanas, estructura: await leerEstructura(env, id), supervisores: await listaSupervisores(env, id), bloques: BLOQUES, estandares_base: ESTANDARES_BASE };
+  return { ok: true, campana: camp, encuestados, procesos, revisiones, respuestas, asignaciones, sistemas, estructurado, precarga, precarga_borrador: borr.precarga_borrador, extracciones: borr.extracciones, punto_campo: PUNTO_CAMPO, ventanas, estructura: await leerEstructura(env, id), supervisores: await listaSupervisores(env, id), bloques: BLOQUES, estandares_base: ESTANDARES_BASE };
 }
 
 // Alta o edición de un proceso desde el mapa de la consola.
@@ -1076,9 +1159,10 @@ async function rutaProcesoMover(env, b) {
     const actualizado = restaura && m.actualizado_en !== undefined ? (m.actualizado_en ? txt(m.actualizado_en, 40) : null) : t;
     st.push(env.DB.prepare('UPDATE procesos SET gerencia=?, seccion=?, macroproceso=?, matriz=?, validacion=?, actualizado_en=? WHERE id=?')
       .bind(g, sec, mac, JSON.stringify(mx), validacion, actualizado, p.id));
+    st.push(...sentenciasHistorial(env, p, leerMatriz(p.matriz), mx, ACTOR_CONSOLA, 'consola'));
     procesos.push({ id: p.id, gerencia: g, seccion: sec, macroproceso: mac, matriz: mx, validacion, actualizado_en: actualizado });
   }
-  await env.DB.batch(st);
+  for (let i = 0; i < st.length; i += 90) await env.DB.batch(st.slice(i, i + 90));
   for (const p of procesos) await asegurarEstructura(env, camp.id, p.gerencia, p.seccion);
   log('mover', { campana: camp.id, procesos: procesos.length, restaura });
   return { ok: true, procesos };
@@ -1108,9 +1192,10 @@ async function rutaProcesoRenombrar(env, b) {
     const validacion = p.validacion === 'validado' ? 'validado' : 'actualizado';
     st.push(env.DB.prepare(`UPDATE procesos SET ${nivel}=?, matriz=?, validacion=?, actualizado_en=? WHERE id=?`)
       .bind(nuevoNombre, JSON.stringify(mx), validacion, t, p.id));
+    st.push(...sentenciasHistorial(env, p, leerMatriz(p.matriz), mx, ACTOR_CONSOLA, 'consola'));
     procesos.push({ id: p.id, [nivel]: nuevoNombre, matriz: mx, validacion, actualizado_en: t });
   }
-  await env.DB.batch(st);
+  for (let i = 0; i < st.length; i += 90) await env.DB.batch(st.slice(i, i + 90));
   log('renombrar', { campana: camp.id, nivel, filas: procesos.length });
   return { ok: true, procesos };
 }
@@ -1169,6 +1254,7 @@ async function rutaProcesoBorrar(env, b) {
     env.DB.prepare('DELETE FROM respuestas WHERE proceso_id=?').bind(p.id),
     env.DB.prepare('DELETE FROM estructurado WHERE proceso_id=?').bind(p.id),
     env.DB.prepare('DELETE FROM precarga WHERE proceso_id=?').bind(p.id),
+    ...sentenciasRastroDeProcesos(env, 'SELECT ?', [p.id]),
     env.DB.prepare('DELETE FROM procesos WHERE id=?').bind(p.id)
   ]);
   return { ok: true };
@@ -1179,7 +1265,7 @@ async function rutaProcesoBorrar(env, b) {
 async function rutaMatriz(env, b) {
   const p = await env.DB.prepare('SELECT * FROM procesos WHERE id=?').bind(b.proceso_id).first();
   if (!p) throw new HttpError(404, 'Proceso no encontrado');
-  const m = leerMatriz(p.matriz), ia = leerMatriz(p.matriz_ia);
+  const m = leerMatriz(p.matriz), ia = leerMatriz(p.matriz_ia), antes = Object.assign({}, m);
   const edita = b.matriz && typeof b.matriz === 'object';
   if (edita) {
     MATRIZ_CLAVES.forEach(k => {
@@ -1204,9 +1290,12 @@ async function rutaMatriz(env, b) {
     macroproceso: txt(m.macroproceso || p.macroproceso, 200), proceso: txt(m.proceso || p.proceso, 200), subproceso: txt(m.subproceso || p.subproceso, 200)
   };
   const t = ahora();
-  await env.DB.prepare(`UPDATE procesos SET matriz=?, matriz_ia=?, validacion=?, validado_por=?, validado_en=?, actualizado_en=?,
+  await env.DB.batch([
+    env.DB.prepare(`UPDATE procesos SET matriz=?, matriz_ia=?, validacion=?, validado_por=?, validado_en=?, actualizado_en=?,
       codigo=?, gerencia=?, seccion=?, macroproceso=?, proceso=?, subproceso=? WHERE id=?`)
-    .bind(JSON.stringify(m), JSON.stringify(ia), validacion, validadoPor, validadoEn, t, f.codigo, f.gerencia, f.seccion, f.macroproceso, f.proceso, f.subproceso, p.id).run();
+      .bind(JSON.stringify(m), JSON.stringify(ia), validacion, validadoPor, validadoEn, t, f.codigo, f.gerencia, f.seccion, f.macroproceso, f.proceso, f.subproceso, p.id),
+    ...sentenciasHistorial(env, p, antes, conBorrados(antes, m), ACTOR_CONSOLA, 'consola')
+  ]);
   log('matriz', { campana: p.campana_id, proceso: p.id, validacion, campos: edita ? Object.keys(b.matriz).length : 0 });
   return { ok: true, proceso: Object.assign({}, p, f, { matriz: m, matriz_ia: ia, validacion, validado_por: validadoPor, validado_en: validadoEn, actualizado_en: t }) };
 }
@@ -1228,6 +1317,38 @@ async function rutaValidacion(env, b) {
 // parámetros de D1). Quien ya respondió solo se borra con forzar=true y sus respuestas se borran con él.
 // Los procesos que agregó se borran si nadie más los usa; si otra persona los usa, se conservan sin autor.
 const MAX_BORRAR = 30;
+// Cierra todas las sesiones y enlaces personales de una campaña: cada persona recibe un acceso nuevo que solo se entrega tras
+// verificar su PIN, de modo que un enlace ?k= enviado antes (por correo, chat…) deja de servir. Nadie pierde su avance.
+async function rutaRenovarAccesos(env, b) {
+  const camp = await env.DB.prepare('SELECT id FROM campanas WHERE id=?').bind(txt(b.campana_id, 60)).first();
+  if (!camp) throw new HttpError(404, 'Campaña no encontrada');
+  const n = (await env.DB.prepare('SELECT COUNT(*) AS n FROM encuestados WHERE campana_id=?').bind(camp.id).first()).n;
+  await env.DB.prepare('UPDATE encuestados SET token = lower(hex(randomblob(10))) WHERE campana_id=?').bind(camp.id).run();
+  await registrarAccion(env, camp.id, { rol: 'admin', nombre: 'Equipo MBC' }, 'accesos_renovados', { personas: n });
+  log('accesos_renovados', { campana: camp.id, personas: n });
+  return { ok: true, personas: n };
+}
+
+// Con accion='desbloquear' se levanta el bloqueo por intentos y la persona conserva su PIN. Sin ella se restablece el PIN
+// (lo creará de nuevo en su próximo ingreso) y, con revocar_enlace, cambia su enlace de sesión: el anterior deja de funcionar
+// y se entrega el nuevo. Solo el equipo consultor.
+async function rutaEncuestadoPin(env, b) {
+  const e = await env.DB.prepare('SELECT id, campana_id, nombre FROM encuestados WHERE id=?').bind(txt(b.encuestado_id, 60)).first();
+  if (!e) throw new HttpError(404, 'Persona no encontrada');
+  if (b.accion === 'desbloquear') {
+    await env.DB.prepare("UPDATE encuestados SET pin_fallos=0, pin_bloqueo='' WHERE id=?").bind(e.id).run();
+    await registrarAccion(env, e.campana_id, { rol: 'admin', nombre: 'Equipo MBC' }, 'pin_desbloqueado', { persona: e.nombre, encuestado_id: e.id });
+    log('pin_desbloqueado', { campana: e.campana_id });
+    return { ok: true };
+  }
+  const token = b.revocar_enlace ? tokenNuevo() : null;
+  await env.DB.prepare(`UPDATE encuestados SET pin_hash='', pin_sal='', pin_fallos=0, pin_bloqueo=''${token ? ', token=?' : ''} WHERE id=?`)
+    .bind(...(token ? [token, e.id] : [e.id])).run();
+  await registrarAccion(env, e.campana_id, { rol: 'admin', nombre: 'Equipo MBC' }, token ? 'enlace_revocado' : 'pin_restablecido', { persona: e.nombre, encuestado_id: e.id });
+  log('pin_restablecido', { campana: e.campana_id, enlace: !!token });
+  return Object.assign({ ok: true }, token ? { k: token } : {});
+}
+
 async function rutaEncuestadoBorrar(env, b) {
   const ids = [...new Set((Array.isArray(b.encuestado_ids) ? b.encuestado_ids : [b.encuestado_id]).map(x => txt(x, 60)).filter(Boolean))];
   if (!ids.length) throw new HttpError(400, 'No se indicaron personas');
@@ -1254,6 +1375,7 @@ async function rutaEncuestadoBorrar(env, b) {
     } else {
       st.push(env.DB.prepare('DELETE FROM estructurado WHERE proceso_id=?').bind(p.id));
       st.push(env.DB.prepare('DELETE FROM precarga WHERE proceso_id=?').bind(p.id));
+      st.push(...sentenciasRastroDeProcesos(env, 'SELECT ?', [p.id]));
       st.push(env.DB.prepare('DELETE FROM procesos WHERE id=?').bind(p.id));
     }
   }
@@ -1305,6 +1427,8 @@ async function rutaBorrarCampana(env, b) {
     env.DB.prepare('DELETE FROM asignaciones WHERE encuestado_id IN (SELECT id FROM encuestados WHERE campana_id=?)').bind(camp.id),
     env.DB.prepare('DELETE FROM estructurado WHERE campana_id=?').bind(camp.id),
     env.DB.prepare('DELETE FROM precarga WHERE proceso_id IN (SELECT id FROM procesos WHERE campana_id=?)').bind(camp.id),
+    ...sentenciasRastroDeProcesos(env, 'SELECT id FROM procesos WHERE campana_id=?', [camp.id]),
+    ...sentenciasRastroDeCampana(env, camp.id),
     env.DB.prepare('DELETE FROM procesos WHERE campana_id=?').bind(camp.id),
     env.DB.prepare('DELETE FROM sistemas WHERE campana_id=?').bind(camp.id),
     env.DB.prepare('DELETE FROM ventanas WHERE campana_id=?').bind(camp.id),
@@ -1317,7 +1441,9 @@ async function rutaBorrarCampana(env, b) {
     env.DB.prepare('DELETE FROM encuestados WHERE campana_id=?').bind(camp.id),
     env.DB.prepare('DELETE FROM campanas WHERE id=?').bind(camp.id)
   ]);
-  log('campana_borrada', { campana: camp.id });
+  // Los archivos de los documentos cargados (R2) se van con la campaña: la consola promete borrarla de forma definitiva.
+  const archivos = await borrarArchivosDeCampana(env, camp.id).catch(() => -1);
+  log('campana_borrada', { campana: camp.id, archivos });
   return { ok: true };
 }
 
@@ -1573,7 +1699,7 @@ async function estructurarProceso(env, procesoId, ctx, origen) {
 // equipo, y una fila validada no se toca.
 const APROB_CAMPOS = ['aprob_area', 'aprob_responsable', 'aprob_momento'];
 async function completarMatriz(env, p, datos) {
-  const m = leerMatriz(p.matriz), ia = leerMatriz(p.matriz_ia);
+  const m = leerMatriz(p.matriz), ia = leerMatriz(p.matriz_ia), antes = Object.assign({}, m);
   if (p.validacion === 'validado') return { n: 0, matriz: m, matriz_ia: ia };
   const c = (datos && datos.campos) || {}, t = ahora();
   const libre = k => !String(m[k] || '').trim() || !!ia[k];   // vacío, o lo llenó la IA y nadie lo editó
@@ -1593,8 +1719,10 @@ async function completarMatriz(env, p, datos) {
     if (filas) APROB_CAMPOS.forEach((k, i) => poner(k, Array.from({ length: filas }, (_, j) => cols[i][j] || '—').join('\n'),
       valor(k) ? c[k].estado : 'inferido'));
   }
-  if (n) await env.DB.prepare('UPDATE procesos SET matriz=?, matriz_ia=?, actualizado_en=? WHERE id=?')
-    .bind(JSON.stringify(m), JSON.stringify(ia), t, p.id).run();
+  if (n) await env.DB.batch([
+    env.DB.prepare('UPDATE procesos SET matriz=?, matriz_ia=?, actualizado_en=? WHERE id=?').bind(JSON.stringify(m), JSON.stringify(ia), t, p.id),
+    ...sentenciasHistorial(env, p, antes, m, ACTOR_IA, 'ia')
+  ]);
   return { n, matriz: m, matriz_ia: ia };
 }
 
@@ -1856,13 +1984,12 @@ const TODO_SCHEMA = {
 };
 const FINALIDADES = ['bloque', 'todo', 'transcribir', 'documentacion'];
 
-// Archivo subido (imagen, PDF o Word) validado antes de mandarlo a la IA. Un archivo ilegible o de otro formato se rechaza con un mensaje claro.
-async function leerArchivoSubido(req, permitidos, msgTipo) {
-  const tipo = (req.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
+// Archivo (imagen, PDF o Word) validado antes de mandarlo a la IA. Un archivo ilegible o de otro formato se rechaza con un mensaje claro.
+// Sirve tanto para lo que se sube en la solicitud como para lo que ya está guardado en R2 (documentos cargados en bloque).
+async function validarArchivo(tipo, buf, permitidos, msgTipo) {
   if (!permitidos.includes(tipo)) throw new HttpError(415, msgTipo);
   const esPdf = tipo === 'application/pdf', esDocx = tipo === MIME_DOCX;
   const que = esDocx ? 'el documento' : esPdf ? 'el PDF' : 'la imagen';
-  const buf = await req.arrayBuffer();
   if (!buf.byteLength) throw new HttpError(400, 'Archivo vacío');
   let doc = null;
   if (esDocx) {
@@ -1883,6 +2010,11 @@ async function leerArchivoSubido(req, permitidos, msgTipo) {
     if ((tipo === 'image/jpeg' && !jpg) || (tipo === 'image/png' && !png)) throw new HttpError(415, 'Ese archivo no es una imagen válida o está dañado');
   }
   return { tipo, esPdf, esDocx, que, buf, doc };
+}
+async function leerArchivoSubido(req, permitidos, msgTipo) {
+  const tipo = (req.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
+  if (!permitidos.includes(tipo)) throw new HttpError(415, msgTipo);
+  return validarArchivo(tipo, await req.arrayBuffer(), permitidos, msgTipo);
 }
 function bloqueDeArchivo(a) {
   if (a.esDocx) return { type: 'text', text: 'DOCUMENTO DE WORD (texto extraído; las imágenes del documento no se leen):\n' + a.doc.texto + (a.doc.recortado ? '\n[…el documento sigue; se recortó]' : '') };
@@ -1937,7 +2069,8 @@ async function rutaImagen(env, req, url, ctx) {
 
 // ---------------------------------------------------------------- precarga del checklist desde documentos (consola)
 // El equipo sube documentos del proceso; la IA extrae solo lo que dicen de forma explícita y el equipo revisa y guarda.
-// Los puntos guardados salen en la encuesta como «cubiertos por el administrador»; el texto es interno y nunca se envía a la encuesta.
+// Los puntos guardados salen en la encuesta como «cubiertos por el administrador». Los que tienen campo en la matriz (PUNTO_CAMPO)
+// también la alimentan, y la encuesta los muestra desde la matriz (sesión → valores) como descripción de solo lectura; la tabla precarga no se envía.
 const TIPOS_PRECARGA = ['image/jpeg', 'image/png', 'application/pdf', MIME_DOCX];
 const TODOS_PUNTOS = BLOQUES.flatMap(b => b.puntos.map(([id]) => id));
 const BLOQUE_DE_PUNTO = {};
@@ -1965,11 +2098,9 @@ const PRECARGA_PROMPT = `Recibes un documento de un proceso de trabajo (imagen, 
 Si el documento no tiene información de un proceso de trabajo, "relevante" es false, todos los puntos quedan "encontrado": false y en "motivo" dices en una frase qué se ve.
 Devuelve un elemento por cada punto del checklist, sin omitir ninguno.`;
 
-async function rutaPrecargaExtraer(env, req, url, ctx) {
-  const p = await env.DB.prepare('SELECT * FROM procesos WHERE id=?').bind(txt(url.searchParams.get('proceso_id'), 60)).first();
-  if (!p) throw new HttpError(404, 'Proceso no encontrado');
-  const nombre = txt(url.searchParams.get('nombre'), 150) || 'documento';
-  const a = await leerArchivoSubido(req, TIPOS_PRECARGA, 'Formato no permitido: sube un archivo JPG, PNG, PDF o Word (.docx).');
+// Lee un archivo con la IA y devuelve, por punto del checklist, lo que el documento dice de forma explícita (con su cita).
+// Lo usan la ficha del proceso (archivo subido en la solicitud) y la confirmación de un documento cargado en bloque (archivo en R2).
+async function extraerPrecarga(env, ctx, a, p) {
   const camp = await env.DB.prepare('SELECT estandares FROM campanas WHERE id=?').bind(p.campana_id).first();
   const cfg = iaDe(env, 'estructurar'), t0 = Date.now();
   let msg;
@@ -2015,14 +2146,52 @@ async function rutaPrecargaExtraer(env, req, url, ctx) {
     puntos.push({ id: x.id, bloque: BLOQUE_DE_PUNTO[x.id], texto, cita });
   });
   log('precarga_extraer', { campana: p.campana_id, tipo: a.tipo, bytes: a.buf.byteLength, puntos: puntos.length, descartados: descartados.length });
-  return { ok: true, archivo: nombre, puntos, descartados: descartados.length, motivo: r.relevante ? '' : txt(r.motivo, 300) };
+  return { puntos, descartados: descartados.length, motivo: r.relevante ? '' : txt(r.motivo, 300) };
 }
 
-async function rutaPrecarga(env, b) {
-  const p = await env.DB.prepare('SELECT id, campana_id FROM procesos WHERE id=?').bind(txt(b.proceso_id, 60)).first();
+// Documento ya guardado en R2 (carga masiva): se valida como el que se sube en la ficha del proceso y se lee con la misma IA.
+async function extraerDeDocumento(env, ctx, archivo, p) {
+  const a = await validarArchivo(archivo.tipo, archivo.buf, TIPOS_PRECARGA, 'Formato no permitido: JPG, PNG, PDF o Word (.docx).');
+  return extraerPrecarga(env, ctx, a, p);
+}
+
+async function rutaPrecargaExtraer(env, req, url, ctx) {
+  const p = await env.DB.prepare('SELECT * FROM procesos WHERE id=?').bind(txt(url.searchParams.get('proceso_id'), 60)).first();
   if (!p) throw new HttpError(404, 'Proceso no encontrado');
-  const t = ahora(), st = [];
-  (Array.isArray(b.puntos) ? b.puntos.slice(0, 40) : []).forEach(x => {
+  const nombre = txt(url.searchParams.get('nombre'), 150) || 'documento';
+  const a = await leerArchivoSubido(req, TIPOS_PRECARGA, 'Formato no permitido: sube un archivo JPG, PNG, PDF o Word (.docx).');
+  const r = await extraerPrecarga(env, ctx, a, p);
+  return { ok: true, archivo: nombre, puntos: r.puntos, descartados: r.descartados, motivo: r.motivo };
+}
+
+// Guarda la precarga de un proceso y la refleja en la matriz (única fuente) cuando el campo lo permite.
+// Devuelve qué puntos llegaron a la matriz y cuáles quedaron bloqueados (el campo ya lo escribió una persona o la fila está validada).
+// Un punto vaciado limpia también la matriz si la descripción venía de la precarga. Lo usan la ficha del proceso y la aprobación de borradores.
+async function aplicarPrecarga(env, p, puntos, actor) {
+  const t = ahora(), st = [], escritos = [], bloqueados = [];
+  const m = leerMatriz(p.matriz), ia = leerMatriz(p.matriz_ia), antes = Object.assign({}, m), origenes = {};
+  const lista = Array.isArray(puntos) ? puntos.slice(0, 40) : [];
+  lista.forEach(x => {
+    const id = txt(x && x.punto, 40), campo = PUNTO_CAMPO[id], texto = txt(x && x.texto, 1500);
+    if (!campo) return;
+    const libre = puedeAutomatico(p, m, ia, campo);
+    if (!texto) {
+      // Vaciar el punto retira la descripción solo si la había puesto la precarga: lo que escribió una persona o la IA no se toca.
+      if (libre && ia[campo] && ia[campo].estado === 'precarga' && m[campo]) { delete m[campo]; delete ia[campo]; origenes[campo] = 'precarga'; escritos.push({ punto: id, campo, vaciado: true }); }
+      return;
+    }
+    if (m[campo] === texto) return;
+    if (!libre) { bloqueados.push({ punto: id, campo }); return; }
+    m[campo] = texto; ia[campo] = { estado: 'precarga', en: t };
+    origenes[campo] = Array.isArray(x.archivos) && x.archivos.length ? 'documento' : 'precarga';
+    escritos.push({ punto: id, campo });
+  });
+  const cambios = Object.keys(origenes);
+  if (cambios.length) {
+    st.push(env.DB.prepare('UPDATE procesos SET matriz=?, matriz_ia=?, actualizado_en=? WHERE id=?').bind(JSON.stringify(m), JSON.stringify(ia), t, p.id));
+    cambios.forEach(k => st.push(...sentenciasHistorial(env, p, antes, { [k]: m[k] || '' }, actor || ACTOR_CONSOLA, origenes[k])));
+  }
+  lista.forEach(x => {
     const id = txt(x && x.punto, 40);
     if (!TODOS_PUNTOS.includes(id)) return;
     const texto = txt(x.texto, 1500);
@@ -2034,10 +2203,64 @@ async function rutaPrecarga(env, b) {
   });
   if (!st.length) throw new HttpError(400, 'No hay nada que guardar');
   await env.DB.batch(st);
+  return { escritos, bloqueados };
+}
+
+async function rutaPrecarga(env, b) {
+  const p = await env.DB.prepare('SELECT id, campana_id, matriz, matriz_ia, validacion FROM procesos WHERE id=?').bind(txt(b.proceso_id, 60)).first();
+  if (!p) throw new HttpError(404, 'Proceso no encontrado');
+  const r = await aplicarPrecarga(env, p, b.puntos);
   const filas = (await env.DB.prepare('SELECT proceso_id, bloque, punto, texto, archivos, actualizado FROM precarga WHERE proceso_id=?').bind(p.id).all()).results;
   filas.forEach(x => { x.archivos = JSON.parse(x.archivos || '[]'); });
-  log('precarga', { campana: p.campana_id, puntos: filas.length });
-  return { ok: true, precarga: filas };
+  log('precarga', { campana: p.campana_id, puntos: filas.length, escritos: r.escritos.length, bloqueados: r.bloqueados.length });
+  return { ok: true, precarga: filas, escritos: r.escritos, bloqueados: r.bloqueados };
+}
+
+// ---------------------------------------------------------------- clasificación de documentos en procesos (HU02)
+// La IA lee el documento y propone, con un nivel de confianza, a qué procesos de la campaña corresponde. El administrador revisa y confirma.
+const CLASIFICAR_PROMPT = `Recibes un documento (imagen, PDF o el texto de un Word) y la lista de procesos de una consultoría de relevamiento. Identifica de qué procesos trata: conceptos, actividades, procedimientos, roles y terminología que coincidan con alguno de la lista.
+- Propón solo procesos de la lista, usando su id exacto. Si el documento no trata de ninguno, devuelve una lista vacía.
+- "confianza" va de 0 a 1: alta (≥ 0,8) cuando el documento describe el proceso de forma explícita; media cuando solo lo menciona o lo toca parcialmente; baja cuando la coincidencia es dudosa. No inflar la confianza.
+- Máximo 5 procesos, del más al menos probable. "motivo": una frase con lo que en el documento sustenta la coincidencia.
+- La gerencia de carga es una pista, no un límite: un documento puede corresponder a procesos de otra gerencia.
+- No inventes procesos ni infieras por conocimiento general; si el documento es ilegible o no tiene información de procesos, lista vacía.`;
+
+async function analizarDocumentoIA(env, ctx, archivo, catalogo, gerencia) {
+  const esDocx = archivo.tipo === MIME_DOCX, esPdf = archivo.tipo === 'application/pdf';
+  const doc = esDocx ? await textoDeDocx(archivo.buf).catch(() => null) : null;
+  if (esDocx && !(doc && doc.texto)) throw new HttpError(422, 'No pudimos leer el texto de ese Word.');
+  const schema = {
+    type: 'object',
+    properties: { procesos: { type: 'array', items: { type: 'object', properties: {
+      proceso_id: { type: 'string', enum: catalogo.map(p => p.id) }, confianza: { type: 'number' }, motivo: { type: 'string' }
+    }, required: ['proceso_id', 'confianza', 'motivo'], additionalProperties: false } } },
+    required: ['procesos'], additionalProperties: false
+  };
+  const lista = catalogo.map(p => `- ${p.id} | ${p.gerencia} / ${p.seccion} | ${[p.macroproceso, p.proceso, p.subproceso].filter(Boolean).join(' > ')}`).join('\n');
+  const cfg = iaDe(env, 'estructurar'), t0 = Date.now();
+  let msg;
+  try {
+    msg = await clienteClaude(env).beta.messages.stream({
+      model: cfg.modelo,
+      max_tokens: 3000,
+      betas: ['server-side-fallback-2026-07-01'],
+      fallbacks: 'default',
+      output_config: { effort: cfg.esfuerzo, format: { type: 'json_schema', schema } },
+      system: CLASIFICAR_PROMPT,
+      messages: [{ role: 'user', content: [
+        bloqueDeArchivo({ esDocx, esPdf, doc, tipo: archivo.tipo, buf: archivo.buf }),
+        { type: 'text', text: `GERENCIA DE CARGA: ${gerencia}\n\nPROCESOS DE LA CAMPAÑA (id | área | ruta):\n${lista}` }
+      ] }]
+    }).finalMessage();
+  } catch (err) {
+    log('documento_ia_error', { error: String((err && err.message) || err).slice(0, 200) });
+    throw new HttpError(502, 'No pudimos analizar el documento en este momento. Intenta de nuevo en un minuto.');
+  }
+  registrarIA(ctx, 'clasificar_documento', msg, cfg, t0);
+  if (msg.stop_reason === 'refusal') throw new HttpError(422, 'La IA no pudo procesar ese archivo.');
+  if (msg.stop_reason === 'max_tokens') throw new HttpError(502, 'El análisis quedó incompleto. Reintenta.');
+  try { return (JSON.parse((msg.content.find(c => c.type === 'text') || {}).text || '{}').procesos) || []; }
+  catch (x) { throw new HttpError(502, 'El análisis devolvió un formato inesperado. Reintenta.'); }
 }
 
 // La persona marca un punto como "lo mencioné" (cubierto) o "no aplica"; estado vacío deshace su marca.
@@ -2051,10 +2274,38 @@ async function rutaPunto(env, b) {
   const r = await env.DB.prepare('SELECT checklist FROM respuestas WHERE encuestado_id=? AND proceso_id=? AND pregunta=?').bind(e.id, p.id, bloque.id).first();
   const c = leerMatriz(r && r.checklist);
   if (b.estado) c[b.punto] = { estado: b.estado, fuente: 'persona', evidencia: '' };
-  else { delete c[b.punto]; delete c._huella; }   // sin huella, la próxima revisión vuelve a mirar el punto
+  else {
+    delete c[b.punto]; delete c._huella;
+    // Si esa marca era la confirmación de que la descripción sigue vigente, también se revoca (queda en el historial).
+    const campo = PUNTO_CAMPO[b.punto], ev = campo ? ((await ultimosEventos(env, { proceso_id: p.id }))[p.id] || {})[campo] : null;
+    if (ev && ev.tipo === 'validacion') {
+      const valor = leerMatriz(p.matriz)[campo] || '';
+      await env.DB.batch(sentenciasHistorial(env, p, { [campo]: valor }, { [campo]: valor }, actorEncuestado(e), 'encuesta', 'revocacion'));
+    }
+  }   // sin huella, la próxima revisión vuelve a mirar el punto
   await guardarChecklist(env, e, p, bloque.id, c);
   await marcarEnCurso(env, e);
   return { ok: true, checklist: c };
+}
+
+// La persona confirma que la descripción de un punto sigue vigente. La descripción es un resumen automático (documentos del equipo e IA):
+// no se edita aquí. Si algo cambió, la persona lo cuenta en su respuesta y la IA la actualiza. El punto queda cubierto en su checklist.
+async function rutaCampo(env, b) {
+  const e = await encuestadoPorToken(env, b.k);
+  const p = await procesoPermitido(env, e, b.proceso_id);
+  if (b.texto !== undefined) throw new HttpError(400, 'Esta descripción no se edita: cuenta lo que cambió en tu respuesta y se actualiza sola.');
+  const punto = txt(b.punto, 40), bloqueId = BLOQUE_DE_PUNTO[punto];
+  if (!PUNTO_CAMPO[punto] || !bloqueId) throw new HttpError(400, 'Punto inválido');
+  await validarCampoDeEncuesta(env, e, p, punto);
+  const prev = await env.DB.prepare('SELECT checklist FROM respuestas WHERE encuestado_id=? AND proceso_id=? AND pregunta=?').bind(e.id, p.id, bloqueId).first();
+  const c = leerMatriz(prev && prev.checklist);
+  if (!c[punto] || c[punto].estado !== 'cubierto') {
+    c[punto] = { estado: 'cubierto', fuente: 'persona', evidencia: 'vigente' };
+    await guardarChecklist(env, e, p, bloqueId, c);
+  }
+  await marcarEnCurso(env, e);
+  const ev = (await ultimosEventos(env, { proceso_id: p.id }))[p.id];
+  return { ok: true, valor: valoresDeProceso(p, leerMatriz(p.matriz), ev)[punto] || null };
 }
 
 // Logo del cliente que se muestra en la encuesta (junto a la marca MBC). Vacío lo quita.
@@ -2096,7 +2347,7 @@ async function rutaAsignar(env, b) {
     const filas = new Map();
     for (let i = 0; i < quitar.length; i += 30) {
       const tanda = quitar.slice(i, i + 30);
-      (await env.DB.prepare(`SELECT id, gerencia, seccion, fuente FROM procesos WHERE campana_id=? AND id IN (${tanda.map(() => '?').join(',')})`)
+      (await env.DB.prepare(`SELECT id, gerencia, seccion, fuente, creado_por FROM procesos WHERE campana_id=? AND id IN (${tanda.map(() => '?').join(',')})`)
         .bind(e.campana_id, ...tanda).all()).results.forEach(p => filas.set(p.id, p));
     }
     const st = [];
@@ -2105,7 +2356,7 @@ async function rutaAsignar(env, b) {
       const p = filas.get(pid);
       if (!p) return;
       // Uno de su sección aparece solo: para quitarlo se deja anotado como excluido (se puede restaurar).
-      if (p.fuente !== 'nuevo' && mismaArea(p.gerencia, e.gerencia) && mismaArea(p.seccion, e.seccion)) {
+      if (deSuSeccion(p, e)) {
         st.push(env.DB.prepare(`INSERT INTO asignaciones (encuestado_id, proceso_id, creado, origen) VALUES (?,?,?,'excluido')
           ON CONFLICT(encuestado_id, proceso_id) DO UPDATE SET origen='excluido'`).bind(e.id, pid, ahora()));
       } else {
@@ -2405,8 +2656,8 @@ async function rutaClienteEnlaces(env, actor, b) {
   const enlaces = [];
   for (let i = 0; i < ids.length; i += 30) {
     const tanda = ids.slice(i, i + 30);
-    (await env.DB.prepare(`SELECT id, nombre, correo, token FROM encuestados WHERE campana_id=? AND id IN (${tanda.map(() => '?').join(',')})`).bind(camp.id, ...tanda).all())
-      .results.forEach(r => { if (!vis || vis.has(r.id)) enlaces.push({ id: r.id, nombre: r.nombre, correo: r.correo || '', token: r.token }); });
+    (await env.DB.prepare(`SELECT id, nombre, correo FROM encuestados WHERE campana_id=? AND id IN (${tanda.map(() => '?').join(',')})`).bind(camp.id, ...tanda).all())
+      .results.forEach(r => { if (!vis || vis.has(r.id)) enlaces.push({ id: r.id, nombre: r.nombre, correo: r.correo || '' }); });   // sin token: se entra por el enlace de la sección con nombre y PIN
   }
   const para = b.para === 'correo' ? 'correo' : 'enlace';
   if (enlaces.length) await registrarAccion(env, camp.id, actor, para === 'correo' ? 'correo_generado' : 'enlace_copiado', { personas: enlaces.length });
@@ -2480,6 +2731,7 @@ export default {
       if (ruta === 'POST /r/imagen') return json(await rutaImagen(env, req, url, ctx), 200, h);
       if (url.pathname.startsWith('/r/') && req.method === 'POST') {
         const b = await cuerpo(req);
+        b._ip = req.headers.get('cf-connecting-ip') || '';   // lo fija el servidor: el cliente no puede falsearlo
         if (url.pathname === '/r/registro') return json(await rutaRegistro(env, b), 200, h);
         if (url.pathname === '/r/identificar') return json(await rutaIdentificar(env, b), 200, h);
         if (url.pathname === '/r/elegir') return json(await rutaElegir(env, b), 200, h);
@@ -2489,6 +2741,7 @@ export default {
         if (url.pathname === '/r/respuesta') return json(await rutaRespuesta(env, b), 200, h);
         if (url.pathname === '/r/verificar') return json(await rutaVerificar(env, b, ctx), 200, h);
         if (url.pathname === '/r/punto') return json(await rutaPunto(env, b), 200, h);
+        if (url.pathname === '/r/campo') return json(await rutaCampo(env, b), 200, h);
         if (url.pathname === '/r/enviar') return json(await rutaEnviar(env, b), 200, h);
       }
 
@@ -2520,6 +2773,10 @@ export default {
         if (ruta === 'GET /a/campana') return json(await rutaCampana(env, url), 200, h);
         if (ruta === 'GET /a/campana/flujo') return json(await rutaFlujoAdminCampana(env, url), 200, h);
         if (ruta === 'GET /a/campana/trazabilidad') return json(await rutaTrazabilidadAdmin(env, url), 200, h);
+        if (ruta === 'GET /a/campana/historial') return json(await rutaHistorialMatriz(env, url), 200, h);
+        if (ruta === 'GET /a/documentos') return json(await rutaDocumentos(env, url), 200, h);
+        if (ruta === 'GET /a/documentos/archivo') return await rutaDocumentoArchivo(env, url, h);
+        if (ruta === 'POST /a/documentos') return json(await rutaDocumentoSubir(env, req, url, { leerArchivo: leerArchivoSubido }), 200, h);
         if (ruta === 'POST /a/precarga/extraer') return json(await rutaPrecargaExtraer(env, req, url, ctx), 200, h);
         if (req.method === 'POST') {
           const b = await cuerpo(req);
@@ -2531,6 +2788,12 @@ export default {
           if (url.pathname === '/a/campana/ia') return json(await rutaCampanaIA(env, b), 200, h);
           if (url.pathname === '/a/campana/estandares') return json(await rutaEstandares(env, b), 200, h);
           if (url.pathname === '/a/estandares/probar') return json(await rutaEstandaresProbar(env, b, ctx), 200, h);
+          if (url.pathname === '/a/documentos/gerencia') return json(await rutaDocumentoGerencia(env, b), 200, h);
+          if (url.pathname === '/a/documentos/analizar') return json(await rutaDocumentoAnalizar(env, b, ctx, { analizarIA: analizarDocumentoIA }), 200, h);
+          if (url.pathname === '/a/documentos/procesos') return json(await rutaDocumentoProcesos(env, b, ctx, { extraerPrecarga: extraerDeDocumento }), 200, h);
+          if (url.pathname === '/a/documentos/extraer') return json(await rutaDocumentoExtraer(env, b, ctx, { extraerPrecarga: extraerDeDocumento }), 200, h);
+          if (url.pathname === '/a/precarga/borrador') return json(await rutaPrecargaBorrador(env, b, { aplicarPrecarga }), 200, h);
+          if (url.pathname === '/a/campana/umbral') return json(await rutaUmbral(env, b), 200, h);
           if (url.pathname === '/a/precarga') return json(await rutaPrecarga(env, b), 200, h);
           if (url.pathname === '/a/encuestado') return json(await rutaEncuestadoAlta(env, b), 200, h);
           if (url.pathname === '/a/persona/perfil') return json(await rutaPersonaPerfil(env, b), 200, h);
@@ -2552,6 +2815,8 @@ export default {
           if (url.pathname === '/a/matriz') return json(await rutaMatriz(env, b), 200, h);
           if (url.pathname === '/a/validacion') return json(await rutaValidacion(env, b), 200, h);
           if (url.pathname === '/a/encuestado/borrar') return json(await rutaEncuestadoBorrar(env, b), 200, h);
+          if (url.pathname === '/a/encuestado/pin') return json(await rutaEncuestadoPin(env, b), 200, h);
+          if (url.pathname === '/a/campana/renovar-accesos') return json(await rutaRenovarAccesos(env, b), 200, h);
           if (url.pathname === '/a/respuesta/borrar') return json(await rutaRespuestaBorrar(env, b), 200, h);
           if (url.pathname === '/a/estructurar') return json(await rutaEstructurar(env, b, ctx), 200, h);
           if (url.pathname === '/a/borrar-campana') return json(await rutaBorrarCampana(env, b), 200, h);

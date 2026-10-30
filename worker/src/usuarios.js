@@ -1,7 +1,7 @@
 // Usuarios y perfiles de una campaña. Cada persona es Responsable, Supervisor (su sección) o Gerente (su gerencia, con la validación final).
 // Aquí vive la gestión de las cuentas de Supervisor y Gerente: las crea el cliente (gestionarSupervisores) o el equipo MBC desde la consola (rutaPersonaPerfil).
 import { HttpError, ahora, uid, txt, normal, mismaArea, igualSeguro, tokenNuevo } from './comun.js';
-import { claveArea, registrarAccion } from './ambito.js';
+import { claveArea, registrarAccion, alcanceDe } from './ambito.js';
 import { leerEstructura, asegurarEstructura } from './estructura.js';
 
 // ---------------------------------------------------------------- panel del cliente: administrador del cliente y Supervisores
@@ -129,16 +129,17 @@ export async function aplicarPerfil(env, camp, enc, perfil, op) {
     }
     return { perfil, supervisor_id: sup ? sup.id : '', clave: '' };
   }
+  // Al recalcular el alcance se conserva lo que la persona ya tenía y el formulario no controla: los procesos que tomó o creó por su cuenta (alcance.procesos),
+  // las gerencias adicionales de un Gerente y, si el formulario no trae secciones, las que ya cubría. Solo cambia lo que el formulario sí muestra.
+  const previo = sup ? alcanceDe(sup) : null;
+  const principalAntes = (op.previoPrincipal || enc).gerencia;
+  const secciones = op.secciones !== undefined ? op.secciones : (previo ? previo.secciones.map(x => ({ g: x.g, s: x.s })) : []);
+  const procesosPrevios = previo ? previo.procesos : [];
+  const gerenciasPrevias = previo && perfil === 'gerente' ? previo.gerencias.filter(g => !mismaArea(g, principalAntes)) : [];   // la principal se calcula aparte
   const pedido = perfil === 'gerente'
-    ? { gerencias: [enc.gerencia, ...(op.gerencias || [])], secciones: op.secciones || [], procesos: op.procesos || [] }
-    : { secciones: [{ g: enc.gerencia, s: enc.seccion }, ...(op.secciones || [])], procesos: op.procesos || [] };
+    ? { gerencias: [enc.gerencia, ...gerenciasPrevias, ...(op.gerencias || [])], secciones, procesos: [...procesosPrevios, ...(op.procesos || [])] }
+    : { secciones: [{ g: enc.gerencia, s: enc.seccion }, ...secciones], procesos: [...procesosPrevios, ...(op.procesos || [])] };
   const alcance = await alcancePorNombres(env, camp, pedido);
-  // Al rehacer el alcance se conservan los procesos que la propia persona tomó o creó (alcance.procesos): el formulario no los trae.
-  if (sup && op.recalcular) {
-    let previo = {}; try { previo = JSON.parse(sup.alcance) || {}; } catch (e) { previo = {}; }
-    const existen = new Set((await env.DB.prepare('SELECT id FROM procesos WHERE campana_id=?').bind(camp.id).all()).results.map(p => p.id));
-    alcance.procesos = [...new Set([...alcance.procesos, ...(Array.isArray(previo.procesos) ? previo.procesos : []).filter(id => existen.has(id))])].slice(0, 2000);
-  }
   let clave = '', id;
   if (sup) {
     id = sup.id;
@@ -210,10 +211,11 @@ export async function rutaUsuario(env, b) {
     const otra = await env.DB.prepare("SELECT id FROM encuestados WHERE campana_id=? AND lower(correo)=? AND id<>?").bind(camp.id, correo, txt(b.id, 60)).first();
     if (otra) throw new HttpError(409, 'Ya hay una persona con ese correo en la campaña.');
   }
-  let id = txt(b.id, 60), creada = false;
+  let id = txt(b.id, 60), creada = false, previoPrincipal = null;
   if (id) {
-    const ya = await env.DB.prepare('SELECT id FROM encuestados WHERE id=? AND campana_id=?').bind(id, camp.id).first();
+    const ya = await env.DB.prepare('SELECT id, gerencia, seccion FROM encuestados WHERE id=? AND campana_id=?').bind(id, camp.id).first();
     if (!ya) throw new HttpError(404, 'Persona no encontrada');
+    previoPrincipal = { gerencia: ya.gerencia, seccion: ya.seccion };
     await env.DB.prepare('UPDATE encuestados SET nombre=?, correo=?, rol=?, gerencia=?, seccion=? WHERE id=?').bind(nombre, correo, rol, gerencia, seccion, id).run();
   } else {
     id = uid(); creada = true;
@@ -223,7 +225,7 @@ export async function rutaUsuario(env, b) {
   for (const x of [{ g: gerencia, s: seccion }, ...secciones]) await asegurarEstructura(env, camp.id, x.g, x.s);
   const asignados = await asignarSeccionesYProcesos(env, camp.id, id, secciones, procesos);
   const enc = { id, nombre, correo, gerencia, seccion };
-  const r = await aplicarPerfil(env, camp, enc, perfil, { secciones, procesos, regenerar: !!b.regenerar, recalcular: true });
+  const r = await aplicarPerfil(env, camp, enc, perfil, { secciones, procesos, regenerar: !!b.regenerar, recalcular: true, previoPrincipal });
   await registrarAccion(env, camp.id, ACTOR_MBC, creada ? 'usuario_creado' : 'usuario_editado', { persona: nombre, perfil, secciones: secciones.length, asignados });
   return Object.assign({ ok: true, id, creada, asignados }, r, { supervisores: await listaSupervisores(env, camp.id) });
 }

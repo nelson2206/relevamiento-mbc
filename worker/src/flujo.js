@@ -14,6 +14,7 @@
 import { HttpError, ahora, uid, txt, normal, mismaArea, log } from './comun.js';
 import { ambitoSobre, enSecs, registrarAccion, alcanceDe, esIncorporado, cubreSeccion } from './ambito.js';
 import { crearCobertura } from './cobertura.js';
+import { puntosValidados } from './matriz-sync.js';
 import { leerEstructura } from './estructura.js';
 
 export const NOMBRE_PASO = { 1: 'Procesos', 2: 'Delegación', 3: 'Avance', 4: 'Validación final' };
@@ -43,7 +44,9 @@ async function cargarCampana(env, campId, bloques) {
   const delegados = {};   // proceso -> personas que lo tienen a cargo (asignadas o que lo tomaron)
   asignaciones.forEach(a => { if (a.origen !== 'excluido') (delegados[a.proceso_id] = delegados[a.proceso_id] || new Set()).add(a.encuestado_id); });
   revisiones.forEach(r => { if (r.estado === 'vigente' || r.estado === 'cambio') (delegados[r.proceso_id] = delegados[r.proceso_id] || new Set()).add(r.encuestado_id); });
-  return { procs, pasos, aprobaciones, delegados, encuestados, cuentas, cobertura: crearCobertura({ bloques, revisiones, respuestas, precarga }) };
+  // Una descripción que la persona confirmó vigente cuenta como cubierta, igual que la que cargó el equipo.
+  const validados = await puntosValidados(env, campId);
+  return { procs, pasos, aprobaciones, delegados, encuestados, cuentas, cobertura: crearCobertura({ bloques, revisiones, respuestas, precarga: precarga.concat(validados) }) };
 }
 
 // Estado del flujo de un Supervisor: pasos vigentes, paso actual, compuertas y procesos de su alcance.

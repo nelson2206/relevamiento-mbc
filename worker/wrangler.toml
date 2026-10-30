@@ -52,6 +52,11 @@ binding = "DB"
 database_name = "voz-relevamiento"
 database_id = "094aa0b6-8946-4369-b3f0-c449ea3d1b48"
 
+# Archivos de los documentos cargados en bloque (HU01). Crear el bucket una vez:  npx wrangler r2 bucket create voz-relevamiento-docs
+[[r2_buckets]]
+binding = "DOCS"
+bucket_name = "voz-relevamiento-docs"
+
 # La IA pasa por el intermediario de ProcessIQ (que guarda la clave central de Anthropic).
 # Se autentica con el secreto INTERNAL_CODE, el mismo valor cargado en processiq-api.
 [[services]]

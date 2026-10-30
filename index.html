@@ -55,7 +55,7 @@
   .paso .n{font-family:Montserrat,sans-serif;font-weight:800;font-size:22px;color:var(--accent);min-width:26px}
   .paso > div{flex:1;min-width:0}
   label{display:block;font-family:Montserrat,sans-serif;font-weight:600;font-size:13px;color:var(--heading);margin:12px 0 5px}
-  input[type=text],input[type=email],input[type=search],textarea,select{width:100%;background:var(--card);color:var(--ink);border:1.5px solid var(--field-line);border-radius:10px;padding:10px 12px;font:inherit}
+  input[type=text],input[type=email],input[type=search],input[type=password],textarea,select{width:100%;background:var(--card);color:var(--ink);border:1.5px solid var(--field-line);border-radius:10px;padding:10px 12px;font:inherit}
   textarea{min-height:110px;resize:vertical}
   input:focus,textarea:focus,select:focus,button:focus-visible,a:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
   .grid2{display:grid;grid-template-columns:1fr 1fr;gap:0 16px}
@@ -148,6 +148,36 @@
   .quien button:hover{border-color:var(--navy)}
   .quien button b{display:block;font-family:Montserrat,sans-serif;font-size:14.5px;color:var(--heading)}
   .quien button span{font-size:13px;color:var(--muted)}
+  /* Pantalla de ingreso del enlace de sección: contenedor de 1.280 px, hero con tarjeta de avance y dos tarjetas */
+  .hero-inner.ancho{max-width:1280px;display:grid;grid-template-columns:minmax(0,1fr) 480px;column-gap:56px;align-items:start}
+  .hero-inner.ancho .lockup,.hero-inner.ancho .eyebrow{grid-column:1/-1}
+  .hero-inner.ancho h1,.hero-inner.ancho #heroIntro{grid-column:1}
+  .hero-avance{grid-column:2;grid-row:3 / span 2;background:rgba(255,255,255,.10);border:1px solid rgba(255,255,255,.22);border-radius:16px;padding:20px 24px;margin-top:4px}
+  .hero-avance .t{font-family:Montserrat,sans-serif;font-weight:700;font-size:13px;color:#D7E3F5;margin:0 0 12px}
+  .hero-avance .pasos{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}
+  .hero-avance .pasos i{display:block;height:6px;border-radius:3px;background:rgba(255,255,255,.28);margin-bottom:8px}
+  .hero-avance .pasos span{font-family:Montserrat,sans-serif;font-size:11.5px;font-weight:600;color:#D7E3F5}
+  .hero-avance .pasos i.ini{background:#9FC1F2}
+  .hero-avance .pasos i.ok{background:#5FD38D}
+  .hero-inner:not(.ancho) .hero-avance{max-width:560px;margin-top:20px}
+  .hero-avance .res{font-family:Montserrat,sans-serif;font-weight:700;font-size:16px;color:#fff;margin:16px 0 0}
+  .wrap.ancho{max-width:1280px}
+  .wrap.ancho h2.ident{font-size:clamp(22px,3.2vw,28px);margin:6px 0 0}
+  .dos{display:grid;grid-template-columns:1fr 1fr;gap:24px;align-items:start}
+  .dos .card{padding:28px}
+  .dos .card h2{font-size:21px}
+  .reg-lista{display:flex;flex-direction:column;gap:8px;margin:14px 0 4px}
+  .reg-item{appearance:none;cursor:pointer;width:100%;display:flex;align-items:center;gap:12px;text-align:left;background:var(--card);color:var(--ink);border:1.5px solid var(--line);border-radius:12px;padding:10px 14px;font:inherit;min-height:48px}
+  .reg-item:hover{border-color:var(--navy)}
+  .reg-item[aria-pressed="true"]{border-color:var(--navy);box-shadow:0 0 0 2px rgba(0,52,120,.18)}
+  .reg-item .av{flex:none;width:40px;height:40px;border-radius:50%;background:#E4EBF6;color:var(--navy);display:flex;align-items:center;justify-content:center;font-family:Montserrat,sans-serif;font-weight:800;font-size:14px}
+  .reg-item .qn{flex:1;min-width:0}
+  .reg-item .qn b{display:block;font-family:Montserrat,sans-serif;font-size:15px;color:var(--heading)}
+  .reg-item .qn small{font-size:13px;color:var(--muted)}
+  .est-chip{flex:none;font-size:12.5px;border-radius:999px;padding:3px 11px;white-space:nowrap}
+  .est-sin{background:#E7E6DE;color:#4B5563}.est-parc{background:#FDEBD0;color:#7A4B00}.est-ok{background:#DDF2E3;color:#17623A}
+  @media (prefers-color-scheme: dark){ :root:not([data-theme="light"]) .reg-item .av{background:#1E3A66;color:#DCE8FA} :root:not([data-theme="light"]) .est-sin{background:#2A3A52;color:#C9D4E3} :root:not([data-theme="light"]) .est-parc{background:#4A3510;color:#FFD99A} :root:not([data-theme="light"]) .est-ok{background:#12402A;color:#A8E6C0} }
+  @media (max-width:960px){ .hero-inner.ancho{grid-template-columns:1fr} .hero-avance{grid-column:1;grid-row:auto;margin-top:18px} .dos{grid-template-columns:1fr} }
   .colegas{font-size:13px;color:var(--muted);margin:2px 0 8px}
   .colegas b{color:var(--heading)}
   .ck .tag-otros{margin:4px 6px 0 0;background:var(--panel);color:var(--heading);border:1px solid var(--field-line)}
@@ -183,6 +213,12 @@
   .ck .tag-comp{margin:4px 6px 0 0;background:var(--ok);color:#fff}
   .ck .ayuda-adm{display:block;font-size:12.5px;color:var(--muted);margin-top:4px}
   .ck .acc{flex:none;display:flex;gap:5px;flex-wrap:wrap;justify-content:flex-end}
+  .ck .val{display:block;margin-top:6px}
+  .ck .tag-org{margin:0 0 4px;display:inline-block}
+  .ck .tag-org.ok{background:var(--ok);color:#fff}
+  .ck .val-tx{display:block;font-size:13.5px;line-height:1.45;padding:8px 10px;border-left:3px solid var(--navy);background:var(--panel);border-radius:0 8px 8px 0;color:var(--heading);white-space:pre-wrap;overflow-wrap:anywhere}
+  .ck .val-acc{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:5px}
+  .ck .val-acc .nota{margin:0}
   .btn-mini{appearance:none;cursor:pointer;background:var(--card);border:1.5px solid var(--field-line);color:var(--heading);border-radius:8px;padding:3px 9px;font-family:Montserrat,sans-serif;font-weight:600;font-size:12px;white-space:nowrap}
   .btn-mini:hover{border-color:var(--navy)} .btn-mini[disabled]{opacity:.5;cursor:default}
   .sug{background:var(--warn-bg);color:var(--warn);border-radius:10px;padding:10px 14px;font-size:14px;margin:10px 0 0}
@@ -200,14 +236,12 @@
 <script>
 // Migración a https://relevamiento.mbc-latam.com (2026-10-23): quien entra por la dirección antigua pasa a la nueva, con su mismo enlace.
 // Antes de pasar se comprueba que la red deja cargar el sitio nuevo (una imagen real); si no carga, esta página sigue funcionando
-// igual contra el mismo Worker y la misma base. Aquí también se lleva el avance guardado en este navegador (la encuesta lo guarda por origen).
+// igual contra el mismo Worker y la misma base.
 (function(){
   var NUEVO = 'https://relevamiento.mbc-latam.com';
   if (!/^(encuesta\.mbc-latam\.com|nelson2206\.github\.io)$/.test(location.hostname)) return;
   var q = location.search, p = new URLSearchParams(q);
-  if (!p.get('k') && p.get('c')){
-    try { var g = JSON.parse(localStorage.getItem('relev-' + p.get('c')) || 'null'); if (g && g.k) q = '?k=' + encodeURIComponent(g.k); } catch(e){}
-  }
+  try { if (p.get('c')) localStorage.removeItem('relev-' + p.get('c')); } catch(e){}   // ya no se lleva el acceso guardado: se entra con nombre y PIN
   var destino = NUEVO + '/' + q + location.hash;
   var img = new Image(), t = setTimeout(function(){ img.onload = null; }, 4000);
   img.onload = function(){ clearTimeout(t); location.replace(destino); };
@@ -287,6 +321,17 @@
   var params = new URLSearchParams(location.search);
   var K = params.get('k') || '';
   var C = params.get('c') || '';
+  // Sesión en la pestaña (no en la URL ni en el equipo): al cerrar la pestaña se vuelve a pedir el PIN.
+  // Un enlace personal ?k= anterior se acepta una vez, pasa a la sesión y se borra de la barra de direcciones.
+  var SES = null;
+  try { SES = JSON.parse(sessionStorage.getItem('relev-ses') || 'null'); } catch(e){}
+  // Devuelve false si el navegador no deja guardar (modo privado, almacenamiento bloqueado): entonces el acceso se queda en la URL.
+  function guardarSesion(k, hub){ try { sessionStorage.setItem('relev-ses', JSON.stringify({k: k, c: C, hub: hub || ''})); return sessionStorage.getItem('relev-ses') !== null; } catch(e){ return false; } }
+  function limpiarSesion(){ try { sessionStorage.removeItem('relev-ses'); } catch(e){} }
+  var SESION_OK = true;
+  if (K){ SESION_OK = guardarSesion(K, SES && SES.hub); }
+  else if (SES && SES.k && (!C || SES.c === C)){ K = SES.k; C = C || SES.c; }
+  if (K && params.has('k') && SESION_OK) history.replaceState(null, '', location.pathname + (params.has('bienvenida') ? '?bienvenida=1' : ''));
   var G = params.get('g') || '';
   var SEC = params.get('s') || '';   // enlace de sección (?c=&g=&s=): la sección viene en el enlace
   var S = null;   // sesión personal: {campana, encuestado, procesos, revisiones, respuestas, sistemas}
@@ -299,7 +344,7 @@
       throw new Error('No pudimos conectarnos con el servidor de la encuesta. Si estás en la red de tu empresa, ábrela desde tu celular con datos móviles, o avisa al equipo consultor.');
     }).then(function(r){
       return r.json().catch(function(){ return {ok:false, error:'Respuesta inesperada del servidor'}; }).then(function(j){
-        if (!r.ok || !j.ok){ var er = new Error(j.error || ('Error ' + r.status)); er.status = r.status; throw er; }
+        if (!r.ok || !j.ok){ var er = new Error(j.error || ('Error ' + r.status)); er.status = r.status; er.requierePin = j.requierePin; throw er; }
         return j;
       });
     });
@@ -479,19 +524,6 @@
     var root = $('#root');
     root.innerHTML = '';
 
-    // Si ya se registró desde este equipo, puede seguir donde se quedó.
-    var guardado = null;
-    try { guardado = JSON.parse(localStorage.getItem('relev-' + C) || 'null'); } catch(e){}
-    if (guardado && guardado.k){
-      var sigue = document.createElement('section');
-      sigue.className = 'card destacado';
-      sigue.innerHTML = '<h2>Hola de nuevo, ' + esc(String(guardado.nombre || '').split(' ')[0]) + '</h2>' +
-        '<p class="lead">Desde este equipo ya empezaste la encuesta. Puedes continuar donde te quedaste.</p>' +
-        '<div class="fila"><a class="btn" href="?k=' + encodeURIComponent(guardado.k) + '">Continuar mi encuesta</a>' +
-        '<button type="button" class="btn-link" id="noSoy">No soy esa persona</button></div>';
-      root.appendChild(sigue);
-      sigue.querySelector('#noSoy').addEventListener('click', function(){ try { localStorage.removeItem('relev-' + C); } catch(e){} sigue.remove(); });
-    }
 
     var paso1 = document.createElement('section');
     paso1.className = 'card';
@@ -524,16 +556,20 @@
   }
 
   // ============================================================ enlace de sección (?c=&g=&s=)
-  // La persona elige su nombre en la lista o escribe su correo corporativo y entra a su registro; si no figura, se registra en esa sección.
+  // La persona elige su nombre en la lista y entra con su PIN a su registro; si no figura, se registra en esa sección.
   function entrarComo(j, bienvenida){
-    try { localStorage.setItem('relev-' + C, JSON.stringify({k: j.k, nombre: j.nombre})); } catch(e){}
-    location.replace('?k=' + encodeURIComponent(j.k) + (bienvenida ? '&bienvenida=1' : ''));
+    var ok = guardarSesion(j.k, location.search);
+    location.replace(location.pathname + (ok ? (bienvenida ? '?bienvenida=1' : '') : '?k=' + encodeURIComponent(j.k) + (bienvenida ? '&bienvenida=1' : '')));
   }
   function pintarSeccion(){
     var sc = A.seccion;
     $('#heroEyebrow').textContent = [A.campana.cliente, sc.gerencia, sc.seccion].join(' · ');
-    $('#heroTitle').textContent = '¿Quién eres?';
-    $('#heroIntro').innerHTML = 'Elige tu nombre o escribe tu correo corporativo. Luego eliges tus procesos y nos cuentas cómo funcionan, <strong>hablando</strong> o escribiendo. Todo queda a tu nombre y puedes volver desde cualquier equipo con este mismo enlace.';
+    $('#heroTitle').textContent = 'Hola: cuéntanos cómo funcionan los procesos de tu sección';
+    $('#heroIntro').textContent = 'Primero te identificas; luego confirmas los procesos de tu sección, agregas los que falten y nos cuentas cómo funciona cada uno, hablando o escribiendo. Todo se guarda solo.';
+    var hi = document.querySelector('.hero-inner'); hi.classList.add('ancho');
+    var av = document.createElement('div'); av.className = 'hero-avance';
+    av.innerHTML = '<p class="t">Tu avance</p><div class="pasos"><div><i></i><span>Identificarte</span></div><div><i></i><span>1 · Confirmar</span></div><div><i></i><span>2 · Agregar</span></div><div><i></i><span>3 · Contar</span></div></div><p class="res">Empieza identificándote</p>';
+    hi.appendChild(av);
     ponerLogo(A.campana);
     var root = $('#root');
     root.innerHTML = '';
@@ -541,54 +577,54 @@
       root.innerHTML = '<section class="card destacado"><h2>Esta sección aún no está disponible</h2><p class="lead" style="margin:0">' + esc(sc.mensaje) + '</p></section>';
       return;
     }
-    // Si ya se identificó desde este equipo, puede seguir donde se quedó.
-    var guardado = null;
-    try { guardado = JSON.parse(localStorage.getItem('relev-' + C) || 'null'); } catch(e){}
-    if (guardado && guardado.k){
-      var sigue = document.createElement('section');
-      sigue.className = 'card destacado';
-      sigue.innerHTML = '<h2>Hola de nuevo, ' + esc(String(guardado.nombre || '').split(' ')[0]) + '</h2>' +
-        '<p class="lead">Desde este equipo ya empezaste la encuesta. Puedes continuar donde te quedaste.</p>' +
-        '<div class="fila"><a class="btn" href="?k=' + encodeURIComponent(guardado.k) + '">Continuar mi encuesta</a>' +
-        '<button type="button" class="btn-link" id="noSoy">No soy esa persona</button></div>';
-      root.appendChild(sigue);
-      sigue.querySelector('#noSoy').addEventListener('click', function(){ try { localStorage.removeItem('relev-' + C); } catch(e){} sigue.remove(); });
-    }
 
+    $('#root').className = 'wrap ancho';
     var hay = sc.responsables.length;
+    var cab = document.createElement('div');
+    cab.innerHTML = '<h2 class="ident">Antes de empezar, identifícate</h2><p class="lead" style="margin:6px 0 0">Este enlace es para los miembros de ' + esc(sc.seccion) + '. Si ya empezaste, elige tu nombre y continúa donde lo dejaste; si es tu primera vez, regístrate.</p>';
+    root.appendChild(cab);
+    var dos = document.createElement('div'); dos.className = 'dos'; root.appendChild(dos);
+
     var c1 = document.createElement('section');
     c1.className = 'card';
-    c1.innerHTML = '<div class="paso"><span class="n">1</span><div><h2>' + (hay ? 'Elige tu nombre' : 'Identifícate') + '</h2>' +
-      (hay ? '<p class="lead">Estas son las personas de <strong>' + esc(sc.seccion) + '</strong> que ya figuran. Toca la tuya para entrar.</p>' +
-        (hay > 8 ? '<input type="search" id="quienBus" placeholder="Busca tu nombre…" aria-label="Buscar tu nombre" autocomplete="off">' : '') +
-        '<div class="quien" id="quienLista"></div><p class="estado" id="quienMsg" role="status"></p>'
-        : '<p class="lead">Todavía no hay personas registradas en esta sección: regístrate abajo para empezar.</p>') +
-      '<div class="fila"><button type="button" class="btn-link" id="noEstoy">Mi nombre no está en la lista</button></div></div></div>';
-    root.appendChild(c1);
-
-    var c2 = document.createElement('section');
-    c2.className = 'card';
-    c2.innerHTML = '<div class="paso"><span class="n">2</span><div><h2>¿Prefieres entrar con tu correo?</h2>' +
-      '<p class="lead">Si ya te registraste antes, escribe tu correo corporativo y entras a tu avance.</p>' +
-      '<div class="fila"><input type="email" id="entCorreo" placeholder="' + esc(A.dominio ? 'nombre@' + A.dominio : 'nombre@empresa.com') + '" aria-label="Tu correo corporativo" autocomplete="email" style="max-width:340px">' +
-      '<button type="button" class="btn btn-sm" id="btnEntrarCorreo">Entrar</button><span class="estado" id="entMsg" role="status"></span></div></div></div>';
-    root.appendChild(c2);
+    c1.innerHTML = '<h2>Ya estoy registrado</h2>' + (hay
+      ? '<p class="lead" style="margin-bottom:0">' + (hay === 1 ? '1 persona de la sección ya empezó.' : hay + ' personas de la sección ya empezaron.') + '</p>' +
+        '<label for="quienBus">Busca tu nombre</label><input type="search" id="quienBus" placeholder="Ej.: Quispe" autocomplete="off">' +
+        '<div class="reg-lista" id="quienLista"></div>' +
+        '<div id="quienPinBox" class="hidden"><label for="quienPin">Tu PIN de 4 dígitos (si es tu primer ingreso, créalo ahora)</label><input type="password" id="quienPin" inputmode="numeric" pattern="[0-9]*" maxlength="4" autocomplete="off" style="max-width:160px"></div>' +
+        '<div class="fila" style="margin-top:16px"><button class="btn" type="button" id="btnEntrar" disabled>Elige tu nombre para continuar</button><span class="estado" id="quienMsg" role="status"></span></div>'
+      : '<p class="lead">Todavía no hay personas registradas en esta sección: regístrate en la tarjeta de al lado para empezar.</p>');
+    dos.appendChild(c1);
 
     var c3 = document.createElement('section');
-    c3.className = 'card' + (hay ? ' hidden' : '');
+    c3.className = 'card';
     c3.id = 'cardNueva';
-    c3.innerHTML = '<div class="paso"><span class="n">3</span><div><h2>Regístrate en ' + esc(sc.seccion) + '</h2>' +
-      '<p class="lead">Tu gerencia y tu sección ya vienen marcadas. Lo usamos para coordinar contigo la reunión de validación.</p>' +
-      '<div class="grid2">' +
-        '<div><label for="nvNombre">Nombre y apellido *</label><input type="text" id="nvNombre" autocomplete="name" maxlength="150"></div>' +
-        '<div><label for="nvCorreo">Correo corporativo *</label><input type="email" id="nvCorreo" autocomplete="email" maxlength="150" placeholder="' + esc(A.dominio ? 'nombre@' + A.dominio : 'nombre@empresa.com') + '"></div>' +
-        '<div><label for="nvCargo">Cargo (opcional)</label><input type="text" id="nvCargo" maxlength="80" autocomplete="organization-title"></div>' +
-      '</div>' +
-      '<p class="aviso" style="margin-top:16px"><strong>Cómo tratamos lo que nos cuentas.</strong> Tu voz se convierte en texto y el audio se descarta al instante. La información se usa solo para el inventario de procesos y se borra al cierre del proyecto.</p>' +
-      '<div class="fila" style="margin-top:16px"><button class="btn" type="button" id="btnRegSec">Empezar a responder</button><span class="estado" id="regMsg" role="status"></span></div></div></div>';
-    root.appendChild(c3);
+    c3.innerHTML = '<h2>Es mi primera vez</h2>' +
+      '<p class="lead" style="margin-bottom:0">Escribe tu nombre para ver los procesos de ' + esc(sc.seccion) + '.</p>' +
+      '<label for="nvNombre">Tu nombre y apellido</label><input type="text" id="nvNombre" placeholder="Ej.: Ana Salazar" autocomplete="name" maxlength="150">' +
+      '<label for="nvPin">Crea un PIN de 4 dígitos</label><input type="password" id="nvPin" inputmode="numeric" pattern="[0-9]*" maxlength="4" autocomplete="off" style="max-width:160px">' +
+      '<p class="lead" style="font-size:13px;margin:8px 0 0">Lo usamos solo para coordinar la reunión de validación. Con tu nombre y tu PIN volverás a tu avance desde cualquier equipo.</p>' +
+      '<div class="fila" style="margin-top:16px"><button class="btn" type="button" id="btnRegSec">Registrarme y ver mis procesos</button><span class="estado" id="regMsg" role="status"></span></div>';
+    dos.appendChild(c3);
 
     function msg(id, t, mala){ var m = $(id); m.className = 'estado' + (mala ? ' warn' : ''); m.textContent = t; }
+    function iniciales(n){ var p = String(n).trim().split(/\s+/); return ((p[0] || '').charAt(0) + (p.length > 1 ? p[p.length - 1].charAt(0) : '')).toUpperCase(); }
+    function haceCuanto(iso){
+      if (!iso) return 'Aún sin ingresos';
+      var d = new Date(iso), h = new Date(); if (isNaN(d)) return 'Aún sin ingresos';
+      var dias = Math.round((new Date(h.getFullYear(), h.getMonth(), h.getDate()) - new Date(d.getFullYear(), d.getMonth(), d.getDate())) / 86400000);
+      if (dias <= 0) return 'Último acceso hoy';
+      if (dias === 1) return 'Último acceso ayer';
+      if (dias < 7) return 'Último acceso hace ' + dias + ' días';
+      if (dias < 14) return 'Último acceso hace 1 semana';
+      if (dias < 30) return 'Último acceso hace ' + Math.floor(dias / 7) + ' semanas';
+      return 'Último acceso hace ' + Math.floor(dias / 30) + (Math.floor(dias / 30) === 1 ? ' mes' : ' meses');
+    }
+    function estadoDe(r){
+      if (!r.confirmados) return ['est-sin', 'Sin empezar'];
+      if (r.total && r.confirmados >= r.total) return ['est-ok', 'Parte 1 lista'];
+      return ['est-parc', r.confirmados + ' de ' + r.total + ' confirmados'];
+    }
     function identificar(cuerpo, idMsg, boton){
       if (boton) boton.disabled = true;
       msg(idMsg, 'Entrando…');
@@ -596,33 +632,37 @@
         .catch(function(err){ if (boton) boton.disabled = false; msg(idMsg, err.message, true); });
     }
     if (hay){
-      var lista = c1.querySelector('#quienLista');
+      var lista = c1.querySelector('#quienLista'), btnEntrar = c1.querySelector('#btnEntrar'), elegido = null;
       var pintarLista = function(t){
         var n = sinTildes(t || '');
         lista.innerHTML = sc.responsables.filter(function(r){ return !n || sinTildes(r.nombre).indexOf(n) >= 0; }).map(function(r){
-          return '<button type="button" data-id="' + esc(r.id) + '"><b>' + esc(r.nombre) + '</b>' + (r.rol ? '<span>' + esc(r.rol) + '</span>' : '') + '</button>';
-        }).join('') || '<p class="lead" style="margin:0">Ningún nombre coincide.</p>';
+          var e = estadoDe(r);
+          return '<button type="button" class="reg-item" data-id="' + esc(r.id) + '" aria-pressed="' + (elegido === r.id) + '"><span class="av" aria-hidden="true">' + esc(iniciales(r.nombre)) + '</span>' +
+            '<span class="qn"><b>' + esc(r.nombre) + '</b><small>' + esc(haceCuanto(r.acceso)) + '</small></span><span class="est-chip ' + e[0] + '">' + esc(e[1]) + '</span></button>';
+        }).join('') || '<p class="lead" style="margin:0">Ningún nombre coincide. Si es tu primera vez, regístrate en la tarjeta de al lado.</p>';
       };
       pintarLista('');
       lista.addEventListener('click', function(ev){
         var b = ev.target.closest('[data-id]'); if (!b) return;
-        identificar({id: b.dataset.id}, '#quienMsg', b);
+        elegido = b.dataset.id;
+        var r = sc.responsables.filter(function(x){ return x.id === elegido; })[0];
+        Array.prototype.forEach.call(lista.querySelectorAll('[data-id]'), function(x){ x.setAttribute('aria-pressed', String(x.dataset.id === elegido)); });
+        c1.querySelector('#quienPinBox').classList.remove('hidden');
+        btnEntrar.disabled = false; btnEntrar.textContent = 'Continuar como ' + r.nombre;
+        msg('#quienMsg', '');
+        $('#quienPin').focus({preventScroll:true});
       });
-      if (c1.querySelector('#quienBus')) c1.querySelector('#quienBus').addEventListener('input', function(){ pintarLista(this.value); });
+      btnEntrar.addEventListener('click', function(){
+        if (!elegido) return;
+        if (!/^\d{4}$/.test($('#quienPin').value.trim())){ msg('#quienMsg', 'Escribe tu PIN de 4 dígitos.', true); return; }
+        identificar({id: elegido, pin: $('#quienPin').value.trim()}, '#quienMsg', btnEntrar);
+      });
+      $('#quienPin').addEventListener('keydown', function(ev){ if (ev.key === 'Enter'){ ev.preventDefault(); btnEntrar.click(); } });
+      c1.querySelector('#quienBus').addEventListener('input', function(){ pintarLista(this.value); });
     }
-    c1.querySelector('#noEstoy').addEventListener('click', function(){
-      c3.classList.remove('hidden'); c3.scrollIntoView({behavior:'smooth', block:'start'});
-      setTimeout(function(){ $('#nvNombre').focus({preventScroll:true}); }, 300);
-    });
-    c2.querySelector('#btnEntrarCorreo').addEventListener('click', function(){
-      var correo = $('#entCorreo').value.trim();
-      if (!correo){ msg('#entMsg', 'Escribe tu correo corporativo.', true); return; }
-      identificar({correo: correo}, '#entMsg', this);
-    });
-    $('#entCorreo').addEventListener('keydown', function(ev){ if (ev.key === 'Enter'){ ev.preventDefault(); $('#btnEntrarCorreo').click(); } });
     c3.querySelector('#btnRegSec').addEventListener('click', function(){
-      var datos = {c: C, nombre: $('#nvNombre').value.trim(), correo: $('#nvCorreo').value.trim(), gerencia: sc.gerencia, seccion: sc.seccion, cargo: $('#nvCargo').value.trim(), procesos: [], fija: true};
-      var falta = !datos.nombre ? 'Escribe tu nombre y apellido.' : !datos.correo ? 'Escribe tu correo.' : '';
+      var datos = {c: C, nombre: $('#nvNombre').value.trim(), gerencia: sc.gerencia, seccion: sc.seccion, pin: $('#nvPin').value.trim(), procesos: [], fija: true};
+      var falta = !datos.nombre ? 'Escribe tu nombre y apellido.' : !/^\d{4}$/.test(datos.pin) ? 'Crea un PIN de 4 dígitos.' : '';
       if (falta){ msg('#regMsg', falta, true); return; }
       var b = this; b.disabled = true; msg('#regMsg', 'Registrando…');
       api('/r/registro', datos).then(function(j){ entrarComo(j, !j.existente); })
@@ -665,10 +705,10 @@
       '<p class="lead">Lo usamos para coordinar contigo la reunión de validación. Si figuras en el inventario anterior, también verás en tu lista los procesos donde apareces.</p>' +
       '<div class="grid2">' +
         '<div><label for="rNombre">Nombre y apellido *</label><input type="text" id="rNombre" autocomplete="name" maxlength="150"></div>' +
-        '<div><label for="rCorreo">Correo corporativo *</label><input type="email" id="rCorreo" autocomplete="email" maxlength="150" placeholder="' + esc(dom ? 'nombre' + dom : 'nombre@empresa.com') + '"></div>' +
         '<div><label for="rGer">Tu gerencia *</label><select id="rGer"></select><input type="text" id="rGerOtra" class="hidden" maxlength="150" placeholder="Escribe tu gerencia" style="margin-top:8px" aria-label="Tu gerencia"></div>' +
         '<div><label for="rSec">Tu sección *</label><select id="rSec"></select><input type="text" id="rSecOtra" class="hidden" maxlength="150" placeholder="Escribe tu sección" style="margin-top:8px" aria-label="Tu sección"></div>' +
         '<div><label for="rCargo">Cargo (opcional)</label><input type="text" id="rCargo" maxlength="80" autocomplete="organization-title"></div>' +
+        '<div><label for="rPin">Crea un PIN de 4 dígitos *</label><input type="password" id="rPin" inputmode="numeric" pattern="[0-9]*" maxlength="4" autocomplete="off" style="max-width:140px"></div>' +
       '</div>' +
       '<p class="aviso" style="margin-top:16px"><strong>Cómo tratamos lo que nos cuentas.</strong> Tu voz se convierte en texto y el audio se descarta al instante. La información se usa solo para el inventario de procesos y se borra al cierre del proyecto.</p>' +
       '<div class="fila" style="margin-top:16px"><button class="btn" type="button" id="btnEmpezar">Empezar a responder</button><span class="estado" id="rEstado" role="status"></span></div>' +
@@ -714,15 +754,15 @@
     var est = $('#rEstado');
     var ger = $('#rGer').value === '__otra' ? $('#rGerOtra').value.trim() : $('#rGer').value;
     var sec = $('#rSec').value === '__otra' ? $('#rSecOtra').value.trim() : $('#rSec').value;
-    var datos = {c: C, nombre: $('#rNombre').value.trim(), correo: $('#rCorreo').value.trim(), gerencia: ger, seccion: sec,
-      cargo: $('#rCargo').value.trim(), procesos: ELEGIDOS.map(function(p){ return p.id; })};
-    var falta = !datos.nombre ? 'Escribe tu nombre y apellido.' : !datos.correo ? 'Escribe tu correo.' : !ger ? 'Indica tu gerencia.' : !sec ? 'Indica tu sección.' : '';
+    var datos = {c: C, nombre: $('#rNombre').value.trim(), gerencia: ger, seccion: sec,
+      cargo: $('#rCargo').value.trim(), pin: $('#rPin').value.trim(), procesos: ELEGIDOS.map(function(p){ return p.id; })};
+    var falta = !datos.nombre ? 'Escribe tu nombre y apellido.' : !ger ? 'Indica tu gerencia.' : !sec ? 'Indica tu sección.' : !/^\d{4}$/.test(datos.pin) ? 'Crea un PIN de 4 dígitos.' : '';
     if (falta){ est.className = 'estado warn'; est.textContent = falta; return; }
     var b = $('#btnEmpezar');
     b.disabled = true; est.className = 'estado'; est.textContent = 'Registrando…';
     api('/r/registro', datos).then(function(j){
-      try { localStorage.setItem('relev-' + C, JSON.stringify({k: j.k, nombre: j.nombre})); } catch(e){}
-      location.replace('?k=' + encodeURIComponent(j.k) + '&bienvenida=1' + (QUIERE_NUEVO ? '&nuevo=' + encodeURIComponent(NUEVO_TEXTO) : ''));
+      var okS = guardarSesion(j.k, location.search);
+      location.replace(location.pathname + (okS ? '' : '?k=' + encodeURIComponent(j.k) + '&') + (okS ? '?' : '') + 'bienvenida=1' + (QUIERE_NUEVO ? '&nuevo=' + encodeURIComponent(NUEVO_TEXTO) : ''));
     }).catch(function(err){ b.disabled = false; est.className = 'estado warn'; est.textContent = err.message; });
   }
 
@@ -740,41 +780,63 @@
         $('#heroIntro').textContent = err.message;
         return;
       }
+      if (err.status === 401 && SES && SES.k === K){   // la sesión de la pestaña ya no vale (PIN restablecido, enlace revocado)
+        limpiarSesion();
+        if (SES.hub){ location.replace(location.pathname + SES.hub); return; }
+      }
+      if (err.status === 401){   // enlace personal anterior o sesión cerrada por MBC: se entra por el enlace de la sección
+        $('#heroTitle').textContent = 'Este acceso ya no es válido';
+        $('#heroIntro').textContent = 'Abre el enlace de tu sección, elige tu nombre y escribe tu PIN de 4 dígitos. Tu avance está guardado. Si no tienes el enlace de tu sección, pídelo al equipo consultor.';
+        return;
+      }
       $('#heroIntro').textContent = 'No pudimos abrir tu encuesta.';
       errorGeneral(err.message + '. Si el problema sigue, escribe al equipo consultor.');
     });
   }
 
-  function miEnlace(){ return location.origin + location.pathname + '?k=' + encodeURIComponent(K); }
+
+  // Tarjeta «Tu avance» del encabezado (HU-04): 4 pasos que cambian de color al iniciarse y al completarse, y el contador.
+  // La barra fija anterior queda oculta: esta tarjeta dice lo mismo.
+  function ponerAvanceHero(){
+    var hi = document.querySelector('.hero-inner'), old = hi.querySelector('.hero-avance');
+    if (old) old.remove();
+    var av = document.createElement('div'); av.className = 'hero-avance'; av.id = 'heroAvance';
+    av.innerHTML = '<p class="t">Tu avance</p><div class="pasos" id="avPasos">' +
+      ['Identificarte', '1 · Confirmar', '2 · Agregar', '3 · Contar'].map(function(n, i){ return '<div><i data-p="' + i + '"></i><span>' + n + '</span></div>'; }).join('') +
+      '</div><p class="res" id="avRes" aria-live="polite"></p>';
+    hi.appendChild(av);
+  }
 
   function pintar(){
     var e = S.encuestado;
     var bienvenida = params.has('bienvenida'), nuevo = params.get('nuevo');
-    if (bienvenida || nuevo !== null) history.replaceState(null, '', location.pathname + '?k=' + encodeURIComponent(K));
+    if (bienvenida || nuevo !== null) history.replaceState(null, '', location.pathname + (SESION_OK ? '' : '?k=' + encodeURIComponent(K)));
     $('#heroEyebrow').textContent = (S.campana ? S.campana.cliente + ' · ' : '') + e.gerencia + ' · ' + e.seccion;
     $('#heroTitle').textContent = 'Hola, ' + e.nombre.split(' ')[0] + ': cuéntanos cómo funcionan tus procesos';
-    $('#heroIntro').innerHTML = 'Son tres partes. Primero confirmas tus procesos del inventario; luego, si hace falta, buscas otros en los que participes; y al final nos cuentas, <strong>hablando</strong> o escribiendo, cómo funciona cada uno. Todo se guarda solo: puedes dejarlo y volver con tu enlace.';
+    $('#heroIntro').innerHTML = 'Son tres partes. Primero confirmas tus procesos del inventario; luego, si hace falta, buscas otros en los que participes; y al final nos cuentas, <strong>hablando</strong> o escribiendo, cómo funciona cada uno. Todo se guarda solo: puedes dejarlo y volver con tu nombre y tu PIN.';
     ponerLogo(S.campana);
+    ponerAvanceHero();
 
     var root = $('#root');
     root.innerHTML = '';
     var intro = document.createElement('section');
     var porNombre = S.procesos.filter(function(p){ return p.asignado === 'inventario' && !S.revisiones[p.id]; }).length;
     intro.className = 'card' + (bienvenida ? ' destacado' : '');
-    intro.innerHTML = (bienvenida ? '<h2>Listo, ya estás registrado</h2><p class="lead">Guarda tu enlace personal: con él vuelves a tu encuesta desde cualquier equipo. Es solo tuyo, no lo compartas.' +
+    intro.innerHTML = (bienvenida ? '<h2>Listo, ya estás registrado</h2><p class="lead">Para volver, abre el enlace de tu sección, elige tu nombre y escribe tu PIN: no lo compartas.' +
         (porNombre ? ' Figuras en ' + (porNombre === 1 ? '1 proceso' : porNombre + ' procesos') + ' del inventario anterior: están en la parte 1 para que confirmes tu relación con cada uno.' : '') + '</p>' : '') +
       '<p class="aviso"><strong>Cómo tratamos lo que nos cuentas.</strong> Tu voz se convierte en texto y el audio se descarta al instante: no se guarda. ' +
       'Antes de guardar, puedes leer y corregir el texto. La información se usa solo para el inventario de procesos y se borra al cierre del proyecto. ' +
       'Habla de cargos y áreas, no de personas, y no menciones datos reales de clientes o trabajadores.</p>' +
       (S.fuera_alcance ? '<p class="aviso" style="margin-top:10px"><strong>Compra de bienes y servicios.</strong> No incluyas el proceso de compra de bienes y servicios (los gastos): se levanta aparte con el equipo consultor, aunque tu área gestione compras. La compra de accesorios para vender a los clientes sí va.</p>' : '') +
-      '<div class="enlace-box"><label for="miEnlace" style="margin:0">Tu enlace personal</label><input type="text" id="miEnlace" readonly value="' + esc(miEnlace()) + '">' +
-      '<button class="btn btn-ghost btn-sm" type="button" id="btnCopiarEnlace">Copiar</button></div>' +
       '<p class="lead" style="margin:14px 0 0"><strong>La siguiente información es la recopilada del último inventario del 2021.</strong> Agradeceremos tu apoyo para actualizarla y/o agregar los nuevos procesos que gestiona tu gerencia.</p>';
     root.appendChild(intro);
-    intro.querySelector('#btnCopiarEnlace').addEventListener('click', function(){
-      var b = this;
-      navigator.clipboard.writeText(miEnlace()).then(function(){ b.textContent = 'Copiado ✓'; setTimeout(function(){ b.textContent = 'Copiar'; }, 1600); });
-    });
+    var hubSes = SES && SES.hub;
+    if (hubSes){
+      var cu = document.createElement('div'); cu.className = 'fila'; cu.style.marginTop = '12px';
+      cu.innerHTML = '<button type="button" class="btn-link" id="cambiarUsuario">No soy yo · cambiar de usuario</button>';
+      intro.appendChild(cu);
+      cu.querySelector('#cambiarUsuario').addEventListener('click', function(){ limpiarSesion(); location.replace(location.pathname + hubSes); });
+    }
 
     // Parte 1: tus procesos del inventario (no se mueven al marcarlos: así nadie cree que se eliminaron).
     // Parte 2: buscar otros procesos (cambios de área) o agregar uno nuevo.
@@ -862,9 +924,8 @@
       api('/r/enviar', {}).then(function(){ mostrarFin('¡Gracias! Avisamos al equipo consultor. Te contactarán para una reunión corta de validación.'); })
         .catch(function(err){ mostrarFin(err.message, true); }).then(function(){ b.disabled = false; });
     });
-    $('#barra').classList.remove('hidden');
     actualizarAvance();
-    ajustarBuscadorFijo();   // directo, sin esperar al siguiente cuadro: la barra acaba de mostrarse
+    ajustarBuscadorFijo();
     if (nuevo !== null) abrirNuevo(nuevo);
   }
 
@@ -954,7 +1015,7 @@
     d.id = 'rev-' + p.id;
     var r = S.revisiones[p.id] || {};
     var ruta = rutaProc(p), area = p.enSeccion ? '' : areaProc(p);
-    d.innerHTML = '<div class="proc-nombre">' + esc(nombreProc(p)) + (p.mio ? '<span class="tag">Asignado a ti</span>' : '') + (p.asignado && ORIGEN_ASIG[p.asignado] && !p.enSeccion && !p.mio ? '<span class="tag">' + esc(ORIGEN_ASIG[p.asignado]) + '</span>' : '') +
+    d.innerHTML = '<div class="proc-nombre">' + esc(nombreProc(p)) + (p.nuevo && p.enSeccion && !p.propio ? '<span class="tag">Agregado por alguien de tu sección</span>' : '') + (p.mio ? '<span class="tag">Asignado a ti</span>' : '') + (p.asignado && ORIGEN_ASIG[p.asignado] && !p.enSeccion && !p.mio ? '<span class="tag">' + esc(ORIGEN_ASIG[p.asignado]) + '</span>' : '') +
         ' <span class="avance" data-avance="' + esc(p.id) + '"></span></div>' +
       (ruta || p.codigo || area ? '<div class="proc-ruta">' + esc([area, p.codigo, ruta].filter(Boolean).join(' · ')) + '</div>' : '<div style="height:8px"></div>') +
       infoColegas(p) +
@@ -1087,7 +1148,15 @@
   // Puntos que el equipo cubrió con documentos (solo se sabe cuáles, nunca lo que dicen).
   var AYUDA_ADM = 'Este requisito ya fue validado administrativamente, pero puedes ingresar información si deseas detallar o rectificar el punto.';
   function adminCubre(pid, id){ return !!pid && ((S.precarga || {})[pid] || []).indexOf(id) >= 0; }
-  function puntoListo(ck, id, pid){ var x = ck && ck[id]; return adminCubre(pid, id) || (!!x && (x.estado === 'cubierto' || x.estado === 'no_aplica')); }
+  // La descripción ya trabajada de cada punto (documentos del equipo, IA) viene de la matriz, la única fuente, y es de solo lectura: se actualiza
+  // sola con información nueva. Un punto que alguien ya confirmó vigente no se vuelve a pedir.
+  var ORIGEN_TXT = {documento:'Del documento del equipo', precarga:'Cargado por el equipo', ia:'Sugerido por IA', encuesta:'De la encuesta', consola:'Editado por el equipo',
+    importacion:'Del inventario cargado', inventario:'Del inventario anterior'};
+  function valorDe(pid, id){ return ((S.valores || {})[pid] || {})[id] || null; }
+  function puntoListo(ck, id, pid){
+    var x = ck && ck[id], v = valorDe(pid, id);
+    return adminCubre(pid, id) || !!(v && v.validado) || (!!x && (x.estado === 'cubierto' || x.estado === 'no_aplica'));
+  }
   function listosBloque(pid, b){ var ck = respuesta(pid, b.id).checklist || {}; return b.puntos.filter(function(pt){ return puntoListo(ck, pt[0], pid); }).length; }
   function totalPuntos(){ return BLOQUES.reduce(function(a, b){ return a + b.puntos.length; }, 0); }
   function listosProceso(pid){ return BLOQUES.reduce(function(a, b){ return a + listosBloque(pid, b); }, 0); }
@@ -1186,6 +1255,8 @@
           if (ay){ var abrir = ay.classList.contains('hidden'); ay.classList.toggle('hidden', !abrir); ad.setAttribute('aria-expanded', abrir ? 'true' : 'false'); }
           return;
         }
+        var ok = ev.target.closest('[data-val-ok]');
+        if (ok){ confirmarValor(p.id, q.id, ok.dataset.valOk, d, ok); return; }
         var bt = ev.target.closest('[data-punto]');
         if (bt) marcarPunto(p.id, q.id, bt.dataset.punto, bt.dataset.estado, bt);
       });
@@ -1288,15 +1359,16 @@
       var x = ck[pt[0]] || null, persona = !!(x && x.fuente === 'persona');
       var est = x ? x.estado : (revisado ? 'falta' : 'pendiente');
       var nota = '';
-      if (est === 'cubierto') nota = persona ? 'Marcaste que lo mencionaste' : (x.evidencia ? '«' + x.evidencia + '»' : '');
+      if (est === 'cubierto') nota = persona ? (x.evidencia === 'vigente' ? 'Confirmaste que la descripción sigue vigente' : 'Marcaste que lo mencionaste') : (x.evidencia ? '«' + x.evidencia + '»' : '');
       else if (est === 'no_aplica') nota = persona ? 'Marcaste que no aplica a tu proceso' : 'Dijiste que no aplica' + (x.evidencia ? ': «' + x.evidencia + '»' : '');
       else if (est === 'falta') nota = 'Todavía no lo mencionas';
       // Cubierto por Administrador / IA: se ve como listo aunque la persona no haya dicho nada; si además lo trata, queda «Complementado por ti».
-      var adm = adminCubre(pid, pt[0]), comp = adm && est === 'cubierto';
+      // Con una descripción visible, su etiqueta de origen es la única señal: la de «Completado por Administrador / IA» solo va en los puntos sin descripción.
+      var admRaw = adminCubre(pid, pt[0]), vl = valorDe(pid, pt[0]), adm = admRaw && !vl, comp = adm && est === 'cubierto';
       // Si otra persona de la sección ya cubrió este punto se avisa (sin su texto): se puede complementar, no es obligatorio.
       var oc = ((S.otros || {})[pid] || {})[pt[0]] || [];
       if (oc.length && (est === 'falta' || est === 'pendiente')) nota = 'Ya lo cubrió ' + nombresCorto(oc) + '; puedes complementarlo si quieres';
-      if (adm && (est === 'falta' || est === 'pendiente')){ est = 'cubierto'; nota = ''; }
+      if (admRaw && (est === 'falta' || est === 'pendiente')){ est = 'cubierto'; nota = ''; }
       var acc = '';
       if (persona) acc = '<button type="button" class="btn-mini" data-punto="' + esc(pt[0]) + '" data-estado="">Deshacer</button>';
       else if (!adm && (est === 'falta' || est === 'pendiente')){
@@ -1307,8 +1379,24 @@
       var marca = adm ? '<span class="adm-tags"><button type="button" class="tag tag-adm" data-adm="' + esc(pt[0]) + '" aria-expanded="false" title="' + esc(AYUDA_ADM) + '">Completado por Administrador / IA</button>' +
         (comp ? '<span class="tag tag-comp">Complementado por ti</span>' : '') + '</span><span class="ayuda-adm hidden" id="adm-' + esc(key) + '-' + esc(pt[0]) + '">' + esc(AYUDA_ADM) + '</span>' : '';
       if (oc.length) marca += '<span class="tag tag-otros" title="Otra persona de tu sección ya cubrió este punto. No ves lo que dijo.">Cubierto por ' + esc(nombresCorto(oc)) + '</span>';
-      return '<li class="' + est + (adm ? ' admin' : '') + '"><span class="caja" aria-hidden="true">' + (est === 'cubierto' ? '✓' : est === 'no_aplica' ? '–' : '') + '</span>' +
-        '<span class="t"><span class="sr">' + EST_TXT[est] + ': </span>' + esc(pt[1]) + (nota ? '<span class="nota">' + esc(nota) + '</span>' : '') + marca + '</span>' +
+      // Descripción ya trabajada de este punto (documentos del equipo e IA): solo lectura. Se actualiza sola cuando alguien cuenta algo nuevo del proceso;
+      // la persona solo confirma que sigue vigente.
+      var editor = '';
+      if (vl){
+        if (!vl.validado && est === 'falta'){ est = 'pendiente'; nota = ''; }   // lo precargado está por revisar, no «falta»
+        var estadoTag = vl.mbc ? '<span class="tag tag-org ok">Validado por MBC</span>' : vl.validado ? '<span class="tag tag-org ok">Revisado</span>' : '';
+        var aviso = vl.validado ? '' : vl.desactualizado
+          ? (S.campana && S.campana.ia_auto ? 'Hay respuestas nuevas que todavía no se reflejan aquí; se actualizará en unos minutos.' : 'Hay respuestas nuevas que todavía no se reflejan aquí; el equipo la actualizará.')
+          : admRaw ? 'Ya viene completado por el equipo. Confirma si sigue vigente; no se edita.' : 'Es un resumen automático y no se edita. Si algo cambió, cuéntalo en tu respuesta y se actualiza.';
+        if (vl.desactualizado && vl.validado && !vl.mbc) aviso = 'Hay respuestas nuevas que todavía no se reflejan aquí.';
+        editor = '<span class="val"><span class="tag tag-org">' + esc(ORIGEN_TXT[vl.origen] || 'Precargado') + '</span>' + estadoTag +
+          '<span class="val-tx" data-val="' + esc(pt[0]) + '">' + esc(vl.texto) + '</span>' +
+          '<span class="val-acc">' + (vl.mbc ? '' : '<button type="button" class="btn-mini" data-val-ok="' + esc(pt[0]) + '"' + (vl.validado ? ' disabled' : '') + '>' + (vl.validado ? 'Vigente ✓' : 'Sigue vigente') + '</button>') +
+          '<span class="nota" data-val-msg="' + esc(pt[0]) + '" aria-live="polite">' + esc(aviso) + '</span></span></span>';
+        if (vl.validado && est !== 'no_aplica') est = 'cubierto';
+      }
+      return '<li class="' + est + (admRaw ? ' admin' : '') + (vl ? ' precargado' : '') + '"><span class="caja" aria-hidden="true">' + (est === 'cubierto' ? '✓' : est === 'no_aplica' ? '–' : '') + '</span>' +
+        '<span class="t"><span class="sr">' + EST_TXT[est] + ': </span>' + esc(pt[1]) + (nota ? '<span class="nota">' + esc(nota) + '</span>' : '') + marca + editor + '</span>' +
         (acc ? '<span class="acc">' + acc + '</span>' : '') + '</li>';
     }).join('');
     // Estado del bloque según lo que cubrió el equipo: parcial o completo (la persona puede seguir sin escribir nada).
@@ -1373,10 +1461,29 @@
       return prom.then(function(){ return verificar(pid, b.id); });
     }, Promise.resolve());
   }
+  // La persona confirma que la descripción precargada sigue vigente (no se edita): queda validada y el punto cubierto.
+  function confirmarValor(pid, bid, punto, root, boton){
+    var msg = root.querySelector('[data-val-msg="' + CSS.escape(punto) + '"]');
+    if (boton) boton.disabled = true;
+    if (msg) msg.textContent = 'Guardando…';
+    api('/r/campo', {proceso_id: pid, punto: punto}).then(function(j){
+      S.valores = S.valores || {};
+      var m = (S.valores[pid] = S.valores[pid] || {});
+      if (j.valor) m[punto] = j.valor;
+      var r = respuesta(pid, bid), ck = Object.assign({}, r.checklist || {});
+      ck[punto] = {estado: 'cubierto', fuente: 'persona', evidencia: 'vigente'};
+      ponerChecklist(pid, bid, ck, r.sistemas);
+    }).catch(function(err){
+      if (boton) boton.disabled = false;
+      if (msg) msg.textContent = 'No se pudo guardar: ' + err.message;
+    });
+  }
   function marcarPunto(pid, bid, punto, est, boton){
     var key = pid + '-' + bid;
     if (boton) boton.disabled = true;
     api('/r/punto', {proceso_id: pid, pregunta: bid, punto: punto, estado: est}).then(function(j){
+      var vv = valorDe(pid, punto);
+      if (!est && vv && !vv.mbc) vv.validado = false;   // deshacer también revoca la confirmación de vigencia
       ponerChecklist(pid, bid, j.checklist);
       if (!est && respondida(pid, bid)) verificar(pid, bid);   // al deshacer, la IA vuelve a mirar ese punto
     }).catch(function(err){ if (boton) boton.disabled = false; estadoRev(key, err.message, 'warn'); });
@@ -1407,6 +1514,17 @@
     $('#pfill').style.width = (activos.length && tot ? Math.round(puntos * 100 / (activos.length * tot)) : 0) + '%';
     $('#ptext').textContent = (pendientesRev ? pendientesRev + ' por marcar en la parte 1 · ' : '') + completos + ' de ' + activos.length +
       (activos.length === 1 ? ' proceso completo' : ' procesos completos');
+    // Tarjeta del encabezado: X de N confirmados · Y de Z descritos (Z = procesos marcados como «participo»).
+    var deParte1 = S.procesos.filter(function(p){ return p.enSeccion || p.asignado; }), conf = deParte1.filter(function(p){ return S.revisiones[p.id]; }).length;
+    var agregados = S.procesos.filter(function(p){ return !p.enSeccion && !p.asignado && (p.elegido || p.propio); });
+    var estados = [
+      'ok',
+      !deParte1.length ? '' : conf === deParte1.length ? 'ok' : conf ? 'ini' : '',
+      !agregados.length ? '' : agregados.every(function(p){ return S.revisiones[p.id]; }) ? 'ok' : 'ini',
+      !activos.length ? '' : completos === activos.length ? 'ok' : puntos ? 'ini' : ''
+    ];
+    Array.prototype.forEach.call(document.querySelectorAll('#avPasos i'), function(i){ i.className = estados[Number(i.dataset.p)]; });
+    if ($('#avRes')) $('#avRes').textContent = conf + ' de ' + deParte1.length + ' confirmados · ' + completos + ' de ' + activos.length + ' descritos';
   }
 
   // ------------------------------------------------------------ guardado
