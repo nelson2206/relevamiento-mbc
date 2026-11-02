@@ -15,7 +15,7 @@ export const TIPOS_DOCUMENTO = {
 export const UMBRAL_POR_DEFECTO = 0.7;
 const MAX_SUGERENCIAS = 5;
 const ESTADOS = ['pendiente', 'clasificado'];
-const ESTADOS_IA = ['sin_analizar', 'analizado', 'error'];
+const ESTADOS_IA = ['sin_analizar', 'analizando', 'analizado', 'error'];
 const ACTOR = { rol: 'admin', sup: null, nombre: ACTOR_CONSOLA.nombre };   // el mismo nombre que usa la matriz: una sola persona en todas las bitácoras
 
 const unidad = n => { n = Number(n); return Number.isFinite(n) ? Math.min(1, Math.max(0, n)) : null; };
@@ -53,6 +53,23 @@ async function gerenciaValida(env, campId, gerencia) {
   if (!oficial) throw new HttpError(400, 'Esa gerencia no existe en la campaña');
   return oficial;
 }
+// La sección es opcional («toda la gerencia»); si se indica, debe existir dentro de esa gerencia (por la estructura o por sus procesos).
+async function seccionValida(env, campId, gerencia, seccion) {
+  const s = txt(seccion, 120);
+  if (!s) return '';
+  const g = normal(gerencia), conocidas = new Map();
+  (await leerEstructura(env, campId)).forEach(f => { if (f.seccion && normal(f.gerencia) === g) conocidas.set(normal(f.seccion), f.seccion); });
+  (await env.DB.prepare('SELECT DISTINCT gerencia, seccion FROM procesos WHERE campana_id=?').bind(campId).all()).results.forEach(f => {
+    if (f.seccion && normal(f.gerencia) === g && !conocidas.has(normal(f.seccion))) conocidas.set(normal(f.seccion), f.seccion);
+  });
+  const oficial = conocidas.get(normal(s));
+  if (!oficial) throw new HttpError(400, 'Esa sección no existe en la gerencia');
+  return oficial;
+}
+async function huella(buf) {
+  const h = new Uint8Array(await crypto.subtle.digest('SHA-256', buf));
+  return Array.from(h, b => b.toString(16).padStart(2, '0')).join('');
+}
 function exigirR2(env) {
   if (!env.DOCS) throw new HttpError(503, 'El almacenamiento de documentos no está configurado en el Worker (R2, binding DOCS)');
 }
@@ -60,19 +77,26 @@ const claveR2 = (campId, id, tipo) => `${campId}/${id}.${tipo}`;
 
 const nombreProceso = p => p.subproceso || p.proceso || p.macroproceso || p.id;
 
-// POST /a/documentos?campana_id=&gerencia=&nombre=   cuerpo: UN archivo (el navegador manda cada archivo de la carga por separado).
-export async function rutaDocumentoSubir(env, req, url, deps) {
+// POST /a/documentos?campana_id=&gerencia=&seccion=&nombre=   cuerpo: UN archivo (el navegador manda cada archivo de la carga por separado).
+// Con la IA configurada, el documento se analiza apenas se guarda (en segundo plano), dentro de la sección indicada.
+export async function rutaDocumentoSubir(env, req, url, deps, ctx) {
   exigirR2(env);
   const camp = await campanaDe(env, url.searchParams.get('campana_id'));
   const gerencia = await gerenciaValida(env, camp.id, url.searchParams.get('gerencia'));
+  const seccion = await seccionValida(env, camp.id, gerencia, url.searchParams.get('seccion'));
   const nombre = txt(url.searchParams.get('nombre'), 150) || 'documento';
   const a = await deps.leerArchivo(req, Object.keys(TIPOS_DOCUMENTO), 'Formato no permitido: sube un archivo JPG, PNG, PDF o Word (.docx).');
+  const hash = await huella(a.buf);
+  const repetido = await env.DB.prepare('SELECT nombre FROM documentos WHERE campana_id=? AND hash=?').bind(camp.id, hash).first();
+  if (repetido) throw new HttpError(409, `Ya se cargó antes como «${repetido.nombre}»`);
+  const auto = !!(ctx && deps.analizarIA && deps.iaLista && deps.iaLista(env));
   const id = uid(), tipo = TIPOS_DOCUMENTO[a.tipo], t = ahora();
   await env.DOCS.put(claveR2(camp.id, id, tipo), a.buf, { httpMetadata: { contentType: a.tipo } });
-  await env.DB.prepare(`INSERT INTO documentos (id, campana_id, nombre, tipo, gerencia, clave_r2, tamano, estado, estado_ia, cargado_por, creado, actualizado)
-    VALUES (?,?,?,?,?,?,?,'pendiente','sin_analizar',?,?,?)`).bind(id, camp.id, nombre, tipo, gerencia, claveR2(camp.id, id, tipo), a.buf.byteLength, ACTOR.nombre, t, t).run();
-  await registrarAccion(env, camp.id, ACTOR, 'documento_carga', { documento: id, nombre, tipo, gerencia, estado_resultante: 'pendiente' });
-  log('documento_carga', { campana: camp.id, tipo, bytes: a.buf.byteLength });
+  await env.DB.prepare(`INSERT INTO documentos (id, campana_id, nombre, tipo, gerencia, seccion, hash, clave_r2, tamano, estado, estado_ia, cargado_por, creado, actualizado)
+    VALUES (?,?,?,?,?,?,?,?,?,'pendiente',?,?,?,?)`).bind(id, camp.id, nombre, tipo, gerencia, seccion, hash, claveR2(camp.id, id, tipo), a.buf.byteLength, auto ? 'analizando' : 'sin_analizar', ACTOR.nombre, t, t).run();
+  await registrarAccion(env, camp.id, ACTOR, 'documento_carga', { documento: id, nombre, tipo, gerencia, seccion, estado_resultante: 'pendiente' });
+  log('documento_carga', { campana: camp.id, tipo, bytes: a.buf.byteLength, analisis_auto: auto });
+  if (auto) ctx.waitUntil(analizarYGuardar(env, ctx, await documentoDe(env, id), camp, deps).catch(() => { /* ya quedó en estado «error» y auditado */ }));
   return { ok: true, documento: await fichaDe(env, id, camp.umbral_confianza) };
 }
 
@@ -112,6 +136,7 @@ export async function rutaDocumentos(env, url) {
   const p = n => txt(url.searchParams.get(n), 120);
   const donde = ['campana_id=?'], args = [camp.id];
   if (p('gerencia')) { donde.push('gerencia=?'); args.push(p('gerencia')); }
+  if (p('seccion')) { donde.push('seccion=?'); args.push(p('seccion')); }
   if (ESTADOS.includes(p('estado'))) { donde.push('estado=?'); args.push(p('estado')); }
   if (ESTADOS_IA.includes(p('estado_ia'))) { donde.push('estado_ia=?'); args.push(p('estado_ia')); }
   if (/^\d{4}-\d{2}-\d{2}$/.test(p('desde'))) { donde.push('substr(creado,1,10)>=?'); args.push(p('desde')); }
@@ -136,12 +161,13 @@ export async function rutaDocumentoArchivo(env, url, h) {
   return new Response(o.body, { headers: Object.assign({ 'content-type': mime, 'cache-control': 'private, no-store', 'x-content-type-options': 'nosniff' }, h || {}) });
 }
 
-// POST /a/documentos/gerencia  {id, gerencia}
+// POST /a/documentos/gerencia  {id, gerencia, seccion?}   Cambia dónde está el documento. Sin `seccion`, se conserva si la gerencia no cambia.
 export async function rutaDocumentoGerencia(env, b) {
   const d = await documentoDe(env, b.id);
   const gerencia = await gerenciaValida(env, d.campana_id, b.gerencia);
-  await env.DB.prepare('UPDATE documentos SET gerencia=?, actualizado=? WHERE id=?').bind(gerencia, ahora(), d.id).run();
-  await registrarAccion(env, d.campana_id, ACTOR, 'documento_gerencia', { documento: d.id, anterior: d.gerencia, nueva: gerencia });
+  const seccion = await seccionValida(env, d.campana_id, gerencia, b.seccion !== undefined ? b.seccion : (normal(gerencia) === normal(d.gerencia) ? d.seccion : ''));
+  await env.DB.prepare('UPDATE documentos SET gerencia=?, seccion=?, actualizado=? WHERE id=?').bind(gerencia, seccion, ahora(), d.id).run();
+  await registrarAccion(env, d.campana_id, ACTOR, 'documento_gerencia', { documento: d.id, anterior: d.gerencia, nueva: gerencia, seccion_anterior: d.seccion, seccion_nueva: seccion });
   const camp = await campanaDe(env, d.campana_id);
   return { ok: true, documento: await fichaDe(env, d.id, camp.umbral_confianza) };
 }
@@ -151,13 +177,35 @@ export async function rutaDocumentoAnalizar(env, b, ctx, deps) {
   exigirR2(env);
   const d = await documentoDe(env, b.id);
   const camp = await campanaDe(env, d.campana_id);
+  return analizarYGuardar(env, ctx, d, camp, deps);
+}
+
+// Procesos entre los que la IA clasifica: los de la sección indicada; si no tiene, los de la gerencia; si tampoco, los de toda la campaña.
+// (La IA solo ve hasta 600; acotar por sección es lo que evita que la lista se corte.)
+export async function catalogoDe(env, d) {
+  const todos = (await env.DB.prepare('SELECT id, gerencia, seccion, macroproceso, proceso, subproceso FROM procesos WHERE campana_id=? AND fuera_alcance=0 ORDER BY gerencia, seccion, orden').bind(d.campana_id).all()).results;
+  const g = normal(d.gerencia), s = normal(d.seccion || '');
+  const deSeccion = s ? todos.filter(p => normal(p.gerencia) === g && normal(p.seccion) === s) : [];
+  if (deSeccion.length) return deSeccion.slice(0, 600);
+  const deGerencia = todos.filter(p => normal(p.gerencia) === g);
+  return (deGerencia.length ? deGerencia : todos).slice(0, 600);
+}
+
+// Lee el archivo, pide las sugerencias a la IA y las guarda. Si algo falla, el documento queda con estado «error» (y se relanza el error).
+async function analizarYGuardar(env, ctx, d, camp, deps) {
   const obj = await env.DOCS.get(d.clave_r2);
-  if (!obj) throw new HttpError(404, 'El archivo ya no está almacenado');
-  const catalogo = (await env.DB.prepare('SELECT id, gerencia, seccion, macroproceso, proceso, subproceso FROM procesos WHERE campana_id=? AND fuera_alcance=0 ORDER BY gerencia, seccion, orden LIMIT 600').bind(d.campana_id).all()).results;
-  if (!catalogo.length) throw new HttpError(409, 'La campaña no tiene procesos contra los cuales clasificar');
+  if (!obj) {
+    await env.DB.prepare("UPDATE documentos SET estado_ia='error', actualizado=? WHERE id=?").bind(ahora(), d.id).run();
+    throw new HttpError(404, 'El archivo ya no está almacenado');
+  }
+  const catalogo = await catalogoDe(env, d);
+  if (!catalogo.length) {
+    await env.DB.prepare("UPDATE documentos SET estado_ia='error', actualizado=? WHERE id=?").bind(ahora(), d.id).run();
+    throw new HttpError(409, 'La campaña no tiene procesos contra los cuales clasificar');
+  }
   const mime = Object.keys(TIPOS_DOCUMENTO).find(k => TIPOS_DOCUMENTO[k] === d.tipo);
   let sugeridas;
-  try { sugeridas = await deps.analizarIA(env, ctx, { tipo: mime, buf: await obj.arrayBuffer() }, catalogo, d.gerencia); }
+  try { sugeridas = await deps.analizarIA(env, ctx, { tipo: mime, buf: await obj.arrayBuffer() }, catalogo, d.gerencia, d.seccion || ''); }
   catch (err) {
     await env.DB.prepare("UPDATE documentos SET estado_ia='error', actualizado=? WHERE id=?").bind(ahora(), d.id).run();
     await registrarAccion(env, d.campana_id, ACTOR, 'documento_analisis_error', { documento: d.id, motivo: txt(err && err.message, 200) });
@@ -180,6 +228,21 @@ export async function rutaDocumentoAnalizar(env, b, ctx, deps) {
     sugeridos: nuevas.map(s => ({ proceso_id: s.proceso_id, confianza: s.confianza })), umbral: camp.umbral_confianza
   });
   return { ok: true, documento: await fichaDe(env, d.id, camp.umbral_confianza) };
+}
+
+// POST /a/documentos/borrar  {id}   Elimina el documento: su archivo, sus asociaciones y los borradores que aún no se aprobaron.
+// Lo que ya se aprobó (precarga y matriz) se queda: lo aprobó el administrador.
+export async function rutaDocumentoBorrar(env, b) {
+  const d = await documentoDe(env, b.id);
+  await env.DB.batch([
+    env.DB.prepare('DELETE FROM documento_procesos WHERE documento_id=?').bind(d.id),
+    env.DB.prepare('DELETE FROM documento_extracciones WHERE documento_id=?').bind(d.id),
+    env.DB.prepare("DELETE FROM precarga_borrador WHERE documento_id=? AND estado<>'aprobado'").bind(d.id),
+    env.DB.prepare('DELETE FROM documentos WHERE id=?').bind(d.id)
+  ]);
+  if (env.DOCS && env.DOCS.delete) await Promise.resolve(env.DOCS.delete(d.clave_r2)).catch(() => {});
+  await registrarAccion(env, d.campana_id, ACTOR, 'documento_borrado', { documento: d.id, nombre: d.nombre, gerencia: d.gerencia, seccion: d.seccion, estado: d.estado });
+  return { ok: true };
 }
 
 // POST /a/documentos/procesos  {id, procesos[proceso_id]}   Deja la lista FINAL de procesos del documento:

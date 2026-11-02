@@ -246,10 +246,12 @@ CREATE TABLE IF NOT EXISTS documentos (
   nombre TEXT NOT NULL,
   tipo TEXT NOT NULL DEFAULT '',            -- extensión: pdf, docx, jpg, png...
   gerencia TEXT NOT NULL,                   -- metadato obligatorio; el administrador puede cambiarlo después
+  seccion TEXT NOT NULL DEFAULT '',         -- sección de la gerencia a la que pertenece; '' = toda la gerencia (la IA clasifica solo dentro de ella)
+  hash TEXT NOT NULL DEFAULT '',            -- SHA-256 del archivo: evita cargar dos veces el mismo documento en una campaña
   clave_r2 TEXT NOT NULL DEFAULT '',
   tamano INTEGER NOT NULL DEFAULT 0,
   estado TEXT NOT NULL DEFAULT 'pendiente', -- pendiente (de clasificación) | clasificado
-  estado_ia TEXT NOT NULL DEFAULT 'sin_analizar', -- sin_analizar | analizado | error
+  estado_ia TEXT NOT NULL DEFAULT 'sin_analizar', -- sin_analizar | analizando | analizado | error
   confianza_min REAL,                       -- la menor confianza entre las sugerencias vigentes (para priorizar la revisión)
   cargado_por TEXT NOT NULL DEFAULT '',
   creado TEXT NOT NULL,
@@ -257,6 +259,7 @@ CREATE TABLE IF NOT EXISTS documentos (
 );
 CREATE INDEX IF NOT EXISTS ix_doc_camp ON documentos(campana_id, estado, creado);
 CREATE INDEX IF NOT EXISTS ix_doc_ger ON documentos(campana_id, gerencia);
+CREATE INDEX IF NOT EXISTS ix_doc_hash ON documentos(campana_id, hash);
 
 -- Historial de asociaciones documento-proceso: no se sobrescribe, lo quitado queda con vigente = 0.
 CREATE TABLE IF NOT EXISTS documento_procesos (

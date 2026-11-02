@@ -56,7 +56,7 @@
  *   POST /a/documentos?campana_id=&gerencia=&nombre=   cuerpo: UN archivo JPG/PNG/PDF/DOCX (bytes); queda en R2 como «pendiente» de clasificar (carga masiva: el navegador manda uno por uno)
  *   GET  /a/documentos?campana_id=&gerencia=&estado=&estado_ia=&desde=&hasta=&q=&confianza=baja|sin&orden=confianza   bandeja con sus procesos y el umbral
  *   GET  /a/documentos/archivo?id=       el archivo, para abrirlo antes de clasificar
- *   POST /a/documentos/gerencia {id, gerencia} | /a/documentos/analizar {id} (la IA propone procesos con confianza) | /a/documentos/procesos {id, procesos[]} (lista final: confirma, quita y agrega;
+ *   POST /a/documentos/borrar {id} (elimina el documento, su archivo y sus borradores sin aprobar) | /a/documentos/gerencia {id, gerencia, seccion?} | /a/documentos/analizar {id} (la IA propone procesos con confianza) | /a/documentos/procesos {id, procesos[]} (lista final: confirma, quita y agrega;
  *        lo recién confirmado lanza la extracción de la precarga en segundo plano: queda como borrador)
  *   POST /a/documentos/extraer {id, proceso_id}   (extrae o reextrae la precarga de un proceso confirmado)  |  POST /a/precarga/borrador {proceso_id, decisiones[{id, accion:'aprobar'|'descartar', texto?}]}
  *   POST /a/campana/umbral       {campana_id, umbral 0..1}   (bajo ese valor la clasificación se resalta como de baja confianza)
@@ -105,7 +105,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { leerEstructura, prepararEstructura, asegurarEstructura, areasDeEstructura } from './estructura.js';
 import { rutaFlujo, rutaFlujoCatalogo, rutaFlujoConfirmar, rutaFlujoRetroceder, rutaFlujoProceso, rutaFlujoAdmin, rutaFlujoReabrir, guardarCambio } from './flujo.js';
-import { rutaDocumentoSubir, rutaDocumentos, rutaDocumentoArchivo, rutaDocumentoGerencia, rutaDocumentoAnalizar, rutaDocumentoProcesos, rutaUmbral,
+import { rutaDocumentoSubir, rutaDocumentos, rutaDocumentoArchivo, rutaDocumentoGerencia, rutaDocumentoAnalizar, rutaDocumentoBorrar, rutaDocumentoProcesos, rutaUmbral,
   rutaDocumentoExtraer, rutaPrecargaBorrador, borradoresDeCampana, sentenciasRastroDeProcesos, sentenciasRastroDeCampana, borrarArchivosDeCampana } from './documentos.js';
 import { ambitoDe, enSecs, claveArea, registrarAccion } from './ambito.js';
 import { limpiarDatos, evaluar, resumenTexto, UBICACIONES, ESQUEMA_IA, PROMPT_IA, desdeSalidaIA, camposMatriz } from './confidencial.js';
@@ -2309,10 +2309,13 @@ const CLASIFICAR_PROMPT = `Recibes un documento (imagen, PDF o el texto de un Wo
 - Propón solo procesos de la lista, usando su id exacto. Si el documento no trata de ninguno, devuelve una lista vacía.
 - "confianza" va de 0 a 1: alta (≥ 0,8) cuando el documento describe el proceso de forma explícita; media cuando solo lo menciona o lo toca parcialmente; baja cuando la coincidencia es dudosa. No inflar la confianza.
 - Máximo 5 procesos, del más al menos probable. "motivo": una frase con lo que en el documento sustenta la coincidencia.
-- La gerencia de carga es una pista, no un límite: un documento puede corresponder a procesos de otra gerencia.
+- La lista ya está acotada a la sección (o gerencia) donde la persona dijo que está el documento: elige solo de ella y, si nada encaja, devuelve una lista vacía.
 - No inventes procesos ni infieras por conocimiento general; si el documento es ilegible o no tiene información de procesos, lista vacía.`;
 
-async function analizarDocumentoIA(env, ctx, archivo, catalogo, gerencia) {
+// ¿Hay una IA configurada (clave propia o intermediario de ProcessIQ)? Sin ella el análisis automático al cargar no se lanza.
+const iaLista = env => !!((env.ANTHROPIC_API_KEY || '').trim() || (env.PROCESSIQ && (env.INTERNAL_CODE || '').trim()));
+
+async function analizarDocumentoIA(env, ctx, archivo, catalogo, gerencia, seccion) {
   const esDocx = archivo.tipo === MIME_DOCX, esPdf = archivo.tipo === 'application/pdf';
   const doc = esDocx ? await textoDeDocx(archivo.buf).catch(() => null) : null;
   if (esDocx && !(doc && doc.texto)) throw new HttpError(422, 'No pudimos leer el texto de ese Word.');
@@ -2336,7 +2339,7 @@ async function analizarDocumentoIA(env, ctx, archivo, catalogo, gerencia) {
       system: CLASIFICAR_PROMPT,
       messages: [{ role: 'user', content: [
         bloqueDeArchivo({ esDocx, esPdf, doc, tipo: archivo.tipo, buf: archivo.buf }),
-        { type: 'text', text: `GERENCIA DE CARGA: ${gerencia}\n\nPROCESOS DE LA CAMPAÑA (id | área | ruta):\n${lista}` }
+        { type: 'text', text: `UBICACIÓN INDICADA: gerencia ${gerencia}${seccion ? ' · sección ' + seccion : ''}\n\nPROCESOS CANDIDATOS (id | área | ruta):\n${lista}` }
       ] }]
     }).finalMessage();
   } catch (err) {
@@ -2865,7 +2868,7 @@ export default {
         if (ruta === 'GET /a/campana/historial') return json(await rutaHistorialMatriz(env, url), 200, h);
         if (ruta === 'GET /a/documentos') return json(await rutaDocumentos(env, url), 200, h);
         if (ruta === 'GET /a/documentos/archivo') return await rutaDocumentoArchivo(env, url, h);
-        if (ruta === 'POST /a/documentos') return json(await rutaDocumentoSubir(env, req, url, { leerArchivo: leerArchivoSubido }), 200, h);
+        if (ruta === 'POST /a/documentos') return json(await rutaDocumentoSubir(env, req, url, { leerArchivo: leerArchivoSubido, analizarIA: analizarDocumentoIA, iaLista }, ctx), 200, h);
         if (ruta === 'POST /a/precarga/extraer') return json(await rutaPrecargaExtraer(env, req, url, ctx), 200, h);
         if (req.method === 'POST') {
           const b = await cuerpo(req);
@@ -2878,6 +2881,7 @@ export default {
           if (url.pathname === '/a/campana/estandares') return json(await rutaEstandares(env, b), 200, h);
           if (url.pathname === '/a/estandares/probar') return json(await rutaEstandaresProbar(env, b, ctx), 200, h);
           if (url.pathname === '/a/documentos/gerencia') return json(await rutaDocumentoGerencia(env, b), 200, h);
+          if (url.pathname === '/a/documentos/borrar') return json(await rutaDocumentoBorrar(env, b), 200, h);
           if (url.pathname === '/a/documentos/analizar') return json(await rutaDocumentoAnalizar(env, b, ctx, { analizarIA: analizarDocumentoIA }), 200, h);
           if (url.pathname === '/a/documentos/procesos') return json(await rutaDocumentoProcesos(env, b, ctx, { extraerPrecarga: extraerDeDocumento }), 200, h);
           if (url.pathname === '/a/documentos/extraer') return json(await rutaDocumentoExtraer(env, b, ctx, { extraerPrecarga: extraerDeDocumento }), 200, h);

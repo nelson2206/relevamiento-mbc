@@ -57,6 +57,7 @@ Resultado final: un inventario de procesos validado, por gerencia, con su respon
 | **Entrevistas** | Agendar y marcar entrevistas realizadas, por semana. |
 | **Personas y enlaces** | Dos apartados: **Usuarios registrados** (alta y edición, procesos, restablecer PIN, desbloquear, último ingreso) y **Gerencias → Secciones** (el enlace de cada sección, con las personas registradas). |
 | **Procesos fuera de alcance** | Marcar procesos que no se levantan, para que no aparezcan en la encuesta. |
+| **Carga masiva de documentos** | El equipo sube varios documentos indicando la gerencia y la sección a la que pertenecen. La IA los analiza al cargarse y propone a qué procesos de esa sección corresponden; el administrador confirma. Un archivo repetido se avisa y no se vuelve a cargar, y un documento se puede eliminar. |
 | **Precarga de documentos** | Adjuntar documentación existente por punto del checklist, para que las personas no tengan que repetirla. |
 | **Acceso del cliente** | Generar, renovar o desactivar el acceso del cliente y definir su clave. |
 

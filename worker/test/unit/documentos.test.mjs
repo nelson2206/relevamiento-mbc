@@ -3,7 +3,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import worker from '../../src/index.js';
-import { rutaDocumentoAnalizar, bajaConfianza, diferencias } from '../../src/documentos.js';
+import { rutaDocumentoAnalizar, rutaDocumentoSubir, bajaConfianza, diferencias } from '../../src/documentos.js';
 import { crearD1 } from './d1-memoria.mjs';
 
 const ORIGEN = 'http://prueba.local', ADMIN = 'admin-de-prueba-123';
@@ -134,7 +134,8 @@ test('HU02: re-analizar no pisa lo confirmado y conserva las sugerencias anterio
   await rutaDocumentoAnalizar(env, { id }, { waitUntil() {} }, { analizarIA: async () => [{ proceso_id: 'p3', confianza: 0.9 }] });
   await llamar('POST', '/a/documentos/procesos', { id, procesos: ['p3'] });
   const r = await rutaDocumentoAnalizar(env, { id }, { waitUntil() {} }, { analizarIA: async () => [{ proceso_id: 'p3', confianza: 0.5 }, { proceso_id: 'p1', confianza: 0.6 }] });
-  assert.deepEqual(r.documento.procesos.map(p => [p.proceso_id, p.confirmado]).sort(), [['p1', false], ['p3', true]]);
+  // El documento está en Finanzas: p1 (Legal) queda fuera del catálogo y se descarta aunque la IA lo devuelva.
+  assert.deepEqual(r.documento.procesos.map(p => [p.proceso_id, p.confirmado]).sort(), [['p3', true]]);
   assert.equal(r.documento.estado, 'clasificado');
 });
 
@@ -154,4 +155,76 @@ test('sin R2 configurado la carga responde 503 con un mensaje claro', async () =
 test('ayudantes puros: bajaConfianza y diferencias', () => {
   assert.ok(bajaConfianza(0.5, 0.7)); assert.equal(bajaConfianza(0.7, 0.7), false); assert.equal(bajaConfianza(null, 0.7), false);
   assert.deepEqual(diferencias([{ proceso_id: 'a', confirmado: 0 }, { proceso_id: 'b', confirmado: 1 }], ['b', 'c']), { agregados: ['c'], quitados: ['a'], confirmados: [] });
+});
+
+// ---------------------------------------------------------------- sección, duplicados, análisis automático y borrado
+const subirSec = (nombre, gerencia, seccion, bytes = pdf(nombre)) =>
+  llamar('POST', `/a/documentos?campana_id=c1&gerencia=${encodeURIComponent(gerencia)}&seccion=${encodeURIComponent(seccion)}&nombre=${encodeURIComponent(nombre)}`, bytes, 'application/pdf');
+
+test('sección: se guarda la oficial (sin importar mayúsculas o tildes), vacía = toda la gerencia, y una que no es de la gerencia se rechaza', async () => {
+  const r = await subirSec('Cumpl.pdf', 'Legal', 'cumplimiento');
+  assert.equal(r.status, 200); assert.equal(r.documento.seccion, 'Cumplimiento');
+  assert.equal((await subirSec('Sin sec.pdf', 'Legal', '')).documento.seccion, '');
+  assert.equal((await subirSec('Mala.pdf', 'Legal', 'Tesorería')).status, 400);   // existe, pero en Finanzas
+  assert.equal(acciones('documento_carga').pop().detalle.seccion, '');
+});
+
+test('duplicados: el mismo contenido en la campaña se rechaza (409) y no guarda otro archivo', async () => {
+  const antes = db.prepare('SELECT COUNT(*) n FROM documentos').get().n, claves = almacen.size;
+  const r = await subirSec('Copia de Cumpl.pdf', 'Finanzas', 'Tesorería', pdf('Cumpl.pdf'));
+  assert.equal(r.status, 409); assert.match(r.error, /Cumpl\.pdf/);
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM documentos').get().n, antes); assert.equal(almacen.size, claves);
+});
+
+test('el catálogo de la IA se acota a la sección; sin procesos en ella cae a la gerencia', async () => {
+  const id = (await llamar('GET', '/a/documentos?campana_id=c1&q=Cumpl')).documentos.find(d => d.nombre === 'Cumpl.pdf').id;
+  let visto = null;
+  const ia = async (e, c, a, catalogo, ger, sec) => { visto = { ids: catalogo.map(p => p.id), ger, sec }; return [{ proceso_id: 'p1', confianza: 0.9 }, { proceso_id: 'p2', confianza: 0.8 }]; };
+  const r = await rutaDocumentoAnalizar(env, { id }, { waitUntil() {} }, { analizarIA: ia });
+  assert.deepEqual(visto, { ids: ['p2'], ger: 'Legal', sec: 'Cumplimiento' });
+  assert.deepEqual(r.documento.procesos.map(p => p.proceso_id), ['p2']);   // p1 es de otra sección: no se acepta
+  db.prepare("UPDATE documentos SET seccion='Fantasma' WHERE id=?").run(id);
+  await rutaDocumentoAnalizar(env, { id }, { waitUntil() {} }, { analizarIA: ia });
+  assert.deepEqual(visto.ids.sort(), ['p1', 'p2']);   // toda la gerencia Legal
+});
+
+test('análisis automático: con IA lista se lanza al cargar (analizando → analizado); si falla queda «error» sin romper la carga', async () => {
+  const ps = [], ctx = { waitUntil: p => ps.push(p) };
+  const cargar = async (nombre, deps) => {
+    const req = new Request(`http://worker.local/a/documentos?campana_id=c1&gerencia=Legal&seccion=Contratos&nombre=${nombre}`, { method: 'POST', body: pdf(nombre), headers: { ...H, 'content-type': 'application/pdf' } });
+    const base = { leerArchivo: async rq => ({ tipo: 'application/pdf', buf: await rq.arrayBuffer() }), ...deps };
+    return rutaDocumentoSubir(env, req, new URL(req.url), base, ctx);
+  };
+  const ok = await cargar('auto-ok.pdf', { iaLista: () => true, analizarIA: async () => [{ proceso_id: 'p1', confianza: 0.95 }] });
+  assert.equal(ok.documento.estado_ia, 'analizando');
+  await Promise.all(ps);
+  const ficha = (await llamar('GET', '/a/documentos?campana_id=c1&q=auto-ok')).documentos[0];
+  assert.equal(ficha.estado_ia, 'analizado'); assert.deepEqual(ficha.procesos.map(p => p.proceso_id), ['p1']);
+  const mal = await cargar('auto-mal.pdf', { iaLista: () => true, analizarIA: async () => { throw new Error('caída'); } });
+  assert.equal(mal.documento.estado_ia, 'analizando');
+  await Promise.all(ps);
+  assert.equal(db.prepare("SELECT estado_ia FROM documentos WHERE nombre='auto-mal.pdf'").get().estado_ia, 'error');
+  const sin = await cargar('auto-sin.pdf', { iaLista: () => false, analizarIA: async () => [] });
+  assert.equal(sin.documento.estado_ia, 'sin_analizar');   // sin IA configurada no se lanza nada
+});
+
+test('borrar: quita ficha, asociaciones, borradores sin aprobar y el archivo; lo ya aprobado se conserva', async () => {
+  const doc = (await llamar('GET', '/a/documentos?campana_id=c1&q=auto-ok')).documentos[0];
+  db.prepare("INSERT INTO precarga_borrador (id, campana_id, proceso_id, documento_id, punto, bloque, texto, cita, estado, editado, creado, actualizado) VALUES ('b1','c1','p1',?,'objetivo','b1','x','y','borrador',0,'t','t')").run(doc.id);
+  db.prepare("INSERT INTO precarga_borrador (id, campana_id, proceso_id, documento_id, punto, bloque, texto, cita, estado, editado, creado, actualizado) VALUES ('b2','c1','p1',?,'alcance','b1','x','y','aprobado',0,'t','t')").run(doc.id);
+  const r = await llamar('POST', '/a/documentos/borrar', { id: doc.id });
+  assert.equal(r.status, 200);
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM documentos WHERE id=?').get(doc.id).n, 0);
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM documento_procesos WHERE documento_id=?').get(doc.id).n, 0);
+  assert.deepEqual(db.prepare('SELECT id FROM precarga_borrador WHERE documento_id=?').all(doc.id).map(x => x.id), ['b2']);
+  assert.equal(acciones('documento_borrado').length, 1);
+  assert.equal((await llamar('POST', '/a/documentos/borrar', { id: doc.id })).status, 404);
+});
+
+test('cambiar de gerencia limpia la sección; cambiar solo la sección la valida', async () => {
+  const id = (await llamar('GET', '/a/documentos?campana_id=c1&q=Cumpl')).documentos.find(d => d.nombre === 'Cumpl.pdf').id;
+  assert.equal((await llamar('POST', '/a/documentos/gerencia', { id, gerencia: 'Legal', seccion: 'Contratos' })).documento.seccion, 'Contratos');
+  assert.equal((await llamar('POST', '/a/documentos/gerencia', { id, gerencia: 'Legal', seccion: 'Tesorería' })).status, 400);
+  const r = await llamar('POST', '/a/documentos/gerencia', { id, gerencia: 'Finanzas' });
+  assert.equal(r.documento.gerencia, 'Finanzas'); assert.equal(r.documento.seccion, '');
 });
