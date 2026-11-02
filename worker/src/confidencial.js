@@ -77,3 +77,20 @@ export function desdeSalidaIA(s) {
   const datos = salida.relevante ? limpiarDatos(salida) : limpiarDatos({});
   return { datos, motivo: salida.relevante ? '' : txt(salida.motivo, 300), ...evaluar(datos) };
 }
+
+// ---------------------------------------------------------------- columnas de la matriz
+// La respuesta de la pregunta 3 alimenta dos columnas de la matriz. Se arman con lo que las personas MARCARON (no con una deducción de
+// la IA): si varias personas respondieron, basta que una diga «Sí» para que el proceso figure como que la gestiona, y se juntan
+// sus «cuál» y sus ubicaciones. Sin respuestas completas devuelve vacío (la columna queda sin llenar).
+export const CAMPO_IAC_GESTIONA = 'iac_gestiona';
+export const CAMPO_IAC_UBICACION = 'iac_ubicacion';
+export function camposMatriz(lista) {
+  const resp = (lista || []).map(limpiarDatos).filter(d => d.confidencial);
+  if (!resp.length) return { [CAMPO_IAC_GESTIONA]: '', [CAMPO_IAC_UBICACION]: '' };
+  const si = resp.filter(d => d.confidencial === 'si');
+  if (!si.length) return { [CAMPO_IAC_GESTIONA]: 'No', [CAMPO_IAC_UBICACION]: 'No aplica' };
+  const unicos = a => [...new Set(a.filter(Boolean))];
+  const cual = unicos(si.map(d => d.cual)).join('; ');
+  const ub = unicos(si.flatMap(d => d.ubicaciones.map(u => (u === 'otro' && d.otro ? 'Otro: ' + d.otro : ETIQUETA[u]))));
+  return { [CAMPO_IAC_GESTIONA]: 'Sí' + (cual ? ': ' + cual : ''), [CAMPO_IAC_UBICACION]: ub.join(', ') };
+}

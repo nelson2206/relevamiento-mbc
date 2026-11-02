@@ -108,7 +108,7 @@ import { rutaFlujo, rutaFlujoCatalogo, rutaFlujoConfirmar, rutaFlujoRetroceder, 
 import { rutaDocumentoSubir, rutaDocumentos, rutaDocumentoArchivo, rutaDocumentoGerencia, rutaDocumentoAnalizar, rutaDocumentoProcesos, rutaUmbral,
   rutaDocumentoExtraer, rutaPrecargaBorrador, borradoresDeCampana, sentenciasRastroDeProcesos, sentenciasRastroDeCampana, borrarArchivosDeCampana } from './documentos.js';
 import { ambitoDe, enSecs, claveArea, registrarAccion } from './ambito.js';
-import { limpiarDatos, evaluar, resumenTexto, UBICACIONES, ESQUEMA_IA, PROMPT_IA, desdeSalidaIA } from './confidencial.js';
+import { limpiarDatos, evaluar, resumenTexto, UBICACIONES, ESQUEMA_IA, PROMPT_IA, desdeSalidaIA, camposMatriz } from './confidencial.js';
 import { PUNTO_CAMPO, ACTOR_IA, ACTOR_CONSOLA, actorEncuestado, sentenciasHistorial, conBorrados, ultimosEventos, puedeAutomatico, valoresDeProceso, validarCampoDeEncuesta, rutaHistorialMatriz } from './matriz-sync.js';
 import { HttpError, ahora, uid, txt, normal, mismaArea, log, mascara, igualSeguro, tokenNuevo, pinValido, salNueva, hashPin, verificarPin } from './comun.js';
 import { hashClaveSup, listaSupervisores, gestionarSupervisores, rutaPersonaPerfil, rutaUsuario, rutaClavesPerfiles, aplicarPerfil, asignarSeccionesYProcesos } from './usuarios.js';
@@ -229,7 +229,7 @@ const MATRIZ_CLAVES = ['division', 'gerencia', 'seccion', 'participantes', 'niv0
   'codigo_2021', 'division_2021', 'gerencia_2021', 'seccion_2021', 'mapeo_org', 'origen',
   'interaccion', 'finalidad_terceros', 'finalidad_dp', 'estandar_tmc', 'otros_estandares',
   'aprob_externa', 'aprob_area', 'aprob_responsable', 'aprob_momento',
-  'origen_proceso', 'aprob_niveles', 'aprob_formalizacion', 'carga', 'aprobadores'];
+  'origen_proceso', 'aprob_niveles', 'aprob_formalizacion', 'carga', 'aprobadores', 'iac_gestiona', 'iac_ubicacion'];
 const VALIDACIONES = ['', 'actualizado', 'validado'];
 
 function limpiarMatriz(m) {
@@ -1496,7 +1496,8 @@ const CAMPOS = [
   ['otros_estandares', 'Otros estándares nacionales o internacionales (NTP, ISO u otros)'],
   ['kpis', 'Indicadores o KPIs existentes'],
   ['normativa', 'Normativa legal peruana que regula el proceso, solo si el área la mencionó'],
-  ['info_confidencial', 'Información altamente confidencial (SOLO para el análisis; no es una columna de la matriz): una o dos frases con lo que la persona marcó en la pregunta de información altamente confidencial: si el proceso la gestiona, cuál es y dónde se almacena. Usa solo lo marcado en esa pregunta; si dijo que no, escribe "No gestiona información altamente confidencial"; si no respondió, deja el estado vacío'],
+  ['iac_gestiona', 'Información altamente confidencial (IAC): "No" si el proceso no la gestiona; si la gestiona, "Sí: " y cuál es. Usa solo lo marcado en la pregunta de información altamente confidencial; si no respondió, deja el estado vacío'],
+  ['iac_ubicacion', 'Dónde se almacena la IAC: los lugares marcados en esa pregunta, separados por comas; "No aplica" si dijo que no la gestiona; vacío si no respondió'],
   ['carga', 'Carga: "Sí" si es uno de los 3 procesos que más carga o esfuerzo generan al área, "No" si no; si lo dijeron, agrega la actividad que más tiempo o esfuerzo toma (formato «Sí: actividad»)']
 ];
 
@@ -1713,6 +1714,11 @@ async function estructurarProceso(env, procesoId, ctx, origen) {
   const bloque = msg.content.find(c => c.type === 'text');
   let datos;
   try { datos = normalizarSalida(JSON.parse(bloque ? bloque.text : '')); } catch (e) { throw new HttpError(502, 'La IA devolvió un formato inesperado. Reintenta.'); }
+  // Las dos columnas de información altamente confidencial salen de lo que las personas MARCARON, no de la redacción de la IA.
+  const iac = camposMatriz(resps.results.filter(r => esEstructurada(r.pregunta)).map(r => leerMatriz(r.datos)));
+  Object.keys(iac).forEach(k => {
+    datos.campos[k] = iac[k] ? { valor: iac[k], estado: 'dicho', evidencia: 'Respuesta de la pregunta de información altamente confidencial' } : { valor: '', estado: 'vacio', evidencia: '' };
+  });
   const generado = ahora();
   await env.DB.prepare(`INSERT INTO estructurado (proceso_id, campana_id, datos, modelo, generado) VALUES (?,?,?,?,?)
     ON CONFLICT(proceso_id) DO UPDATE SET datos=excluded.datos, modelo=excluded.modelo, generado=excluded.generado`)

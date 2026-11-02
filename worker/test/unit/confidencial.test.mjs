@@ -167,3 +167,24 @@ test('/r/imagen: la finalidad «confidencial» es solo de la pregunta de opcione
   assert.equal(await subir('bconf', '&finalidad=confidencial', 'image/png', new Uint8Array([1, 2, 3, 4])), 415, 'imagen dañada');
   assert.equal(await subir('bconf', '&finalidad=confidencial', 'image/png', new Uint8Array([0x89, 0x50, 0x4e, 0x47, 1])), 502, 'archivo válido pero sin IA configurada');
 });
+
+// ---------------------------------------------------------------- columnas de la matriz (iac_gestiona, iac_ubicacion)
+import { camposMatriz } from '../../src/confidencial.js';
+test('camposMatriz: sin respuestas deja vacías las dos columnas', () => {
+  assert.deepEqual(camposMatriz([]), { iac_gestiona: '', iac_ubicacion: '' });
+  assert.deepEqual(camposMatriz([{}]), { iac_gestiona: '', iac_ubicacion: '' });
+});
+test('camposMatriz: «No» → No / No aplica', () => {
+  assert.deepEqual(camposMatriz([{ confidencial: 'no', cual: 'x', ubicaciones: ['correo'] }]), { iac_gestiona: 'No', iac_ubicacion: 'No aplica' });
+});
+test('camposMatriz: «Sí» junta cuál y ubicaciones (con el detalle de «Otro»)', () => {
+  const r = camposMatriz([{ confidencial: 'si', cual: 'nómina', ubicaciones: ['sharepoint', 'otro'], otro: 'USB cifrado' }]);
+  assert.equal(r.iac_gestiona, 'Sí: nómina');
+  assert.equal(r.iac_ubicacion, 'SharePoint / Teams, Otro: USB cifrado');
+});
+test('camposMatriz: con varias personas basta un «Sí» y se unen sin repetir', () => {
+  const r = camposMatriz([{ confidencial: 'no' }, { confidencial: 'si', cual: 'nómina', ubicaciones: ['correo'] },
+    { confidencial: 'si', cual: 'nómina', ubicaciones: ['correo', 'fisico'] }]);
+  assert.equal(r.iac_gestiona, 'Sí: nómina');
+  assert.equal(r.iac_ubicacion, 'Correo electrónico, Medio físico (documentos impresos, expedientes, etc.)');
+});

@@ -533,6 +533,7 @@
     ['tecnologia','ERP, aplicativos y plataformas digitales'], ['frecuencia','Frecuencia de ejecución'],
     ['estandar_tdp','Estándar corporativo TDP'], ['estandar_tmc','Estándar global (TMC / Mitsui & Company)'],
     ['otros_estandares','Otros estándares (NTP, ISO, etc.)'], ['kpis','Indicadores / KPIs existentes'], ['normativa','Normativa legal peruana'],
+    ['iac_gestiona','¿El proceso gestiona actualmente Información Altamente Confidencial?'], ['iac_ubicacion','¿Dónde se encuentra almacenado la IAC?'],
     ['carga','Carga']
   ];
   var ESTADO_TXT = {respondido:'Respondido', en_curso:'En curso', sin_cobertura:'Sin cobertura', no_vigente:'Ya no se hace'};
@@ -559,6 +560,9 @@
     ['datos_personales','Datos personales','dp','Datos personales','DATOS PERSONALES (Sí/No)'],
     ['detalle_dp','Tipo/detalle de datos personales','dp','Tipo/detalle de datos personales','DETALLE DATOS PERSONALES'],
     ['finalidad_dp','Finalidad del tratamiento de datos personales','dp','Objetivo o para qué usan esos datos'],
+    // Salen de la pregunta 3 de la encuesta (lo que las personas marcaron).
+    ['iac_gestiona','¿El proceso gestiona actualmente Información Altamente Confidencial?','conf','¿El proceso gestiona actualmente Información Altamente Confidencial?'],
+    ['iac_ubicacion','¿Dónde se encuentra almacenado la IAC?','conf','¿Dónde se encuentra almacenado la IAC?'],
     ['tecnologia','ERP, aplicativos y plataformas digitales de TDP o Terceros','tec','ERP, aplicativos y plataformas digitales de TDP o de terceros','TECNOLOGÍA'],
     // Celeste en el Excel de TDP: no se pregunta aparte, sale de las actividades.
     ['frecuencia','Frecuencia de ejecución','desc','Frecuencia de ejecución (sale de las actividades)','FRECUENCIA Y VOLUMEN'],
@@ -570,11 +574,11 @@
     ['carga','Carga','desc','Carga: ¿es de los 3 procesos que más carga generan? ¿qué actividad toma más tiempo o esfuerzo?']
   ];
   var GRUPOS = [['id','Identificación'], ['desc','Descripción del subproceso'], ['tec','Tecnología y plataformas'], ['ter','Terceros'],
-    ['dp','Datos personales'], ['norma','Normativa y estándares'], ['aprob','Aprobaciones']];
+    ['dp','Datos personales'], ['conf','Información altamente confidencial'], ['norma','Normativa y estándares'], ['aprob','Aprobaciones']];
   var ES_MATRIZ = {}; MATRIZ.forEach(function(c){ ES_MATRIZ[c[0]] = 1; });
   var OPCIONES = {datos_personales:['Sí','No'], estandar_tdp:['Sí','No','Parcialmente','Programado (en proceso)']};
   var LARGOS = {objetivo:1, documentacion:1, alcance:1, normativa:1, detalle_dp:1, terceros:1, tecnologia:1, aprobadores:1, carga:1,
-    finalidad_dp:1, estandar_tmc:1, otros_estandares:1, kpis:1};
+    finalidad_dp:1, estandar_tmc:1, otros_estandares:1, kpis:1, iac_gestiona:1, iac_ubicacion:1};
   // Datos que pide la matriz de TDP: con alguno vacío, la fila no está lista para validar («No aplica» cuenta como respuesta).
   // KPIs es opcional. El tercer elemento es la pregunta Sí/No de la que depende: ese dato solo se pide si la respuesta es «Sí».
   var OBLIGATORIOS = [['objetivo','Objetivo'], ['alcance','Actividades principales (Alcance)'], ['aprobadores','Aprobadores y cómo se formalizan'],
