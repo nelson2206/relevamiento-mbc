@@ -5,7 +5,7 @@
   'use strict';
   var X = null;                     // lo que entrega la consola (api, datos, esc, fecha, base, codigo)
   var RAIZ = null;                  // contenedor de la pestaña
-  var ST = {docs: [], umbral: 0.7, gerencias: [], resumen: {}, abierto: '', cargando: false, subiendo: false, resultados: [], filtros: {gerencia: '', estado: '', estado_ia: '', confianza: '', desde: '', hasta: '', q: '', prioridad: false}};
+  var ST = {docs: [], umbral: 0.7, gerencias: [], resumen: {}, abierto: '', cargando: false, subiendo: false, resultados: [], editaUbic: '', filtros: {gerencia: '', seccion: '', estado: '', estado_ia: '', confianza: '', desde: '', hasta: '', q: '', prioridad: false}};
   var TIPOS = {pdf: 'application/pdf', docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png'};
   var MAX_IMAGEN = 6 * 1024 * 1024, MAX_OTROS = 10 * 1024 * 1024;
 
@@ -22,6 +22,13 @@
     C.procesos.forEach(function(p){ if (p.gerencia) s[p.gerencia] = 1; });
     (C.estructura || []).forEach(function(f){ if (f.gerencia) s[f.gerencia] = 1; });
     C.encuestados.forEach(function(e){ if (e.gerencia) s[e.gerencia] = 1; });
+    return Object.keys(s).sort(function(a, b){ return a.localeCompare(b, 'es'); });
+  }
+  // Secciones de una gerencia (o de toda la campaña si no se indica): las de los procesos y las de la estructura.
+  function seccionesDe(ger){
+    var C = X.datos(), s = {}, ok = function(g){ return !ger || String(g || '').toLowerCase() === String(ger).toLowerCase(); };
+    C.procesos.forEach(function(p){ if (p.seccion && ok(p.gerencia)) s[p.seccion] = 1; });
+    (C.estructura || []).forEach(function(f){ if (f.seccion && ok(f.gerencia)) s[f.seccion] = 1; });
     return Object.keys(s).sort(function(a, b){ return a.localeCompare(b, 'es'); });
   }
   function opciones(lista, actual, vacio){
@@ -41,6 +48,7 @@
   function subirTodos(archivos){
     var ger = ($('#dcGer') || {}).value || '';
     if (!ger){ avisoCarga('Selecciona una gerencia antes de cargar.'); return; }
+    var sec = ($('#dcSec') || {}).value || '';
     if (!archivos.length || ST.subiendo) return;
     ST.subiendo = true; ST.resultados = archivos.map(function(f){ var e = validar(f); return {nombre: f.name, estado: e ? 'error' : 'espera', msg: e}; });
     pintarResultados();
@@ -50,10 +58,13 @@
       if (r.estado === 'error') return;
       cadena = cadena.then(function(){
         r.estado = 'subiendo'; pintarResultados();
-        return fetch(X.base() + '/a/documentos?campana_id=' + encodeURIComponent(X.datos().campana.id) + '&gerencia=' + encodeURIComponent(ger) + '&nombre=' + encodeURIComponent(f.name),
+        return fetch(X.base() + '/a/documentos?campana_id=' + encodeURIComponent(X.datos().campana.id) + '&gerencia=' + encodeURIComponent(ger) + '&seccion=' + encodeURIComponent(sec) + '&nombre=' + encodeURIComponent(f.name),
           {method: 'POST', headers: {'x-admin-code': X.codigo(), 'content-type': TIPOS[extension(f.name)]}, body: f})
-          .then(function(resp){ return resp.json().catch(function(){ return {ok: false, error: 'Respuesta inesperada'}; }).then(function(j){ if (!resp.ok || !j.ok) throw new Error(j.error || ('Error ' + resp.status)); }); })
-          .then(function(){ r.estado = 'ok'; r.msg = 'Cargado · Pendiente de clasificación'; })
+          .then(function(resp){ return resp.json().catch(function(){ return {ok: false, error: 'Respuesta inesperada'}; }).then(function(j){
+            if (resp.status === 409){ r.estado = 'dup'; r.msg = j.error || 'Ya se había cargado'; return; }
+            if (!resp.ok || !j.ok) throw new Error(j.error || ('Error ' + resp.status));
+            r.estado = 'ok'; r.msg = j.documento && j.documento.estado_ia === 'analizando' ? 'Cargado · la IA lo está clasificando' : 'Cargado · Pendiente de clasificación';
+          }); })
           .catch(function(err){ r.estado = 'error'; r.msg = err.message; })
           .then(pintarResultados);
       });
@@ -63,7 +74,7 @@
   function avisoCarga(t){ var m = $('#dcMsg'); if (m) m.textContent = t; }
   function pintarResultados(){
     var c = $('#dcRes'); if (!c) return;
-    var chip = {espera: ['c-mut', 'En espera'], subiendo: ['c-inf', 'Subiendo…'], ok: ['c-ok', 'Cargado'], error: ['c-warn', 'Con error']};
+    var chip = {espera: ['c-mut', 'En espera'], subiendo: ['c-inf', 'Subiendo…'], ok: ['c-ok', 'Cargado'], dup: ['c-mut', 'Ya cargado'], error: ['c-warn', 'Con error']};
     c.innerHTML = ST.resultados.length ? '<div class="tblwrap"><table><thead><tr><th>Archivo</th><th>Resultado</th></tr></thead><tbody>' + ST.resultados.map(function(r){
       return '<tr><td>' + esc(r.nombre) + '</td><td><span class="chip ' + chip[r.estado][0] + '">' + chip[r.estado][1] + '</span> <span class="muted">' + esc(r.msg || '') + '</span></td></tr>'; }).join('') + '</tbody></table></div>' : '';
   }
@@ -71,7 +82,7 @@
   // ---------------------------------------------------------------- bandeja
   function consulta(){
     var f = ST.filtros, q = ['campana_id=' + encodeURIComponent(X.datos().campana.id)];
-    ['gerencia', 'estado', 'estado_ia', 'confianza', 'desde', 'hasta', 'q'].forEach(function(k){ if (f[k]) q.push(k + '=' + encodeURIComponent(f[k])); });
+    ['gerencia', 'seccion', 'estado', 'estado_ia', 'confianza', 'desde', 'hasta', 'q'].forEach(function(k){ if (f[k]) q.push(k + '=' + encodeURIComponent(f[k])); });
     if (f.prioridad) q.push('orden=confianza');
     return '/a/documentos?' + q.join('&');
   }
@@ -88,7 +99,7 @@
     return h;
   }
   function chipsIA(d){
-    var h = d.estado_ia === 'analizado' ? '<span class="chip c-inf">Analizado por IA</span>' : d.estado_ia === 'error' ? '<span class="chip c-warn">Análisis con error</span>' : '<span class="chip c-mut">Sin analizar</span>';
+    var h = d.estado_ia === 'analizando' ? '<span class="chip c-inf" title="La IA está leyendo el documento para sugerir procesos">Analizando…</span>' : d.estado_ia === 'analizado' ? '<span class="chip c-inf">Analizado por IA</span>' : d.estado_ia === 'error' ? '<span class="chip c-warn">Análisis con error</span>' : '<span class="chip c-mut">Sin analizar</span>';
     if (d.baja_confianza) h += ' <span class="chip c-warn" title="Alguna sugerencia está por debajo del umbral de ' + pct(ST.umbral) + '">Baja confianza</span>';
     return h;
   }
@@ -111,7 +122,8 @@
   // Mientras alguna lectura siga en curso se vuelve a consultar la bandeja (la extracción corre en segundo plano).
   function vigilar(){
     clearTimeout(ST.sondeo);
-    var enCurso = ST.docs.some(function(d){ return d.procesos.some(function(p){ return p.extraccion && p.extraccion.estado === 'pendiente'; }); });
+    var reciente = function(d){ return Date.now() - Date.parse(d.actualizado) < 10 * 60000; };   // pasados 10 min se da por trabado
+    var enCurso = ST.docs.some(function(d){ return (d.estado_ia === 'analizando' && reciente(d)) || d.procesos.some(function(p){ return p.extraccion && p.extraccion.estado === 'pendiente'; }); });
     if (enCurso && RAIZ && document.body.contains(RAIZ)) ST.sondeo = setTimeout(function(){ if (document.body.contains(RAIZ)) recargar(); }, 4000);
   }
 
@@ -121,16 +133,25 @@
     $('#dbResumen').textContent = (r.pendiente || 0) + ' pendientes de clasificación · ' + (r.clasificado || 0) + ' clasificados';
     if (ST.cargando && !ST.docs.length){ c.innerHTML = '<p class="muted">Cargando…</p>'; return; }
     if (!ST.docs.length){ c.innerHTML = '<p class="muted">No hay documentos con esos filtros.</p>'; return; }
-    c.innerHTML = '<div class="tblwrap"><table><thead><tr><th>Documento</th><th>Gerencia</th><th>Cargado</th><th>Estado</th><th>Análisis IA</th><th>Procesos</th><th></th></tr></thead><tbody>' + ST.docs.map(function(d){
+    c.innerHTML = '<div class="tblwrap"><table><thead><tr><th>Documento</th><th>Gerencia / sección</th><th>Cargado</th><th>Estado</th><th>Análisis IA</th><th>Procesos</th><th></th></tr></thead><tbody>' + ST.docs.map(function(d){
       var fila = '<tr data-id="' + esc(d.id) + '"><td><button class="btn btn-ghost btn-xs" data-acc="abrir" title="Abrir el documento">' + esc(d.nombre) + '</button><div class="muted">' + esc(d.tipo.toUpperCase()) + '</div></td>' +
-        '<td>' + esc(d.gerencia) + ' <button class="btn btn-ghost btn-xs" data-acc="gerencia" title="Cambiar la gerencia">Cambiar</button></td>' +
+        '<td>' + (ST.editaUbic === d.id ? celdaUbicacion(d) : esc(d.gerencia) + (d.seccion ? '<div class="muted">' + esc(d.seccion) + '</div>' : '<div class="muted">Toda la gerencia</div>') + ' <button class="btn btn-ghost btn-xs" data-acc="gerencia" title="Cambiar la gerencia y la sección">Cambiar</button>') + '</td>' +
         '<td>' + esc(X.fecha(d.creado)) + '<div class="muted">' + esc(d.cargado_por) + '</div></td>' +
         '<td>' + chipsEstado(d) + '</td><td>' + chipsIA(d) + '</td><td>' + chipsProcesos(d) + '</td>' +
         '<td style="white-space:nowrap"><button class="btn btn-ghost btn-xs" data-acc="analizar"' + (ST.analizando === d.id ? ' disabled' : '') + '>' + (ST.analizando === d.id ? 'Analizando…' : d.estado_ia === 'analizado' ? 'Volver a analizar' : 'Analizar con IA') + '</button> ' +
-        '<button class="btn btn-navy btn-xs" data-acc="clasificar">' + (ST.abierto === d.id ? 'Cerrar' : 'Clasificar') + '</button></td></tr>';
+        '<button class="btn btn-navy btn-xs" data-acc="clasificar">' + (ST.abierto === d.id ? 'Cerrar' : 'Clasificar') + '</button> ' +
+        '<button class="btn btn-ghost btn-xs" data-acc="borrar" title="Eliminar el documento">Eliminar</button></td></tr>';
       return fila + (ST.abierto === d.id ? '<tr><td colspan="7" id="dbPanel"></td></tr>' : '');
     }).join('') + '</tbody></table></div>';
     if (ST.abierto) pintarPanel();
+  }
+
+  // Edición de dónde está el documento: gerencia y sección en dos selectos.
+  function celdaUbicacion(d){
+    var ger = ST.ubicGer || d.gerencia;
+    return '<select data-ub="ger" aria-label="Gerencia">' + opciones(gerenciasCampana(), ger) + '</select> ' +
+      '<select data-ub="sec" aria-label="Sección">' + opciones(seccionesDe(ger), ST.ubicGer ? '' : d.seccion, 'Toda la gerencia') + '</select> ' +
+      '<button class="btn btn-navy btn-xs" data-acc="guardar-ubic">Guardar</button> <button class="btn btn-ghost btn-xs" data-acc="cancelar-ubic">Cancelar</button>';
   }
 
   // Panel de clasificación: la lista final de procesos del documento (lo sugerido viene marcado; se puede quitar o agregar).
@@ -161,8 +182,15 @@
         .then(function(b){ window.open(URL.createObjectURL(b), '_blank', 'noopener'); })
         .catch(function(err){ aviso(err.message); });
     } else if (acc === 'gerencia'){
-      var g = window.prompt('Nueva gerencia para «' + d.nombre + '»:\n' + gerenciasCampana().join(', '), d.gerencia);
-      if (g && g !== d.gerencia) X.api('/a/documentos/gerencia', {id: id, gerencia: g}).then(recargar).catch(function(err){ aviso(err.message); });
+      ST.editaUbic = id; ST.ubicGer = ''; pintarBandeja();
+    } else if (acc === 'cancelar-ubic'){
+      ST.editaUbic = ''; ST.ubicGer = ''; pintarBandeja();
+    } else if (acc === 'guardar-ubic'){
+      var fila = $('#dbLista tr[data-id="' + id + '"]'), g = fila.querySelector('[data-ub="ger"]').value, sc = fila.querySelector('[data-ub="sec"]').value;
+      X.api('/a/documentos/gerencia', {id: id, gerencia: g, seccion: sc}).then(function(){ ST.editaUbic = ''; ST.ubicGer = ''; aviso('Listo. Si cambió la ubicación, usa «Volver a analizar» para que la IA sugiera dentro de ella.'); return recargar(); }).catch(function(err){ aviso(err.message); });
+    } else if (acc === 'borrar'){
+      if (!window.confirm('¿Eliminar «' + d.nombre + '»? Se borra el archivo y sus sugerencias; la información ya aprobada en la matriz se conserva.')) return;
+      X.api('/a/documentos/borrar', {id: id}).then(function(){ if (ST.abierto === id){ ST.abierto = ''; ST.sel = null; } aviso('Documento eliminado.'); return recargar(); }).catch(function(err){ aviso(err.message); });
     } else if (acc === 'analizar'){
       ST.analizando = id; aviso(''); pintarBandeja();
       X.api('/a/documentos/analizar', {id: id}).catch(function(err){ aviso(err.message); }).then(function(){ ST.analizando = ''; ST.sel = null; return recargar(); });
@@ -185,15 +213,18 @@
     var f = ST.filtros;
     RAIZ.innerHTML =
       '<div class="card" style="margin:0 0 14px"><h3 style="margin-top:0">Carga masiva de documentos</h3>' +
-      '<div class="row"><div><label for="dcGer">Gerencia (obligatoria)</label><select id="dcGer">' + opciones(gerenciasCampana(), '', 'Selecciona una gerencia…') + '</select></div></div>' +
+      '<div class="row"><div><label for="dcGer">Gerencia (obligatoria)</label><select id="dcGer">' + opciones(gerenciasCampana(), '', 'Selecciona una gerencia…') + '</select></div>' +
+      '<div><label for="dcSec">Sección a la que pertenecen</label><select id="dcSec">' + opciones([], '', 'Toda la gerencia / no sé') + '</select></div></div>' +
+      '<div class="muted" style="margin-top:4px">Indica de dónde son estos documentos: la IA los clasifica solo entre los procesos de esa sección y los analiza apenas se cargan.</div>' +
       '<div id="dcZona" tabindex="0" role="button" aria-label="Arrastra los archivos aquí o presiona para seleccionarlos" style="margin:10px 0;border:2px dashed var(--line,#c9d1dc);border-radius:10px;padding:22px;text-align:center;cursor:pointer">' +
-      'Arrastra aquí los archivos o <u>selecciónalos</u><div class="muted">PDF, Word (.docx), JPG o PNG · hasta 10 MB (imágenes 6 MB) · todos quedan «Pendiente de clasificación»</div>' +
+      'Arrastra aquí los archivos o <u>selecciónalos</u><div class="muted">PDF, Word (.docx), JPG o PNG · hasta 10 MB (imágenes 6 MB) · quedan «Pendiente de clasificación» hasta que confirmes los procesos</div>' +
       '<input type="file" id="dcArch" multiple accept=".pdf,.docx,.jpg,.jpeg,.png" class="hidden"></div>' +
       '<div class="muted" id="dcMsg" role="status"></div><div id="dcRes"></div></div>' +
       '<div class="card" style="margin:0"><div class="row" style="justify-content:space-between"><h3 style="margin:0">Bandeja de documentos</h3><span class="muted" id="dbResumen"></span></div>' +
       '<div class="filtros" style="margin-top:10px">' +
       '<div><label for="dfQ">Buscar</label><input type="search" id="dfQ" placeholder="Nombre del archivo…" value="' + esc(f.q) + '"></div>' +
       '<div><label for="dfGer">Gerencia</label><select id="dfGer">' + opciones(gerenciasCampana(), f.gerencia, 'Todas') + '</select></div>' +
+      '<div><label for="dfSec">Sección</label><select id="dfSec">' + opciones(seccionesDe(f.gerencia), f.seccion, 'Todas') + '</select></div>' +
       '<div><label for="dfEst">Estado</label><select id="dfEst"><option value="">Todos</option><option value="pendiente"' + (f.estado === 'pendiente' ? ' selected' : '') + '>Pendiente de clasificación</option><option value="clasificado"' + (f.estado === 'clasificado' ? ' selected' : '') + '>Clasificado</option></select></div>' +
       '<div><label for="dfIA">Análisis IA</label><select id="dfIA"><option value="">Todos</option><option value="sin_analizar"' + (f.estado_ia === 'sin_analizar' ? ' selected' : '') + '>Sin analizar</option><option value="analizado"' + (f.estado_ia === 'analizado' ? ' selected' : '') + '>Analizado</option><option value="error"' + (f.estado_ia === 'error' ? ' selected' : '') + '>Con error</option></select></div>' +
       '<div><label for="dfConf">Confianza</label><select id="dfConf"><option value="">Todas</option><option value="baja"' + (f.confianza === 'baja' ? ' selected' : '') + '>Baja (bajo el umbral)</option><option value="sin"' + (f.confianza === 'sin' ? ' selected' : '') + '>Sin sugerencias</option></select></div>' +
@@ -216,10 +247,12 @@
     ['dragenter', 'dragover'].forEach(function(n){ zona.addEventListener(n, function(e){ e.preventDefault(); zona.style.background = 'var(--accent-soft,#eef3ff)'; }); });
     ['dragleave', 'drop'].forEach(function(n){ zona.addEventListener(n, function(e){ e.preventDefault(); zona.style.background = ''; }); });
     zona.addEventListener('drop', function(e){ subirTodos(Array.prototype.slice.call(e.dataTransfer.files)); });
-    var campos = {dfQ: 'q', dfGer: 'gerencia', dfEst: 'estado', dfIA: 'estado_ia', dfConf: 'confianza', dfDesde: 'desde', dfHasta: 'hasta'}, t = null;
+    var campos = {dfQ: 'q', dfGer: 'gerencia', dfSec: 'seccion', dfEst: 'estado', dfIA: 'estado_ia', dfConf: 'confianza', dfDesde: 'desde', dfHasta: 'hasta'}, t = null;
     Object.keys(campos).forEach(function(id){
       $('#' + id).addEventListener(id === 'dfQ' ? 'input' : 'change', function(e){ ST.filtros[campos[id]] = e.target.value; clearTimeout(t); t = setTimeout(recargar, id === 'dfQ' ? 300 : 0); });
     });
+    $('#dcGer').addEventListener('change', function(e){ $('#dcSec').innerHTML = opciones(seccionesDe(e.target.value), '', 'Toda la gerencia / no sé'); });
+    $('#dfGer').addEventListener('change', function(e){ ST.filtros.seccion = ''; $('#dfSec').innerHTML = opciones(seccionesDe(e.target.value), '', 'Todas'); });
     $('#dfPrio').addEventListener('change', function(e){ ST.filtros.prioridad = e.target.checked; recargar(); });
     $('#dfGuardaUmbral').addEventListener('click', function(){
       var v = Number($('#dfUmbral').value);
@@ -232,6 +265,7 @@
       if (id) actuar(id, b.dataset.acc, b.dataset.pid);
     });
     $('#dbLista').addEventListener('change', function(e){
+      if (e.target.dataset && e.target.dataset.ub === 'ger'){ var sec = e.target.parentNode.querySelector('[data-ub="sec"]'); sec.innerHTML = opciones(seccionesDe(e.target.value), '', 'Toda la gerencia'); return; }
       var p = e.target.dataset && e.target.dataset.pid; if (!p) return;
       ST.sel = ST.sel || {}; if (e.target.checked) ST.sel[p] = 1; else delete ST.sel[p];
       var b = $('[data-acc="confirmar"]'); if (b) b.textContent = 'Confirmar clasificación (' + Object.keys(ST.sel).length + ')';

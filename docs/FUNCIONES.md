@@ -65,7 +65,10 @@ Ninguna clave de Supervisor se guarda en claro: en la base solo queda su huella 
 | `POST /r/soltar` | `rutaSoltar` | Quitar un proceso de su lista y sus respuestas. |
 | `POST /r/revision` | `rutaRevision` | Marcar un proceso como vigente, con cambio o no existente. |
 | `POST /r/proceso` | `rutaProcesoNuevo` | Crear un proceso nuevo desde la encuesta. |
-| `POST /r/respuesta` | `rutaRespuesta` | Guardar el texto y los sistemas de un bloque. |
+| `POST /r/respuesta` | `rutaRespuesta` | Guardar el texto y los sistemas de un bloque. Para la pregunta estructurada `bconf` (información altamente confidencial) recibe `datos` en vez de texto: `respuestaEstructurada` (`confidencial.js`) lo limpia, lo guarda en `respuestas.datos` y deja el punto `cubierto` solo si la respuesta está completa («No», o «Sí» con cuál, ubicaciones y detalle de «Otro»). Devuelve `completo`, `faltan` y el checklist. Las marcas a mano y la revisión por bloque (`/r/punto`, `/r/verificar`) rechazan esa pregunta. |
+| _(estructuración)_ | `estructurarProceso` → `camposMatriz` (`confidencial.js`) | Las columnas de la matriz `iac_gestiona` («¿El proceso gestiona actualmente Información Altamente Confidencial?») e `iac_ubicacion` («¿Dónde se encuentra almacenado la IAC?») se llenan con lo que las personas **marcaron** en la pregunta 3 (no con una deducción de la IA): «No» → «No» / «No aplica»; «Sí» → «Sí: cuál» y las ubicaciones. Con varias personas basta un «Sí». Pasan por `completarMatriz`, así que siguen sus reglas: no pisan lo escrito por el equipo ni una fila validada, y dejan historial. |
+| `POST /r/confidencial` | `rutaConfidencial` → `interpretarConfidencial` | Responder la pregunta 3 **hablando**: recibe el texto ya transcrito (`/r/transcribir`) y la IA **propone** las opciones (Sí/No, cuál, ubicaciones, otro) con política de cero alucinación. No guarda nada: la persona revisa y confirma con `/r/respuesta`. |
+| `POST /r/imagen` (`pregunta=bconf&finalidad=confidencial`) | `rutaImagenConfidencial` | Lo mismo con un **archivo** (imagen, PDF o Word): valida el archivo, la IA propone las opciones y no se conserva el archivo. Esa finalidad es solo de la pregunta de opciones; las preguntas de texto la rechazan. |
 | `POST /r/verificar` | `rutaVerificar` | La IA marca el checklist del bloque (`unirSistemas`, `guardarChecklist`). |
 | `POST /r/punto` | `rutaPunto` | La persona marca un punto como «lo mencioné» o «no aplica». Deshacer una marca también revoca su confirmación de vigencia (queda en el historial). |
 | `POST /r/campo` | `rutaCampo` (`matriz-sync.js`) | HU03. La persona confirma que la descripción precargada de un punto sigue vigente. La descripción **no se edita** desde la encuesta (rechaza `texto` con 400): se actualiza sola cuando alguien cuenta algo nuevo y la IA estructura el proceso. Deja el punto cubierto y registra la validación en `matriz_historial`. |
@@ -130,11 +133,12 @@ Ninguna clave de Supervisor se guarda en claro: en la base solo queda su huella 
 | `POST /a/precarga/borrador` | `rutaPrecargaBorrador` (`documentos.js`) | Aprueba (con el texto corregido, si se quiere) o descarta los borradores que salieron de un documento. Aprobar usa `aplicarPrecarga` con el nombre del documento como origen. |
 | `POST /a/documentos/extraer` | `rutaDocumentoExtraer` | Extrae o vuelve a extraer la precarga de un proceso ya confirmado para el documento (reintento tras un error). |
 | `GET /a/campana/historial` | `rutaHistorialMatriz` | Historial de cambios de la matriz (campo, valor anterior y nuevo, quién, origen y fecha) con filtros por proceso, campo, origen, persona y fechas. Solo administrador. |
-| `POST /a/documentos` | `rutaDocumentoSubir` (`documentos.js`) | HU01. Guarda UN archivo en R2 con su gerencia (obligatoria); queda «pendiente» de clasificar. |
-| `GET /a/documentos` | `rutaDocumentos` | Bandeja con filtros por gerencia, estado, análisis IA, confianza, fechas y nombre. Puede ordenar por menor confianza. |
+| `POST /a/documentos` | `rutaDocumentoSubir` (`documentos.js`) | HU01. Guarda UN archivo en R2 con su gerencia (obligatoria) y su sección (opcional; vacía = toda la gerencia, y debe existir en esa gerencia); queda «pendiente» de clasificar. Calcula el SHA-256: si la campaña ya tiene ese contenido responde 409 «Ya se cargó antes como …» y no guarda nada. Con la IA configurada (`iaLista`) lanza el análisis en segundo plano (`analizarYGuardar`, `estado_ia` = `analizando` → `analizado`/`error`). |
+| `GET /a/documentos` | `rutaDocumentos` | Bandeja con filtros por gerencia, sección, estado, análisis IA, confianza, fechas y nombre. Puede ordenar por menor confianza. |
 | `GET /a/documentos/archivo` | `rutaDocumentoArchivo` | Devuelve el archivo para abrirlo antes de clasificar. |
-| `POST /a/documentos/gerencia` | `rutaDocumentoGerencia` | Cambia la gerencia de un documento. |
-| `POST /a/documentos/analizar` | `rutaDocumentoAnalizar` → `analizarDocumentoIA` | HU02. La IA propone hasta 5 procesos con confianza; las sugerencias previas sin confirmar quedan como historial. |
+| `POST /a/documentos/gerencia` | `rutaDocumentoGerencia` | Cambia la gerencia y la sección de un documento (`{id, gerencia, seccion?}`); no reanaliza solo. |
+| `POST /a/documentos/borrar` | `rutaDocumentoBorrar` | Elimina un documento: su archivo (R2), asociaciones, extracciones y borradores sin aprobar. Lo ya aprobado en la precarga y la matriz se conserva. |
+| `POST /a/documentos/analizar` | `rutaDocumentoAnalizar` → `analizarDocumentoIA` | HU02. La IA propone hasta 5 procesos con confianza, **solo entre los de la sección del documento** (`catalogoDe`: sección → gerencia → campaña); las sugerencias previas sin confirmar quedan como historial. |
 | `POST /a/documentos/procesos` | `rutaDocumentoProcesos` | Lista final de procesos del documento: confirma, quita y agrega. Con procesos pasa a «clasificado»; sin procesos vuelve a «pendiente». Audita sugerido, confirmado y cambios. **Lo recién confirmado lanza la extracción de la precarga en segundo plano** (`ctx.waitUntil`, máximo 8 procesos por confirmación; el resto con «Extraer»): el estado de cada par (documento, proceso) queda en `documento_extracciones` y el resultado en `precarga_borrador`, que no llega a la encuesta hasta que el administrador lo aprueba. Quitar un proceso descarta sus borradores. |
 | `POST /a/campana/umbral` | `rutaUmbral` | Umbral de baja confianza (0 a 1, por defecto 0,7). |
 | `GET /a/campana/flujo` | `rutaFlujoAdminCampana` → `rutaFlujoAdmin` | Validación final por Gerente y por gerencia. |
@@ -228,7 +232,7 @@ Esta es la misma regla que usa la consola (`cobertura()` en `admin.html`), lleva
 | `cobertura.persona(pid, eid)` | Avance de una persona en un proceso: puntos listos, total y si está completo. |
 | `leerJson` · `puntoListo` · `tieneContenido` | Auxiliares. |
 
-Reglas: un proceso está **respondido** si alguien completó los puntos de sus 3 bloques, o si entre todas las personas y la precarga del equipo cubren todos los puntos. Está **en curso** si alguien lo tomó o empezó a responder. Está **no vigente** si solo hay marcas de «ya no se hace».
+Reglas: un proceso está **respondido** si alguien completó los puntos de todas sus preguntas (17 puntos), o si entre todas las personas y la precarga del equipo cubren todos los puntos. Está **en curso** si alguien lo tomó o empezó a responder. Está **no vigente** si solo hay marcas de «ya no se hace».
 
 ### 3.4 `estructura.js` — esqueleto Área > Gerencia > Sección
 
@@ -300,7 +304,7 @@ Perfiles: **Responsable** (responde sus procesos), **Supervisor** (su sección; 
 | Archivo | Qué es |
 |---|---|
 | `sitio.mjs` | Copia `index.html`, `admin.html`, los `flujo-*.js`, `usuarios-consola.js` e íconos a `worker/publico/` antes de desplegar. |
-| `schema.sql` y `migracion-002.sql` a `migracion-021.sql` | Esquema de la base D1. `schema.sql` trae el **estado final** (base nueva: solo ese archivo). Las migraciones sirven para actualizar una base existente: se aplican en orden y **antes** de desplegar. 017–018 (PIN y renovación de accesos), 019 (documentos), 020 (`matriz_historial`), 021 (`precarga_borrador` y `documento_extracciones`). `test/unit/esquema.test.mjs` falla si una migración crea algo que `schema.sql` no tiene. |
+| `schema.sql` y `migracion-002.sql` a `migracion-023.sql` | Esquema de la base D1. `schema.sql` trae el **estado final** (base nueva: solo ese archivo). Las migraciones sirven para actualizar una base existente: se aplican en orden y **antes** de desplegar. 017–018 (PIN y renovación de accesos), 019 (documentos), 020 (`matriz_historial`), 021 (`precarga_borrador` y `documento_extracciones`), 022 (`respuestas.datos`, para la pregunta estructurada), 023 (`documentos.seccion` y `documentos.hash`). `test/unit/esquema.test.mjs` falla si una migración crea algo que `schema.sql` no tiene. |
 | `wrangler.toml` | Configuración del Worker: base, variables de modelo de IA (`IA_MODELO_*`, `IA_ESFUERZO_*`), orígenes permitidos y la tarea programada. |
 
 ---

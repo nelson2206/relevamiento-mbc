@@ -221,6 +221,21 @@
   .ck .val-acc .nota{margin:0}
   .btn-mini{appearance:none;cursor:pointer;background:var(--card);border:1.5px solid var(--field-line);color:var(--heading);border-radius:8px;padding:3px 9px;font-family:Montserrat,sans-serif;font-weight:600;font-size:12px;white-space:nowrap}
   .btn-mini:hover{border-color:var(--navy)} .btn-mini[disabled]{opacity:.5;cursor:default}
+  /* Pregunta estructurada (opciones en vez de texto libre) */
+  .est-op{border:0;padding:0;margin:10px 0 4px;display:flex;gap:22px;flex-wrap:wrap}
+  .est-radio,.est-chk{display:flex;gap:8px;align-items:flex-start;font-size:14px;line-height:1.35;cursor:pointer}
+  .est-radio input,.est-chk input{margin-top:3px;flex:none}
+  .est-si{margin-top:8px;padding:10px 14px 12px;border-left:3px solid var(--field-line);background:var(--panel);border-radius:0 10px 10px 0}
+  .est-si.apagado{opacity:.55}
+  .est-l{display:block;font-family:Montserrat,sans-serif;font-weight:700;font-size:13px;margin:6px 0 4px;color:var(--heading);padding:0}
+  .est-si input[type=text]{width:100%;box-sizing:border-box}
+  .est-ub{border:0;padding:0;margin:12px 0 0;display:grid;grid-template-columns:1fr 1fr;gap:6px 18px}
+  .est-ub legend{grid-column:1/-1;margin-bottom:2px}
+  .est-ub input[type=text]{grid-column:1/-1}
+  @media (max-width:560px){ .est-ub{grid-template-columns:1fr} }
+  .est-falta{color:var(--warn);font-size:13px;margin:8px 0 0}
+  .est-sug{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:10px 0 0;padding:10px 12px;border-left:3px solid var(--navy);background:var(--panel);border-radius:0 8px 8px 0;font-size:13.5px}
+  .est-resumen{margin:8px 0 0;padding:8px 12px;border-left:3px solid var(--ok);background:var(--panel);border-radius:0 8px 8px 0;font-size:13.5px}
   .sug{background:var(--warn-bg);color:var(--warn);border-radius:10px;padding:10px 14px;font-size:14px;margin:10px 0 0}
   .sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
   .bus-persona{padding:12px 14px;border-top:1px solid var(--line);background:var(--panel);display:flex;gap:12px;align-items:center;flex-wrap:wrap}
@@ -279,7 +294,7 @@
   var API = /^(localhost|127\.0\.0\.1)$/.test(location.hostname) ? 'http://127.0.0.1:8787' : 'https://voz-relevamiento-api.minsait-business-consulting-pe.workers.dev';
   var TRAMO_SEG = 120;          // el audio se envía en tramos de 2 minutos (16 kHz, mono)
   var MAX_SEG = 600;            // hasta 10 minutos por grabación
-  // Cada proceso se responde en 3 bloques que vienen del servidor con su checklist (lo que la matriz necesita saber).
+  // Cada proceso se responde en varias preguntas (bloques) que vienen del servidor con su checklist (lo que la matriz necesita saber).
   var BLOQUES = [];
   // Formato anterior (6 preguntas): si alguien ya respondió así, se le muestra como referencia.
   var PREG_ANTES = {q1:'Objetivo, inicio y fin', q2:'Actividades y participantes', q3:'Sistemas y manualidad', q4:'Terceros', q5:'Datos personales', q6:'Indicadores, normas y frecuencia'};
@@ -890,7 +905,7 @@
     // Paso 2: respuestas
     var p2 = document.createElement('section');
     p2.innerHTML = '<div class="card" style="margin-bottom:14px"><div class="paso"><span class="n">3</span><div><h2>Cuéntanos cómo funciona cada proceso</h2>' +
-      '<p class="lead" style="margin:0 0 6px">Abre cada proceso y responde sus 3 bloques:</p>' +
+      '<p class="lead" style="margin:0 0 6px">Abre cada proceso y responde sus preguntas:</p>' +
       '<ul class="guia">' +
         '<li>Cada bloque trae la lista de lo que necesitamos saber.</li>' +
         '<li>Pulsa <strong>Grabar</strong> y cuéntalo como si se lo explicaras a un colega nuevo, o escríbelo.</li>' +
@@ -1140,11 +1155,11 @@
   }
 
   function respuesta(pid, q){ return ((S.respuestas[pid] || {})[q]) || {texto:'', sistemas:[], checklist:{}}; }
-  function respondida(pid, q){ var r = respuesta(pid, q); return !!(r.texto && r.texto.trim()) || (r.sistemas && r.sistemas.length > 0); }
+  function respondida(pid, q){ var r = respuesta(pid, q); return !!(r.texto && r.texto.trim()) || (r.sistemas && r.sistemas.length > 0) || !!(r.datos && r.datos.confidencial); }
   function bloque(bid){ return BLOQUES.filter(function(b){ return b.id === bid; })[0]; }
 
   // Checklist: un punto está listo si quedó cubierto o si no aplica al proceso. Un proceso está completo
-  // cuando todos los puntos de sus 3 bloques están listos.
+  // cuando todos los puntos de sus preguntas están listos.
   // Puntos que el equipo cubrió con documentos (solo se sabe cuáles, nunca lo que dicen).
   var AYUDA_ADM = 'Este requisito ya fue validado administrativamente, pero puedes ingresar información si deseas detallar o rectificar el punto.';
   function adminCubre(pid, id){ return !!pid && ((S.precarga || {})[pid] || []).indexOf(id) >= 0; }
@@ -1161,6 +1176,153 @@
   function totalPuntos(){ return BLOQUES.reduce(function(a, b){ return a + b.puntos.length; }, 0); }
   function listosProceso(pid){ return BLOQUES.reduce(function(a, b){ return a + listosBloque(pid, b); }, 0); }
   function procesoCompleto(pid){ return !!BLOQUES.length && listosProceso(pid) === totalPuntos(); }
+
+  // ------------------------------------------------------------ pregunta estructurada (opciones en vez de texto libre)
+  function datosEst(pid, qid){
+    var d = respuesta(pid, qid).datos || {};
+    return {confidencial: d.confidencial || '', cual: d.cual || '', ubicaciones: d.ubicaciones || [], otro: d.otro || ''};
+  }
+  // Lo que falta para dar la respuesta por completa (mismas reglas que el servidor, que es quien decide si el punto queda cubierto).
+  function faltanEst(d){
+    var f = [];
+    if (!d.confidencial) f.push('Indica si el proceso gestiona información altamente confidencial');
+    else if (d.confidencial === 'si'){
+      if (!d.cual.trim()) f.push('Indica cuál es la información');
+      if (!d.ubicaciones.length) f.push('Marca dónde se almacena');
+      else if (d.ubicaciones.indexOf('otro') >= 0 && !d.otro.trim()) f.push('Detalla el otro lugar de almacenamiento');
+    }
+    return f;
+  }
+  function resumenEst(q, d){
+    if (!d.confidencial) return '';
+    if (d.confidencial === 'no') return 'No gestiona información altamente confidencial.';
+    var et = {}; (q.opciones || []).forEach(function(o){ et[o[0]] = o[1]; });
+    var donde = d.ubicaciones.map(function(u){ return u === 'otro' && d.otro ? 'Otro: ' + d.otro : (et[u] || u); }).join(', ');
+    return 'Gestiona información altamente confidencial' + (d.cual ? ': ' + d.cual : '') + '.' + (donde ? ' Se almacena en: ' + donde + '.' : '');
+  }
+  function htmlEstructurada(p, q, i){
+    var key = esc(p.id + '-' + q.id), d = datosEst(p.id, q.id);
+    return '<div class="preg preg-est" id="est-' + key + '">' +
+      '<div class="preg-t"><span class="qn">' + (i+1) + '</span><span>' + esc(q.t) + '</span></div>' +
+      '<p class="preg-g">' + esc(q.g) + '</p>' +
+      '<p class="preg-g">Puedes marcar las opciones tú, o <b>grabar tu respuesta</b> / <b>subir un archivo</b> y la IA las marcará por ti. Siempre las revisas antes de que se guarden.</p>' +
+      '<div class="rec-row">' +
+        '<button class="btn btn-rec btn-sm btn-ico" type="button" data-rec="' + key + '"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><rect x="9" y="2.5" width="6" height="11" rx="3" fill="currentColor" stroke="none"></rect><path d="M5 10.5a7 7 0 0 0 14 0M12 17.5V21"></path></svg><span>Grabar</span></button>' +
+        '<button class="btn btn-ghost btn-sm btn-ico" type="button" data-img="' + key + '"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"></rect><circle cx="9" cy="10" r="2"></circle><path d="M21 16l-5-5-9 9"></path></svg><span>Subir archivo (imagen, PDF o Word)</span></button>' +
+        '<input type="file" accept="image/*,application/pdf,.pdf,.docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document" class="hidden" id="im-' + key + '" aria-label="Subir una imagen, un PDF o un documento Word con tu respuesta">' +
+        '<span class="rec-dot hidden" id="dot-' + key + '" aria-hidden="true"></span>' +
+        '<span class="rec-timer hidden" id="tm-' + key + '">0:00</span>' +
+      '</div>' +
+      '<fieldset class="est-op"><legend class="sr">¿El proceso gestiona información altamente confidencial?</legend>' +
+        '<label class="est-radio"><input type="radio" name="cf-' + key + '" value="si"' + (d.confidencial === 'si' ? ' checked' : '') + '><span>Sí, completar cuál</span></label>' +
+        '<label class="est-radio"><input type="radio" name="cf-' + key + '" value="no"' + (d.confidencial === 'no' ? ' checked' : '') + '><span>No</span></label></fieldset>' +
+      '<div class="est-si" id="esi-' + key + '">' +
+        '<label for="ecual-' + key + '" class="est-l">¿Cuál? <span class="muted">(por ejemplo: nómina, contratos estratégicos, presupuestos…)</span></label>' +
+        '<input type="text" id="ecual-' + key + '" maxlength="500" value="' + esc(d.cual) + '">' +
+        '<fieldset class="est-ub"><legend class="est-l">Ubicación de la información: ¿dónde se encuentra almacenada? Selecciona todas las opciones que correspondan.</legend>' +
+          (q.opciones || []).map(function(o){
+            return '<label class="est-chk"><input type="checkbox" data-ub="' + key + '" value="' + esc(o[0]) + '"' + (d.ubicaciones.indexOf(o[0]) >= 0 ? ' checked' : '') + '><span>' + esc(o[1]) + (o[0] === 'otro' ? ', detallar:' : '') + '</span></label>';
+          }).join('') +
+          '<input type="text" id="eotro-' + key + '" maxlength="300" aria-label="Otro lugar de almacenamiento, detallar" value="' + esc(d.otro) + '">' +
+        '</fieldset></div>' +
+      '<p class="estado" id="st-' + key + '" aria-live="polite"></p>' +
+      '<p class="est-falta hidden" id="ef-' + key + '"></p>' +
+      '<div class="est-sug hidden" id="es-' + key + '"><span>La IA marcó estas opciones con lo que le diste. Revísalas y corrige lo que haga falta: <b>todavía no se guardaron</b>.</span>' +
+        '<button type="button" class="btn btn-sm" data-conf-ia="' + key + '">Confirmar mi respuesta</button></div>' +
+      '<p class="est-resumen hidden" id="er-' + key + '"></p></div>';
+  }
+  function leerEst(key){
+    var cf = document.querySelector('input[name="cf-' + key + '"]:checked'), si = !!cf && cf.value === 'si';
+    return {
+      confidencial: cf ? cf.value : '',
+      cual: si ? document.getElementById('ecual-' + key).value : '',
+      ubicaciones: si ? Array.prototype.map.call(document.querySelectorAll('[data-ub="' + key + '"]:checked'), function(c){ return c.value; }) : [],
+      otro: si ? document.getElementById('eotro-' + key).value : ''
+    };
+  }
+  // Habilita «cuál» y las ubicaciones solo con «Sí», y muestra qué falta o el resumen de lo respondido (solo lectura).
+  function pintarEst(key, q){
+    var d = leerEst(key), si = d.confidencial === 'si', caja = document.getElementById('esi-' + key);
+    if (!caja) return;
+    caja.classList.toggle('apagado', !si);
+    Array.prototype.forEach.call(caja.querySelectorAll('input'), function(x){ x.disabled = !si; });
+    document.getElementById('eotro-' + key).disabled = !si || d.ubicaciones.indexOf('otro') < 0;
+    var falta = faltanEst(d), ef = document.getElementById('ef-' + key), er = document.getElementById('er-' + key);
+    ef.textContent = falta[0] || ''; ef.classList.toggle('hidden', !d.confidencial || !falta.length);
+    er.textContent = falta.length ? '' : 'Resumen de tu respuesta: ' + resumenEst(q, d); er.classList.toggle('hidden', !!falta.length);
+  }
+  // Pone una respuesta en el formulario (sin guardarla).
+  function escribirEst(key, d){
+    Array.prototype.forEach.call(document.querySelectorAll('input[name="cf-' + key + '"]'), function(r){ r.checked = (r.value === d.confidencial); });
+    document.getElementById('ecual-' + key).value = d.cual || '';
+    document.getElementById('eotro-' + key).value = d.otro || '';
+    Array.prototype.forEach.call(document.querySelectorAll('[data-ub="' + key + '"]'), function(c){ c.checked = (d.ubicaciones || []).indexOf(c.value) >= 0; });
+  }
+  function ocultarSugEst(key){ var b = document.getElementById('es-' + key); if (b) b.classList.add('hidden'); }
+  // Lo que propone la IA (de la voz o de un archivo) se pone en el formulario, completando lo que ya había, y queda SIN guardar hasta que la
+  // persona lo confirme. Si la IA no encontró la respuesta, no se toca nada.
+  function aplicarSugerenciaEst(pid, qid, j, fuente){
+    var key = pid + '-' + qid, q = bloque(qid), s = j.datos || {};
+    if (!s.confidencial){ estado(key, (j.motivo ? j.motivo + ' ' : '') + 'No encontramos la respuesta a esta pregunta en ' + fuente + '. Márcala a mano.', 'warn'); return; }
+    var d = leerEst(key), nuevo;
+    if (s.confidencial === 'no') nuevo = {confidencial: 'no', cual: '', ubicaciones: [], otro: ''};
+    else nuevo = {confidencial: 'si', cual: s.cual || d.cual, otro: s.otro || d.otro,
+      ubicaciones: d.ubicaciones.concat((s.ubicaciones || []).filter(function(u){ return d.ubicaciones.indexOf(u) < 0; }))};
+    escribirEst(key, nuevo); pintarEst(key, q);
+    sinGuardar[key] = true;   // avisa si intenta salir antes de confirmar
+    var b = document.getElementById('es-' + key); if (b) b.classList.remove('hidden');
+    estado(key, 'Listo: la IA marcó las opciones con ' + fuente + '. Revísalas y confirma; todavía no se guardó.', 'ok');
+  }
+  function confirmarSugEst(pid, qid){
+    var key = pid + '-' + qid;
+    return guardarEst(pid, qid).then(function(){ if (!sinGuardar[key]) ocultarSugEst(key); });
+  }
+  // Lo dicho (ya transcrito) → opciones propuestas por la IA.
+  function interpretarTexto(pid, qid, texto){
+    var key = pid + '-' + qid;
+    return api('/r/confidencial', {proceso_id: pid, texto: texto}).then(function(j){ aplicarSugerenciaEst(pid, qid, j, 'lo que dijiste'); })
+      .catch(function(err){ estado(key, err.message + ' Puedes marcar las opciones a mano.', 'warn'); });
+  }
+
+  function enlazarEstructurada(d, p, q){
+    var key = p.id + '-' + q.id, raiz = d.querySelector('#est-' + CSS.escape(key));
+    d.querySelector('[data-rec="' + CSS.escape(key) + '"]').addEventListener('click', function(){ alternarGrabacion(p.id, q.id); });
+    var inImg = d.querySelector('#im-' + CSS.escape(key));
+    d.querySelector('[data-img="' + CSS.escape(key) + '"]').addEventListener('click', function(){ if (!grab[key]) inImg.click(); });
+    inImg.addEventListener('change', function(){
+      var fi = inImg.files && inImg.files[0]; inImg.value = '';
+      if (!fi || grab[key]) return;
+      var malo = archivoInvalido(fi);
+      if (malo){ estado(key, malo, 'warn'); return; }
+      leerImagen(p.id, q.id, fi, 'confidencial');
+    });
+    raiz.addEventListener('click', function(ev){ if (ev.target.closest('[data-conf-ia]')) confirmarSugEst(p.id, q.id); });
+    raiz.addEventListener('change', function(ev){
+      // Pasar a «No» deja la respuesta limpia, igual que en el servidor: no quedan «cuál» ni ubicaciones que la contradigan.
+      if (ev.target.name === 'cf-' + key && ev.target.value === 'no'){
+        Array.prototype.forEach.call(raiz.querySelectorAll('[data-ub]'), function(c){ c.checked = false; });
+        document.getElementById('ecual-' + key).value = ''; document.getElementById('eotro-' + key).value = '';
+      }
+      if (ev.target.value === 'otro' && !ev.target.checked) document.getElementById('eotro-' + key).value = '';
+      ocultarSugEst(key); pintarEst(key, q); programarGuardado(p.id, q.id, 500);
+    });
+    raiz.addEventListener('input', function(ev){ if (ev.target.type === 'text'){ ocultarSugEst(key); pintarEst(key, q); programarGuardado(p.id, q.id); } });
+    pintarEst(key, q);
+  }
+  // Se guarda lo marcado aunque esté a medias; el servidor decide si el punto queda cubierto (respuesta completa).
+  function guardarEst(pid, qid){
+    var key = pid + '-' + qid, q = bloque(qid);
+    clearTimeout(timers[key]);
+    if (!document.getElementById('est-' + key)) return Promise.resolve();
+    return api('/r/respuesta', {proceso_id: pid, pregunta: qid, datos: leerEst(key)}).then(function(j){
+      delete sinGuardar[key];
+      (S.respuestas[pid] = S.respuestas[pid] || {})[qid] = {texto: '', sistemas: [], checklist: j.checklist || {}, datos: j.datos};
+      estado(key, j.completo ? 'Guardado' : 'Guardado, falta completarla', j.completo ? 'ok' : '');
+      actualizarAvance();
+    }).catch(function(err){
+      estado(key, 'No se guardó: ' + err.message + '. Vuelve a marcar para reintentar.', 'warn');
+    });
+  }
 
   function tarjetaProceso(p){
     var d = document.createElement('details');
@@ -1180,6 +1342,7 @@
       '<p class="preg-g" style="margin:8px 0 0">Úsalo como base: cópialo en el bloque que corresponda o vuelve a grabarlo.</p></details>';
     BLOQUES.forEach(function(q){ (respuesta(p.id, q.id).sistemas || []).forEach(function(n){ asegurarSistema(n); }); });
     BLOQUES.forEach(function(q, i){
+      if (q.tipo === 'estructurada'){ html += htmlEstructurada(p, q, i); return; }
       var r = respuesta(p.id, q.id);
       var key = p.id + '-' + q.id;
       html += '<div class="preg">' +
@@ -1214,6 +1377,7 @@
     d.innerHTML = html;
     BLOQUES.forEach(function(q){
       var key = p.id + '-' + q.id;
+      if (q.tipo === 'estructurada'){ enlazarEstructurada(d, p, q); return; }
       var ta = d.querySelector('#tx-' + CSS.escape(key));
       ta.addEventListener('input', function(){ programarGuardado(p.id, q.id); });
       // Al salir del texto se revisa qué puntos cubrió (solo si cambió desde la última revisión).
@@ -1455,6 +1619,7 @@
   }
   function revisarPendientes(pid){
     BLOQUES.reduce(function(prom, b){
+      if (b.tipo === 'estructurada') return prom;   // se responde con opciones: no hay nada que revisar con la IA
       var ck = respuesta(pid, b.id).checklist || {};
       // También se revisan los bloques cuyo checklist cambió (puntos nuevos sin marcar).
       if (!respondida(pid, b.id) || (ck._huella && b.puntos.every(function(pt){ return ck[pt[0]]; }))) return prom;
@@ -1538,7 +1703,8 @@
     timers[key] = setTimeout(function(){ guardar(pid, qid); }, espera === undefined ? 1200 : espera);
   }
   function guardar(pid, qid){
-    var key = pid + '-' + qid;
+    var key = pid + '-' + qid, qb = bloque(qid);
+    if (qb && qb.tipo === 'estructurada') return guardarEst(pid, qid);
     clearTimeout(timers[key]);
     var ta = document.getElementById('tx-' + key);
     if (!ta) return Promise.resolve();
@@ -1661,6 +1827,8 @@
       restaurarBoton(key);
       var texto = t.textos.join(' ');
       if (!texto){ estado(key, 'No se entendió el audio. Intenta de nuevo más cerca del micrófono o escribe.', 'warn'); return; }
+      var qb = bloque(t.qid);
+      if (qb && qb.tipo === 'estructurada'){ estado(key, 'La IA está interpretando tu respuesta…'); return interpretarTexto(t.pid, t.qid, texto); }
       var ta = document.getElementById('tx-' + key);
       ta.value = (ta.value.trim() ? ta.value.trim() + '\n\n' : '') + texto;
       return guardar(t.pid, t.qid).then(function(){
@@ -1696,9 +1864,9 @@
   // Para qué sube la persona el archivo: cambia lo que la IA hace con él.
   var FINALIDADES = [
     ['bloque', 'Analizar y completar este bloque', 'La IA lee el archivo y escribe lo que sirve para este bloque.'],
-    ['todo', 'Completar todo el formulario de este proceso', 'La IA reparte lo que dice el archivo en los 3 bloques. Después revisas cada uno.'],
+    ['todo', 'Completar todo el formulario de este proceso', 'La IA reparte lo que dice el archivo en las preguntas escritas (la de información confidencial la marcas tú). Después revisas cada una.'],
     ['transcribir', 'Solo transcribir el texto', 'Copia el texto del archivo tal cual, sin interpretarlo (los datos personales se ocultan).'],
-    ['documentacion', 'Registrarlo como documentación del proceso', 'Solo anota qué documento es (tipo y título) en el bloque 3.']
+    ['documentacion', 'Registrarlo como documentación del proceso', 'Solo anota qué documento es (tipo y título) en la pregunta de datos personales y documentación.']
   ];
   var FINALIDAD_ULTIMA = 'bloque';
   function tipoArchivo(file){
@@ -1740,8 +1908,8 @@
     if (malo){ estado(key, malo, 'warn'); return; }
     var esPdf = t.pdf, esDocx = t.docx;
     var que = esDocx ? 'documento' : esPdf ? 'PDF' : 'imagen';
-    // Para completar todo el formulario se bloquean los 3 bloques del proceso mientras la IA lee.
-    var claves = modo === 'todo' ? BLOQUES.map(function(b){ return pid + '-' + b.id; }) : [key];
+    // Para completar todo el formulario se bloquean las preguntas escritas del proceso mientras la IA lee.
+    var claves = modo === 'todo' ? BLOQUES.filter(function(b){ return b.tipo !== 'estructurada'; }).map(function(b){ return pid + '-' + b.id; }) : [key];
     if (claves.some(function(k){ return grab[k]; })){ estado(key, 'Espera a que termine la grabación o la lectura en este proceso.', 'warn'); return; }
     claves.forEach(function(k){ grab[k] = {pid: pid, qid: qid, fase: 'imagen'}; var bi = botonImg(k), rc = botonRec(k); if (bi) bi.disabled = true; if (rc) rc.disabled = true; });
     var fin = function(){ claves.forEach(function(k){ delete grab[k]; var bi = botonImg(k), rc = botonRec(k); if (bi) bi.disabled = false; if (rc) rc.disabled = false; }); };
@@ -1753,6 +1921,7 @@
     }).then(function(j){
       fin();
       if (modo === 'todo') return aplicarTodo(pid, qid, j, que);
+      if (modo === 'confidencial') return aplicarSugerenciaEst(pid, qid, j, que === 'imagen' ? 'la imagen' : 'el ' + que);
       if (!j.texto){ estado(key, (j.motivo ? j.motivo + ' ' : '') + 'No encontramos información del proceso en ese ' + que + '.', 'warn'); return; }
       var bid = modo === 'documentacion' ? 'b3' : qid, dkey = pid + '-' + bid;
       var prefijo = modo === 'transcribir' ? 'Texto del archivo: ' : modo === 'documentacion' ? 'Documentación: ' : (esPdf ? 'Según el PDF: ' : esDocx ? 'Según el documento: ' : 'Según la imagen: ');
