@@ -3,7 +3,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import worker from '../../src/index.js';
-import { rutaDocumentoAnalizar, rutaDocumentoSubir, bajaConfianza, diferencias } from '../../src/documentos.js';
+import { rutaDocumentoAnalizar, rutaDocumentoSubir, bajaConfianza, diferencias, ESQUEMA_CLASIFICAR, mensajeErrorIA } from '../../src/documentos.js';
 import { crearD1 } from './d1-memoria.mjs';
 
 const ORIGEN = 'http://prueba.local', ADMIN = 'admin-de-prueba-123';
@@ -227,4 +227,14 @@ test('cambiar de gerencia limpia la sección; cambiar solo la sección la valida
   assert.equal((await llamar('POST', '/a/documentos/gerencia', { id, gerencia: 'Legal', seccion: 'Tesorería' })).status, 400);
   const r = await llamar('POST', '/a/documentos/gerencia', { id, gerencia: 'Finanzas' });
   assert.equal(r.documento.gerencia, 'Finanzas'); assert.equal(r.documento.seccion, '');
+});
+
+test('clasificar: el esquema no depende del catálogo (un enum con cientos de ids la API lo rechaza por complejo)', () => {
+  assert.equal(JSON.stringify(ESQUEMA_CLASIFICAR).includes('enum'), false);
+});
+
+test('clasificar: una clave rechazada se explica; otro error conserva el mensaje de reintento', () => {
+  const rechazo = new Error('502 {"error":{"type":"processiq_proxy","message":"Anthropic rechazo la clave central del intermediario"}}');
+  assert.match(mensajeErrorIA(rechazo, 'reintenta'), /renovarla/);
+  assert.equal(mensajeErrorIA(new Error('429 rate limit'), 'reintenta'), 'reintenta');
 });
