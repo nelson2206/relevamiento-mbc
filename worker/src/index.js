@@ -105,7 +105,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { leerEstructura, prepararEstructura, asegurarEstructura, areasDeEstructura } from './estructura.js';
 import { rutaFlujo, rutaFlujoCatalogo, rutaFlujoConfirmar, rutaFlujoRetroceder, rutaFlujoProceso, rutaFlujoAdmin, rutaFlujoReabrir, guardarCambio } from './flujo.js';
-import { rutaDocumentoSubir, rutaDocumentos, rutaDocumentoArchivo, rutaDocumentoGerencia, rutaDocumentoAnalizar, rutaDocumentoBorrar, rutaDocumentoProcesos, rutaUmbral,
+import { ESQUEMA_CLASIFICAR, mensajeErrorIA, rutaDocumentoSubir, rutaDocumentos, rutaDocumentoArchivo, rutaDocumentoGerencia, rutaDocumentoAnalizar, rutaDocumentoBorrar, rutaDocumentoProcesos, rutaUmbral,
   rutaDocumentoExtraer, rutaPrecargaBorrador, borradoresDeCampana, sentenciasRastroDeProcesos, sentenciasRastroDeCampana, borrarArchivosDeCampana } from './documentos.js';
 import { ambitoDe, enSecs, claveArea, registrarAccion } from './ambito.js';
 import { limpiarDatos, evaluar, resumenTexto, UBICACIONES, ESQUEMA_IA, PROMPT_IA, desdeSalidaIA, camposMatriz } from './confidencial.js';
@@ -2208,7 +2208,7 @@ async function extraerPrecarga(env, ctx, a, p) {
     }).finalMessage();
   } catch (err) {
     log('precarga_error', { campana: p.campana_id, tipo: a.tipo, error: String((err && err.message) || err).slice(0, 200) });
-    throw new HttpError(502, `No pudimos leer ${a.que} en este momento. Intenta de nuevo en un minuto.`);
+    throw new HttpError(502, mensajeErrorIA(err, `No pudimos leer ${a.que} en este momento. Intenta de nuevo en un minuto.`));
   }
   registrarIA(ctx, 'precarga', msg, cfg, t0);
   if (msg.stop_reason === 'refusal') throw new HttpError(422, 'La IA no pudo procesar ese archivo.');
@@ -2319,23 +2319,16 @@ async function analizarDocumentoIA(env, ctx, archivo, catalogo, gerencia, seccio
   const esDocx = archivo.tipo === MIME_DOCX, esPdf = archivo.tipo === 'application/pdf';
   const doc = esDocx ? await textoDeDocx(archivo.buf).catch(() => null) : null;
   if (esDocx && !(doc && doc.texto)) throw new HttpError(422, 'No pudimos leer el texto de ese Word.');
-  const schema = {
-    type: 'object',
-    properties: { procesos: { type: 'array', items: { type: 'object', properties: {
-      proceso_id: { type: 'string', enum: catalogo.map(p => p.id) }, confianza: { type: 'number' }, motivo: { type: 'string' }
-    }, required: ['proceso_id', 'confianza', 'motivo'], additionalProperties: false } } },
-    required: ['procesos'], additionalProperties: false
-  };
   const lista = catalogo.map(p => `- ${p.id} | ${p.gerencia} / ${p.seccion} | ${[p.macroproceso, p.proceso, p.subproceso].filter(Boolean).join(' > ')}`).join('\n');
   const cfg = iaDe(env, 'estructurar'), t0 = Date.now();
   let msg;
   try {
     msg = await clienteClaude(env).beta.messages.stream({
       model: cfg.modelo,
-      max_tokens: 3000,
+      max_tokens: 16000,
       betas: ['server-side-fallback-2026-07-01'],
       fallbacks: 'default',
-      output_config: { effort: cfg.esfuerzo, format: { type: 'json_schema', schema } },
+      output_config: { effort: cfg.esfuerzo, format: { type: 'json_schema', schema: ESQUEMA_CLASIFICAR } },
       system: CLASIFICAR_PROMPT,
       messages: [{ role: 'user', content: [
         bloqueDeArchivo({ esDocx, esPdf, doc, tipo: archivo.tipo, buf: archivo.buf }),
@@ -2344,7 +2337,7 @@ async function analizarDocumentoIA(env, ctx, archivo, catalogo, gerencia, seccio
     }).finalMessage();
   } catch (err) {
     log('documento_ia_error', { error: String((err && err.message) || err).slice(0, 200) });
-    throw new HttpError(502, 'No pudimos analizar el documento en este momento. Intenta de nuevo en un minuto.');
+    throw new HttpError(502, mensajeErrorIA(err, 'No pudimos analizar el documento en este momento. Intenta de nuevo en un minuto.'));
   }
   registrarIA(ctx, 'clasificar_documento', msg, cfg, t0);
   if (msg.stop_reason === 'refusal') throw new HttpError(422, 'La IA no pudo procesar ese archivo.');
