@@ -304,15 +304,20 @@ async function extraerPar(env, ctx, d, procesoId, deps) {
     const tipo = Object.keys(TIPOS_DOCUMENTO).find(k => TIPOS_DOCUMENTO[k] === d.tipo);
     const r = await deps.extraerPrecarga(env, ctx, { tipo, buf: await obj.arrayBuffer() }, p);
     const t = ahora(), st = [];
-    // Se actualiza lo que sigue siendo borrador sin tocar: lo aprobado, descartado o corregido por el administrador no se pisa.
+    // Qué pasó antes con cada punto de este par: lo aprobado ya llegó a la precarga y no se vuelve a proponer; lo descartado SÍ se vuelve a proponer
+    // (quien pide «Volver a leer» quiere verlo de nuevo); lo que sigue como borrador sin tocar se actualiza; lo corregido a mano no se pisa.
+    const previos = new Map((await env.DB.prepare('SELECT punto, estado FROM precarga_borrador WHERE documento_id=? AND proceso_id=?').bind(d.id, procesoId).all()).results.map(x => [x.punto, x.estado]));
+    const yaAprobados = r.puntos.filter(x => previos.get(x.id) === 'aprobado').length;
     r.puntos.forEach(x => st.push(env.DB.prepare(`INSERT INTO precarga_borrador (id, campana_id, proceso_id, documento_id, punto, bloque, texto, cita, estado, editado, creado, actualizado)
       VALUES (?,?,?,?,?,?,?,?, 'borrador', 0, ?, ?)
-      ON CONFLICT(documento_id, proceso_id, punto) DO UPDATE SET texto=excluded.texto, cita=excluded.cita, bloque=excluded.bloque, actualizado=excluded.actualizado
-      WHERE precarga_borrador.estado='borrador' AND precarga_borrador.editado=0`).bind(uid(), d.campana_id, procesoId, d.id, x.id, x.bloque || '', x.texto, x.cita, t, t)));
+      ON CONFLICT(documento_id, proceso_id, punto) DO UPDATE SET texto=excluded.texto, cita=excluded.cita, bloque=excluded.bloque, estado='borrador', resuelto_por='', actualizado=excluded.actualizado
+      WHERE precarga_borrador.estado IN ('borrador','descartado') AND precarga_borrador.editado=0`).bind(uid(), d.campana_id, procesoId, d.id, x.id, x.bloque || '', x.texto, x.cita, t, t)));
     // Un borrador anterior que esta lectura ya no encuentra queda descartado, para no dejar descripciones sin sustento.
     st.push(env.DB.prepare(`UPDATE precarga_borrador SET estado='descartado', actualizado=? WHERE documento_id=? AND proceso_id=? AND estado='borrador' AND editado=0
       AND punto NOT IN (${r.puntos.map(() => '?').join(',') || "''"})`).bind(t, d.id, procesoId, ...r.puntos.map(x => x.id)));
-    st.push(marcarExtraccion(env, d.id, procesoId, 'ok', '', { puntos: r.puntos.length, descartados: r.descartados, motivo: r.motivo }));
+    const nuevos = r.puntos.length - yaAprobados;
+    const motivo = !nuevos && yaAprobados ? 'Todo lo que dice el documento ya estaba aprobado para este proceso' : r.motivo;
+    st.push(marcarExtraccion(env, d.id, procesoId, 'ok', '', { puntos: nuevos, descartados: r.descartados, motivo }));
     await env.DB.batch(st);
     await registrarAccion(env, d.campana_id, ACTOR, 'documento_precarga', { documento: d.id, proceso: procesoId, puntos: r.puntos.length, descartados: r.descartados });
   } catch (err) {
@@ -358,7 +363,7 @@ export async function borradoresDeCampana(env, campId) {
   const lista = borradores.results;
   lista.forEach(b => {
     const v = vigente.get(b.proceso_id + '|' + b.punto) || '';
-    Object.assign(b, alertaDe(v, b.texto, lista.filter(o => o !== b && o.proceso_id === b.proceso_id && o.punto === b.punto)), { vigente: v });
+    Object.assign(b, alertaDe(v, b.texto, lista.filter(o => o !== b && o.proceso_id === b.proceso_id && o.punto === b.punto), b.punto), { vigente: v });
   });
   return { precarga_borrador: lista, extracciones: extracciones.results };
 }
@@ -384,7 +389,7 @@ export async function rutaPrecargaBorrador(env, b, deps) {
     if (!nuevo) return;
     // Lo aprobado se SUMA a lo que el punto ya tiene (de otro documento o de una carga anterior); nunca lo reemplaza.
     const previo = previos[fila.punto] || { texto: '', archivos: [] };
-    const c = complementar(previo.texto, nuevo);
+    const c = complementar(previo.texto, nuevo, fila.punto);
     if (c.relacion === 'contradice' && !x.forzar) { aviso.sin_aplicar.push({ id: fila.id, punto: fila.punto, motivo: 'contradice' }); return; }
     if (c.texto.length > MAX_TEXTO) { aviso.sin_aplicar.push({ id: fila.id, punto: fila.punto, motivo: 'largo' }); return; }
     if (c.relacion === 'duplicado') aviso.duplicados.push(fila.punto);

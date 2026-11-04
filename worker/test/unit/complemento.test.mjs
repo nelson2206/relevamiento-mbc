@@ -120,10 +120,44 @@ test('guardar con la vista desactualizada y texto nuevo: se suma y se unen las f
 });
 
 test('vista desactualizada que contradice: no se aplica; con forzar se suma', async () => {
-  db.prepare("INSERT INTO precarga (proceso_id, bloque, punto, texto, archivos, creado, actualizado) VALUES ('p1','b1','kpis','Se mide cada 15 días el cumplimiento','[]',?,?)").run(t, t);
-  const r = await guardar([{ punto: 'kpis', texto: 'Se mide cada 30 días el cumplimiento', base: '' }]);
+  db.prepare("INSERT INTO precarga (proceso_id, bloque, punto, texto, archivos, creado, actualizado) VALUES ('p1','b1','aprobaciones','Se mide cada 15 días el cumplimiento','[]',?,?)").run(t, t);
+  const r = await guardar([{ punto: 'aprobaciones', texto: 'Se mide cada 30 días el cumplimiento', base: '' }]);
   assert.deepEqual(r.sin_aplicar.map(x => x.motivo), ['contradice']);
-  assert.equal(precarga('kpis').texto, 'Se mide cada 15 días el cumplimiento');
-  await guardar([{ punto: 'kpis', texto: 'Se mide cada 30 días el cumplimiento', base: '' }], { forzar: true });
-  assert.equal(precarga('kpis').texto, 'Se mide cada 15 días el cumplimiento\nSe mide cada 30 días el cumplimiento');
+  assert.equal(precarga('aprobaciones').texto, 'Se mide cada 15 días el cumplimiento');
+  await guardar([{ punto: 'aprobaciones', texto: 'Se mide cada 30 días el cumplimiento', base: '' }], { forzar: true });
+  assert.equal(precarga('aprobaciones').texto, 'Se mide cada 15 días el cumplimiento\nSe mide cada 30 días el cumplimiento');
+});
+
+test('puntos de lista: normas distintas se complementan; en puntos de valor, una cifra distinta contradice', () => {
+  assert.equal(comparar('Ley 29733 (datos personales)', 'Ley 27444 (procedimiento administrativo)', 'normativa'), 'complementa');
+  assert.equal(comparar('Se usan ISO 27001 y NTP 12', 'Se usan ISO 9001 y NTP 14', 'estandar_tdp'), 'complementa');
+  assert.equal(comparar('Se revisa cada 15 días con el jefe del área', 'Se revisa cada 30 días con el jefe del área', 'actividades'), 'contradice');
+  // la negación sigue contradiciendo también en listas
+  assert.equal(comparar('Se usan notarías externas para firmar contratos', 'No se usan notarías externas para firmar contratos', 'terceros'), 'contradice');
+});
+
+// ---- «Volver a leer» (re-extracción): lo descartado vuelve a proponerse; lo aprobado no se duplica y se explica
+test('volver a leer: un borrador descartado vuelve a aparecer; uno aprobado no, y la causa queda explicada', async () => {
+  const { rutaDocumentoExtraer, rutaDocumentoProcesos } = await import('../../src/documentos.js');
+  db.prepare("INSERT INTO documentos (id, campana_id, nombre, tipo, gerencia, creado, actualizado) VALUES ('d9','c1','nuevo.pdf','pdf','Legal',?,?)").run(t, t);
+  const lectura = { puntos: [{ id: 'terceros', bloque: 'b2', texto: 'Notarías', cita: 'c' }, { id: 'sistemas', bloque: 'b2', texto: 'SAP', cita: 'c' }], descartados: 0, motivo: '' };
+  const deps = { extraerPrecarga: async () => lectura };
+  const cola = []; const ctx = { waitUntil: p => cola.push(p) };
+  const e = { ...env, DOCS: { get: async () => ({ arrayBuffer: async () => new Uint8Array([1]) }), put: async () => {}, delete: async () => {} } };
+  await rutaDocumentoProcesos(e, { id: 'd9', procesos: ['p1'] }, ctx, deps); await Promise.all(cola.splice(0));
+  const est = pt => uno("SELECT estado FROM precarga_borrador WHERE documento_id='d9' AND proceso_id='p1' AND punto=?", pt).estado;
+  assert.equal(est('terceros'), 'borrador');
+  const idT = uno("SELECT id FROM precarga_borrador WHERE documento_id='d9' AND punto='terceros'").id, idS = uno("SELECT id FROM precarga_borrador WHERE documento_id='d9' AND punto='sistemas'").id;
+  await aprobar({ id: idT, accion: 'descartar' }, { id: idS, accion: 'aprobar' });
+  assert.deepEqual([est('terceros'), est('sistemas')], ['descartado', 'aprobado']);
+  await rutaDocumentoExtraer(e, { id: 'd9', proceso_id: 'p1' }, ctx, deps); await Promise.all(cola.splice(0));
+  assert.equal(est('terceros'), 'borrador', 'lo descartado vuelve a proponerse');
+  assert.equal(est('sistemas'), 'aprobado', 'lo aprobado no se vuelve a proponer');
+  const x = uno("SELECT puntos, motivo FROM documento_extracciones WHERE documento_id='d9' AND proceso_id='p1'");
+  assert.equal(x.puntos, 1);
+  // si todo lo que dice ya estaba aprobado, se explica en vez de mostrar «sin datos»
+  await aprobar({ id: idT, accion: 'aprobar' });
+  await rutaDocumentoExtraer(e, { id: 'd9', proceso_id: 'p1' }, ctx, deps); await Promise.all(cola.splice(0));
+  const y = uno("SELECT puntos, motivo FROM documento_extracciones WHERE documento_id='d9' AND proceso_id='p1'");
+  assert.equal(y.puntos, 0); assert.match(y.motivo, /ya estaba aprobado/);
 });

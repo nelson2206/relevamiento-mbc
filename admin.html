@@ -2250,6 +2250,7 @@
   }
   // Borradores extraídos de un documento al confirmar su proceso: el administrador los revisa (puede corregir el texto) antes de que lleguen a la matriz.
   // Lo aprobado se suma a lo que el punto ya tiene (nunca lo reemplaza); aquí se avisa de duplicados y de posibles contradicciones.
+  function cuenta(n, uno, varios){ return n + ' ' + (n === 1 ? uno : varios); }   // «1 se sumó» / «2 se sumaron»
   function alertaBorrador(b){
     var v = b.vigente ? '<div class="ev">Ya registrado: «' + esc(b.vigente.length > 220 ? b.vigente.slice(0, 220) + '…' : b.vigente) + '»</div>' : '';
     var con = esc(b.con || 'lo ya registrado');
@@ -2271,6 +2272,24 @@
           '<button class="btn btn-ghost btn-xs" data-bor-acc="descartar" data-bor="' + esc(b.id) + '">Descartar</button></div></div></div>';
       }).join('') +
       '<div class="row" style="margin-top:8px"><button class="btn" data-bor-acc="aprobar-todos">Aprobar todos</button><button class="btn btn-ghost" data-bor-acc="descartar-todos">Descartar todos</button><span class="muted" id="borMsg" aria-live="polite"></span></div></div>';
+  }
+  // Lo que la persona escribió y chocaba con lo guardado NO se pierde: queda a la vista y puede sumarse de todos modos o descartarse.
+  function mostrarConflictos(p, items){
+    var etiqueta = {}; (C.bloques || []).forEach(function(b){ b.puntos.forEach(function(pt){ etiqueta[pt[0]] = pt[1]; }); });
+    var msgEl = $('#preMsg'); if (!msgEl || !items.length) return;
+    var caja = document.createElement('div'); caja.id = 'preConflicto'; caja.className = 'card'; caja.setAttribute('role', 'alert'); caja.style.cssText = 'margin:8px 0;border-left:4px solid var(--bad,#b3261e)';
+    caja.innerHTML = '<b>Tu texto no se guardó porque parece contradecir lo ya guardado</b>' + items.map(function(q){
+      return '<div class="ev"><b>' + esc(etiqueta[q.punto] || q.punto) + ':</b> «' + esc(q.texto) + '»</div>'; }).join('') +
+      '<div class="row" style="margin-top:6px"><button type="button" class="btn btn-xs" id="preForzar">Sumar de todos modos</button><button type="button" class="btn btn-ghost btn-xs" id="preSoltar">Descartar mi texto</button></div>';
+    msgEl.parentNode.parentNode.insertBefore(caja, msgEl.parentNode.nextSibling);
+    $('#preSoltar').addEventListener('click', function(){ caja.remove(); });
+    $('#preForzar').addEventListener('click', function(){
+      this.disabled = true;
+      // base vacía = «mi vista no incluía lo guardado»: se suma al texto vigente, nunca lo reemplaza.
+      api('/a/precarga', {proceso_id: p.id, forzar: true, puntos: items.map(function(q){ return {punto: q.punto, texto: q.texto, base: '', archivos: q.archivos}; })})
+        .then(function(){ return abrir(C.campana.id).then(function(){ detalle(p.id); var n = $('#preMsg'); if (n) n.textContent = 'Sumado a lo ya guardado.'; }); })
+        .catch(function(err){ $('#preForzar').disabled = false; $('#preMsg').textContent = err.message; });
+    });
   }
   function activarPrecarga(p){
     var det = $('#dPre'); if (!det) return;
@@ -2335,9 +2354,9 @@
       m.textContent = 'Guardando…';
       api('/a/precarga/borrador', {proceso_id: p.id, decisiones: decisiones}).then(function(j){
         var aviso = j.bloqueados && j.bloqueados.length ? ' ' + j.bloqueados.length + ' no llegaron a la matriz porque ya los escribió una persona o la fila está validada.' : '';
-        if (j.complementados && j.complementados.length) aviso += ' ' + j.complementados.length + ' se sumaron a lo ya registrado.';
-        if (j.duplicados && j.duplicados.length) aviso += ' ' + j.duplicados.length + ' ya estaban: solo se añadió la fuente.';
-        if (j.sin_aplicar && j.sin_aplicar.length) aviso += ' ' + j.sin_aplicar.length + ' quedaron pendientes: ' + (j.sin_aplicar.some(function(x){ return x.motivo === 'contradice'; }) ? 'contradicen lo registrado (apruébalos uno a uno con «Aprobar y sumar de todos modos» si ambos valen)' : 'el texto sumado superaría el máximo, acórtalo') + '.';
+        if (j.complementados && j.complementados.length) aviso += ' ' + cuenta(j.complementados.length, 'se sumó', 'se sumaron') + ' a lo ya registrado.';
+        if (j.duplicados && j.duplicados.length) aviso += ' ' + cuenta(j.duplicados.length, 'ya estaba', 'ya estaban') + ': solo se añadió la fuente.';
+        if (j.sin_aplicar && j.sin_aplicar.length) aviso += ' ' + cuenta(j.sin_aplicar.length, 'quedó pendiente', 'quedaron pendientes') + ': ' + (j.sin_aplicar.some(function(x){ return x.motivo === 'contradice'; }) ? (j.sin_aplicar.length === 1 ? 'contradice' : 'contradicen') + ' lo registrado (apruébalos uno a uno con «Aprobar y sumar de todos modos» si ambos valen)' : 'el texto sumado superaría el máximo, acórtalo') + '.';
         return abrir(C.campana.id).then(function(){ detalle(p.id); var n = $('#preMsg'); if (n) n.textContent = (accion === 'aprobar' ? 'Aprobado: ' + j.escritos.length + ' en la matriz.' : 'Descartado.') + aviso; });
       }).catch(function(err){ Array.prototype.forEach.call(det.querySelectorAll('[data-bor-acc]'), function(x){ x.disabled = false; }); m.textContent = err.message; });
     });
@@ -2348,11 +2367,14 @@
       if (!puntos.length){ msg('No hay cambios que guardar.'); return; }
       bloquear(true); msg('Guardando…');
       api('/a/precarga', {proceso_id: p.id, puntos: puntos}).then(function(j){
+        var cont = (j.sin_aplicar || []).filter(function(x){ return x.motivo === 'contradice'; });
         return abrir(C.campana.id).then(function(){ detalle(p.id); $('#preMsg').textContent = 'Guardado: ' + j.precarga.length + ' puntos cubiertos; ' + (j.escritos || []).length + ' llegaron a la matriz.' +
-          ((j.complementados || []).length ? ' ' + j.complementados.length + ' se sumaron a lo que ya había (la vista estaba desactualizada).' : '') +
-          ((j.conservados || []).length ? ' ' + j.conservados.length + ' se conservaron tal como estaban (habían cambiado desde que abriste la ficha).' : '') +
-          ((j.sin_aplicar || []).length ? ' ' + j.sin_aplicar.length + ' no se aplicaron: ' + (j.sin_aplicar.some(function(x){ return x.motivo === 'contradice'; }) ? 'contradicen lo guardado, revísalos' : 'superarían el máximo de texto') + '.' : '') +
-          ((j.bloqueados || []).length ? ' ' + j.bloqueados.length + ' no la reemplazaron porque ya los escribió una persona o la fila está validada (mira «En la matriz hoy» bajo cada punto).' : ''); });
+          ((j.complementados || []).length ? ' ' + cuenta(j.complementados.length, 'se sumó', 'se sumaron') + ' a lo que ya había (la vista estaba desactualizada).' : '') +
+          ((j.conservados || []).length ? ' ' + cuenta(j.conservados.length, 'se conservó', 'se conservaron') + ' tal como estaban (habían cambiado desde que abriste la ficha).' : '') +
+          ((j.sin_aplicar || []).length ? ' ' + cuenta(j.sin_aplicar.length, 'no se aplicó', 'no se aplicaron') + ': ' + (cont.length ? (cont.length === 1 ? 'contradice' : 'contradicen') + ' lo guardado, revísalos' : 'superarían el máximo de texto') + '.' : '') +
+          ((j.bloqueados || []).length ? ' ' + j.bloqueados.length + ' no la reemplazaron porque ya los escribió una persona o la fila está validada (mira «En la matriz hoy» bajo cada punto).' : '');
+          if (cont.length) mostrarConflictos(p, cont.map(function(x){ return puntos.filter(function(q){ return q.punto === x.punto; })[0]; }).filter(Boolean));
+        });
       }).catch(function(err){ bloquear(false); msg(err.message); });
     });
   }

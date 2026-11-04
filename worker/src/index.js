@@ -1755,14 +1755,14 @@ export async function completarMatriz(env, p, datos) {
   const libre = k => !String(m[k] || '').trim() || !!ia[k];   // vacío, o lo llenó la IA y nadie lo editó
   const valor = k => { const x = c[k]; return x && x.estado !== 'vacio' ? String(x.valor || '').trim().slice(0, 4000) : ''; };
   const dicho = k => c[k] && c[k].estado === 'dicho' && !!valor(k);
-  let n = 0;
+  let n = 0, partesCambiadas = false;   // partesCambiadas: cambió el aporte guardado de un campo aunque su texto visible sea el mismo
   const poner = (k, v, estado) => { if (m[k] === v) return; m[k] = v; ia[k] = { estado, en: t }; n++; };
   CAMPOS.forEach(([k]) => {
     if (APROB_CAMPOS.includes(k) || !MATRIZ_CLAVES.includes(k)) return;
     if (!(dicho(k) && libre(k))) return;
     // La IA actualiza SU parte; lo que aprobó el equipo desde documentos (precarga) se conserva y se muestra junto a ella.
     const partes = partesDe(m[k], ia[k]), v = valor(k), junto = componer(partes.pre, v).slice(0, 4000);
-    if (m[k] === junto) { if (ia[k] && ia[k].ia !== v) ia[k] = Object.assign({}, ia[k], { pre: partes.pre, ia: v }); return; }
+    if (m[k] === junto) { if (ia[k] && ia[k].ia !== v) { ia[k] = Object.assign({}, ia[k], { pre: partes.pre, ia: v }); partesCambiadas = true; } return; }
     m[k] = junto; ia[k] = { estado: 'dicho', en: t, pre: partes.pre, ia: v }; n++;
   });
   // Aprobaciones: las tres columnas van juntas, una línea por aprobación y en el mismo orden («—» si falta un dato).
@@ -1777,6 +1777,7 @@ export async function completarMatriz(env, p, datos) {
     env.DB.prepare('UPDATE procesos SET matriz=?, matriz_ia=?, actualizado_en=? WHERE id=?').bind(JSON.stringify(m), JSON.stringify(ia), t, p.id),
     ...sentenciasHistorial(env, p, antes, m, ACTOR_IA, 'ia')
   ]);
+  else if (partesCambiadas) await env.DB.prepare('UPDATE procesos SET matriz_ia=? WHERE id=?').bind(JSON.stringify(ia), p.id).run();
   return { n, matriz: m, matriz_ia: ia };
 }
 
@@ -1785,7 +1786,7 @@ export async function completarMatriz(env, p, datos) {
 // uno, dentro de los 15 minutos que Cloudflare da a una tarea programada). Un proceso que falla no se reintenta hasta
 // que llegue una respuesta nueva. Solo en campañas con ia_auto = 1 y nunca en filas validadas.
 const AUTO_ESPERA_MIN = 10, AUTO_MAX = 6;
-async function completarPendientes(env, ctx) {
+export async function completarPendientes(env, ctx) {
   const hasta = new Date(Date.now() - AUTO_ESPERA_MIN * 60000).toISOString();
   // «Última novedad» = lo más reciente entre las respuestas con texto y la información previa de documentos (precarga aprobada).
   const pend = (await env.DB.prepare(`SELECT * FROM (
@@ -2312,7 +2313,8 @@ async function aplicarPrecarga(env, p, puntos, actor) {
     if (!texto) { st.push(env.DB.prepare('DELETE FROM precarga WHERE proceso_id=? AND punto=?').bind(p.id, id)); return; }
     const archivos = (Array.isArray(x.archivos) ? x.archivos : []).map(n => txt(n, 150)).filter(Boolean).slice(0, 10);
     st.push(env.DB.prepare(`INSERT INTO precarga (proceso_id, bloque, punto, texto, archivos, creado, actualizado) VALUES (?,?,?,?,?,?,?)
-      ON CONFLICT(proceso_id, punto) DO UPDATE SET texto=excluded.texto, archivos=excluded.archivos, actualizado=excluded.actualizado`)
+      ON CONFLICT(proceso_id, punto) DO UPDATE SET texto=excluded.texto, archivos=excluded.archivos,
+        actualizado=CASE WHEN precarga.texto <> excluded.texto THEN excluded.actualizado ELSE precarga.actualizado END`)
       .bind(p.id, BLOQUE_DE_PUNTO[id], id, texto, JSON.stringify(archivos), t, t));
   });
   if (!st.length) throw new HttpError(400, 'No hay nada que guardar');
@@ -2335,7 +2337,7 @@ async function rutaPrecarga(env, b) {
     const alDia = !v || txt(x.base, MAX_PRECARGA) === v.texto;
     if (alDia) { lista.push(x); return; }
     if (!texto) { aviso.conservados.push(id); return; }
-    const c = complementar(v.texto, texto);
+    const c = complementar(v.texto, texto, id);
     if (c.relacion === 'contradice' && !b.forzar) { aviso.sin_aplicar.push({ punto: id, motivo: 'contradice' }); return; }
     if (c.texto.length > MAX_PRECARGA) { aviso.sin_aplicar.push({ punto: id, motivo: 'largo' }); return; }
     if (c.texto === v.texto) { aviso.conservados.push(id); return; }
