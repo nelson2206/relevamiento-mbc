@@ -263,6 +263,7 @@
   img.src = NUEVO + '/favicon.png?v=' + Date.now();
 })();
 </script>
+<script src="red.js"></script>
 </head>
 <body>
 
@@ -355,7 +356,7 @@
   function api(path, body){
     var opt = body ? {method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify(Object.assign({k:K}, body))} : {};
     // Sin conexión con el servidor (red corporativa que lo bloquea, sin internet): un mensaje que la persona pueda resolver.
-    return fetch(API + path, opt).catch(function(){
+    return pedirServidor(API + path, opt).catch(function(){
       throw new Error('No pudimos conectarnos con el servidor de la encuesta. Si estás en la red de tu empresa, ábrela desde tu celular con datos móviles, o avisa al equipo consultor.');
     }).then(function(r){
       return r.json().catch(function(){ return {ok:false, error:'Respuesta inesperada del servidor'}; }).then(function(j){
