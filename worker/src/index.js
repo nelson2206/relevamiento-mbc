@@ -107,6 +107,7 @@ import { leerEstructura, prepararEstructura, asegurarEstructura, areasDeEstructu
 import { rutaFlujo, rutaFlujoCatalogo, rutaFlujoConfirmar, rutaFlujoRetroceder, rutaFlujoProceso, rutaFlujoAdmin, rutaFlujoReabrir, guardarCambio } from './flujo.js';
 import { rutaDocumentoSubir, rutaDocumentos, rutaDocumentoArchivo, rutaDocumentoGerencia, rutaDocumentoAnalizar, rutaDocumentoBorrar, rutaDocumentoProcesos, rutaUmbral,
   rutaDocumentoExtraer, rutaPrecargaBorrador, borradoresDeCampana, sentenciasRastroDeProcesos, sentenciasRastroDeCampana, borrarArchivosDeCampana } from './documentos.js';
+import { complementar, partesDe, componer } from './complemento.js';
 import { ambitoDe, enSecs, claveArea, registrarAccion } from './ambito.js';
 import { limpiarDatos, evaluar, resumenTexto, UBICACIONES, ESQUEMA_IA, PROMPT_IA, desdeSalidaIA, camposMatriz } from './confidencial.js';
 import { PUNTO_CAMPO, ACTOR_IA, ACTOR_CONSOLA, actorEncuestado, sentenciasHistorial, conBorrados, ultimosEventos, puedeAutomatico, valoresDeProceso, validarCampoDeEncuesta, rutaHistorialMatriz } from './matriz-sync.js';
@@ -1560,6 +1561,9 @@ Reglas:
 - Los campos que se deducen de las actividades (por ejemplo la frecuencia) se completan desde ellas; no los trates como una pregunta aparte.
 - Si la persona dijo que algo no existe en su proceso (no hay terceros, no manejan datos personales, no hay indicadores), escribe "No aplica" con estado "dicho".
 - Si hay una ficha del inventario anterior, compárala con lo que contaron: lo que cambió va en "contradicciones".
+- Hay DOS fuentes y debes usar ambas: (1) la información previa de DOCUMENTOS que cargó el equipo consultor y (2) las respuestas de las ENCUESTAS. En la evidencia di de cuál sale cada dato (el documento por su nombre; la encuesta por el cargo o rol de la persona).
+- Si las dos fuentes dicen lo mismo, no lo repitas. Si una amplía a la otra, combínalas sin perder ningún dato. Si difieren (cifras, frecuencias, sistemas, una afirma y la otra niega), no elijas una en silencio: conserva ambas versiones en el valor (indicando de dónde viene cada una), regístralo en "contradicciones" como «encuesta vs. documento» y agrega una pregunta en "preguntas_validacion".
+- Si no hay respuestas de encuestas, trabaja solo con los documentos: lo que dicen explícitamente es "dicho" (cita el documento); lo que no cubren queda "vacio", sin inferir.
 - Estándares ("estandar_tdp", "estandar_tmc", "otros_estandares") y "normativa": ${REGLAS_ESTANDARES}
 - "vigencia": resume lo que dijeron sobre si el proceso sigue vigente. Quien marcó "existe, pero no participa" confirma que existe. Usa "contradictorio" si difieren y "sin_revision" si nadie lo marcó.
 - "contradicciones": diferencias entre lo que dijeron las distintas personas, o entre la ficha anterior y lo que contaron ahora.
@@ -1572,7 +1576,7 @@ const VIGENCIA_TEXTO = {
 };
 const ORIGEN_TEXTO = { nuevo: 'agregado por un colaborador en la encuesta', consultor: 'agregado por el equipo consultor' };
 
-function textoParaClaude(camp, p, encuestados, revisiones, respuestas, sistemas, precarga) {
+export function textoParaClaude(camp, p, encuestados, revisiones, respuestas, sistemas, precarga) {
   const PREG = { q1: 'Objetivo, inicio y fin', q2: 'Actividades y participantes', q3: 'Sistemas y manualidad',
     q4: 'Terceros', q5: 'Datos personales', q6: 'Indicadores, normas y frecuencia' };
   BLOQUES.forEach((b, i) => { PREG[b.id] = 'Bloque ' + (i + 1) + ' · ' + b.t; });
@@ -1598,9 +1602,18 @@ function textoParaClaude(camp, p, encuestados, revisiones, respuestas, sistemas,
   lineas.push(`GLOSARIO DE ESTÁNDARES DE LA CAMPAÑA: ${estandaresDe(camp)}`);
   lineas.push('');
   if (precarga && precarga.length) {
-    lineas.push('=== DOCUMENTOS DEL PROCESO CARGADOS POR EL EQUIPO CONSULTOR (fuente documental; cuenta como "dicho" y en la evidencia cita el documento) ===');
-    precarga.forEach(x => lineas.push(`[${PUNTO_TXT[x.punto] || x.punto}] ${String(x.texto).replace(/\s+/g, ' ')}`));
+    lineas.push('=== FUENTE 1 · INFORMACIÓN PREVIA DE DOCUMENTOS DEL PROCESO (cargada y aprobada por el equipo consultor; cuenta como "dicho" y en la evidencia cita el documento) ===');
+    precarga.forEach(x => {
+      let docs = [];
+      try { docs = JSON.parse(x.archivos || '[]'); } catch (e) { /* sin nombres de documento */ }
+      lineas.push(`[${PUNTO_TXT[x.punto] || x.punto}] ${String(x.texto).replace(/\s+/g, ' ')}${docs.length ? ' (Fuente: ' + docs.join(', ') + ')' : ''}`);
+    });
     lineas.push('');
+  }
+  if (!respuestas.some(r => (r.texto || '').trim()) && precarga && precarga.length) {
+    lineas.push('=== FUENTE 2 · ENCUESTAS: todavía nadie respondió; trabaja solo con la información previa de documentos ===', '');
+  } else if (encuestados.length) {
+    lineas.push('=== FUENTE 2 · RESPUESTAS DE LAS ENCUESTAS (una sección por colaborador) ===', '');
   }
   encuestados.forEach(e => {
     const rev = revisiones.find(r => r.encuestado_id === e.id);
@@ -1685,9 +1698,9 @@ async function estructurarProceso(env, procesoId, ctx, origen) {
     env.DB.prepare('SELECT * FROM revisiones WHERE proceso_id=?').bind(p.id).all(),
     env.DB.prepare('SELECT * FROM respuestas WHERE proceso_id=?').bind(p.id).all(),
     env.DB.prepare('SELECT nombre, tipo FROM sistemas WHERE campana_id=?').bind(p.campana_id).all(),
-    env.DB.prepare('SELECT punto, texto FROM precarga WHERE proceso_id=? ORDER BY bloque, punto').bind(p.id).all()
+    env.DB.prepare('SELECT punto, texto, archivos FROM precarga WHERE proceso_id=? ORDER BY bloque, punto').bind(p.id).all()
   ]);
-  if (!resps.results.some(r => (r.texto || '').trim())) throw new HttpError(409, 'Este proceso todavía no tiene respuestas');
+  if (!resps.results.some(r => (r.texto || '').trim()) && !pre.results.some(x => (x.texto || '').trim())) throw new HttpError(409, 'Este proceso todavía no tiene respuestas ni documentos');
 
   const client = clienteClaude(env), cfg = iaDe(env, 'estructurar'), t0 = Date.now();
   let msg;
@@ -1735,7 +1748,7 @@ async function estructurarProceso(env, procesoId, ctx, origen) {
 // deduce queda como sugerencia en la ficha. Nunca se pisa un dato del inventario anterior ni uno que escribió el
 // equipo, y una fila validada no se toca.
 const APROB_CAMPOS = ['aprob_area', 'aprob_responsable', 'aprob_momento'];
-async function completarMatriz(env, p, datos) {
+export async function completarMatriz(env, p, datos) {
   const m = leerMatriz(p.matriz), ia = leerMatriz(p.matriz_ia), antes = Object.assign({}, m);
   if (p.validacion === 'validado') return { n: 0, matriz: m, matriz_ia: ia };
   const c = (datos && datos.campos) || {}, t = ahora();
@@ -1746,7 +1759,11 @@ async function completarMatriz(env, p, datos) {
   const poner = (k, v, estado) => { if (m[k] === v) return; m[k] = v; ia[k] = { estado, en: t }; n++; };
   CAMPOS.forEach(([k]) => {
     if (APROB_CAMPOS.includes(k) || !MATRIZ_CLAVES.includes(k)) return;
-    if (dicho(k) && libre(k)) poner(k, valor(k), 'dicho');
+    if (!(dicho(k) && libre(k))) return;
+    // La IA actualiza SU parte; lo que aprobó el equipo desde documentos (precarga) se conserva y se muestra junto a ella.
+    const partes = partesDe(m[k], ia[k]), v = valor(k), junto = componer(partes.pre, v).slice(0, 4000);
+    if (m[k] === junto) { if (ia[k] && ia[k].ia !== v) ia[k] = Object.assign({}, ia[k], { pre: partes.pre, ia: v }); return; }
+    m[k] = junto; ia[k] = { estado: 'dicho', en: t, pre: partes.pre, ia: v }; n++;
   });
   // Aprobaciones: las tres columnas van juntas, una línea por aprobación y en el mismo orden («—» si falta un dato).
   // Se escriben cuando la persona dijo de dónde depende; cada columna guarda si fue dicha o deducida.
@@ -1770,15 +1787,17 @@ async function completarMatriz(env, p, datos) {
 const AUTO_ESPERA_MIN = 10, AUTO_MAX = 6;
 async function completarPendientes(env, ctx) {
   const hasta = new Date(Date.now() - AUTO_ESPERA_MIN * 60000).toISOString();
-  const pend = (await env.DB.prepare(`SELECT p.id, MAX(r.actualizado) AS ultima, MAX(e.generado) AS generado,
+  // «Última novedad» = lo más reciente entre las respuestas con texto y la información previa de documentos (precarga aprobada).
+  const pend = (await env.DB.prepare(`SELECT * FROM (
+      SELECT p.id,
+        MAX(COALESCE((SELECT MAX(r.actualizado) FROM respuestas r WHERE r.proceso_id = p.id AND trim(r.texto) <> ''), ''),
+            COALESCE((SELECT MAX(pc.actualizado) FROM precarga pc WHERE pc.proceso_id = p.id AND trim(pc.texto) <> ''), '')) AS ultima,
+        (SELECT e.generado FROM estructurado e WHERE e.proceso_id = p.id) AS generado,
         json_extract(p.matriz_ia, '$._fallo') AS fallo
       FROM procesos p
       JOIN campanas c ON c.id = p.campana_id AND c.ia_auto = 1
-      JOIN respuestas r ON r.proceso_id = p.id AND trim(r.texto) <> ''
-      LEFT JOIN estructurado e ON e.proceso_id = p.id
-      WHERE p.validacion <> 'validado' AND p.fuera_alcance = 0
-      GROUP BY p.id
-      HAVING ultima <= ? AND (generado IS NULL OR ultima > generado) AND (fallo IS NULL OR ultima > fallo)
+      WHERE p.validacion <> 'validado' AND p.fuera_alcance = 0)
+      WHERE ultima <> '' AND ultima <= ? AND (generado IS NULL OR ultima > generado) AND (fallo IS NULL OR ultima > fallo)
       ORDER BY ultima LIMIT ?`).bind(hasta, AUTO_MAX).all()).results;
   let ok = 0;
   for (const x of pend) {
@@ -2262,14 +2281,22 @@ async function aplicarPrecarga(env, p, puntos, actor) {
     const id = txt(x && x.punto, 40), campo = PUNTO_CAMPO[id], texto = txt(x && x.texto, 1500);
     if (!campo) return;
     const libre = puedeAutomatico(p, m, ia, campo);
+    // Cada campo guarda por separado el aporte de los documentos y el de la IA: aquí solo se cambia el de los documentos.
+    const partes = libre ? partesDe(m[campo], ia[campo]) : { pre: '', ia: '' };
     if (!texto) {
-      // Vaciar el punto retira la descripción solo si la había puesto la precarga: lo que escribió una persona o la IA no se toca.
-      if (libre && ia[campo] && ia[campo].estado === 'precarga' && m[campo]) { delete m[campo]; delete ia[campo]; origenes[campo] = 'precarga'; escritos.push({ punto: id, campo, vaciado: true }); }
+      // Vaciar el punto retira solo el aporte de los documentos: lo que escribió una persona o armó la IA se conserva.
+      if (libre && ia[campo] && partes.pre) {
+        const resto = partes.ia;
+        if (resto) { m[campo] = resto; ia[campo] = { estado: ia[campo].estado === 'precarga' ? 'dicho' : ia[campo].estado, en: t, pre: '', ia: resto }; }
+        else { delete m[campo]; delete ia[campo]; }
+        origenes[campo] = 'precarga'; escritos.push({ punto: id, campo, vaciado: true });
+      }
       return;
     }
-    if (m[campo] === texto) return;
     if (!libre) { bloqueados.push({ punto: id, campo }); return; }
-    m[campo] = texto; ia[campo] = { estado: 'precarga', en: t };
+    const junto = componer(texto, partes.ia).slice(0, 4000);
+    if (m[campo] === junto && partes.pre === texto) return;
+    m[campo] = junto; ia[campo] = { estado: partes.ia ? (ia[campo] && ia[campo].estado !== 'precarga' ? ia[campo].estado : 'dicho') : 'precarga', en: t, pre: texto, ia: partes.ia };
     origenes[campo] = Array.isArray(x.archivos) && x.archivos.length ? 'documento' : 'precarga';
     escritos.push({ punto: id, campo });
   });
@@ -2293,14 +2320,33 @@ async function aplicarPrecarga(env, p, puntos, actor) {
   return { escritos, bloqueados };
 }
 
+const MAX_PRECARGA = 1500;   // lo que admite un punto de la precarga (igual que en aplicarPrecarga)
 async function rutaPrecarga(env, b) {
   const p = await env.DB.prepare('SELECT id, campana_id, matriz, matriz_ia, validacion FROM procesos WHERE id=?').bind(txt(b.proceso_id, 60)).first();
   if (!p) throw new HttpError(404, 'Proceso no encontrado');
-  const r = await aplicarPrecarga(env, p, b.puntos);
+  // Cada punto puede traer `base`: el texto que la persona veía al abrir la ficha. Si coincide con lo guardado, su edición manda (reemplaza o vacía);
+  // si lo guardado cambió mientras tanto (vista desactualizada), lo suyo se SUMA y nada se borra. Sin `base` (clientes antiguos) se guarda tal cual.
+  const vigentes = {};
+  (await env.DB.prepare('SELECT punto, texto, archivos FROM precarga WHERE proceso_id=?').bind(p.id).all()).results.forEach(x => { vigentes[x.punto] = { texto: x.texto, archivos: JSON.parse(x.archivos || '[]') }; });
+  const aviso = { complementados: [], conservados: [], sin_aplicar: [] }, lista = [];
+  (Array.isArray(b.puntos) ? b.puntos : []).slice(0, 40).forEach(x => {
+    const id = txt(x && x.punto, 40), texto = txt(x && x.texto, MAX_PRECARGA), v = vigentes[id];
+    if (typeof (x && x.base) !== 'string' || !TODOS_PUNTOS.includes(id)) { lista.push(x); return; }
+    const alDia = !v || txt(x.base, MAX_PRECARGA) === v.texto;
+    if (alDia) { lista.push(x); return; }
+    if (!texto) { aviso.conservados.push(id); return; }
+    const c = complementar(v.texto, texto);
+    if (c.relacion === 'contradice' && !b.forzar) { aviso.sin_aplicar.push({ punto: id, motivo: 'contradice' }); return; }
+    if (c.texto.length > MAX_PRECARGA) { aviso.sin_aplicar.push({ punto: id, motivo: 'largo' }); return; }
+    if (c.texto === v.texto) { aviso.conservados.push(id); return; }
+    aviso.complementados.push(id);
+    lista.push({ punto: id, texto: c.texto, archivos: [...new Set([...v.archivos, ...(Array.isArray(x.archivos) ? x.archivos : [])])].slice(0, 10) });
+  });
+  const r = lista.length ? await aplicarPrecarga(env, p, lista) : { escritos: [], bloqueados: [] };
   const filas = (await env.DB.prepare('SELECT proceso_id, bloque, punto, texto, archivos, actualizado FROM precarga WHERE proceso_id=?').bind(p.id).all()).results;
   filas.forEach(x => { x.archivos = JSON.parse(x.archivos || '[]'); });
-  log('precarga', { campana: p.campana_id, puntos: filas.length, escritos: r.escritos.length, bloqueados: r.bloqueados.length });
-  return { ok: true, precarga: filas, escritos: r.escritos, bloqueados: r.bloqueados };
+  log('precarga', { campana: p.campana_id, puntos: filas.length, escritos: r.escritos.length, bloqueados: r.bloqueados.length, complementados: aviso.complementados.length, conservados: aviso.conservados.length });
+  return { ok: true, precarga: filas, escritos: r.escritos, bloqueados: r.bloqueados, ...aviso };
 }
 
 // ---------------------------------------------------------------- clasificación de documentos en procesos (HU02)

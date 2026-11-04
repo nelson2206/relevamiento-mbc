@@ -5,6 +5,7 @@ import { HttpError, ahora, uid, txt, normal, log } from './comun.js';
 import { registrarAccion } from './ambito.js';
 import { leerEstructura } from './estructura.js';
 import { ACTOR_CONSOLA } from './matriz-sync.js';
+import { complementar, alertaDe, MAX_TEXTO } from './complemento.js';
 
 export const TIPOS_DOCUMENTO = {
   'application/pdf': 'pdf',
@@ -344,14 +345,22 @@ export async function rutaDocumentoExtraer(env, b, ctx, deps) {
 }
 
 // Borradores y estado de extracción de una campaña, para la consola (solo administrador).
+// Cada borrador trae su `alerta` frente a lo ya registrado y a los otros borradores del mismo punto: duplicado | contradice | complementa | amplia | nuevo.
 export async function borradoresDeCampana(env, campId) {
-  const [borradores, extracciones] = await Promise.all([
+  const [borradores, extracciones, vigentes] = await Promise.all([
     env.DB.prepare(`SELECT b.id, b.proceso_id, b.documento_id, d.nombre AS documento, b.punto, b.bloque, b.texto, b.cita, b.editado, b.actualizado
       FROM precarga_borrador b JOIN documentos d ON d.id=b.documento_id WHERE b.campana_id=? AND b.estado='borrador' ORDER BY b.proceso_id, b.bloque, b.punto`).bind(campId).all(),
     env.DB.prepare(`SELECT x.documento_id, x.proceso_id, x.estado, x.mensaje, x.puntos, x.descartados, x.motivo, x.actualizado FROM documento_extracciones x
-      JOIN documentos d ON d.id=x.documento_id WHERE d.campana_id=?`).bind(campId).all()
+      JOIN documentos d ON d.id=x.documento_id WHERE d.campana_id=?`).bind(campId).all(),
+    env.DB.prepare('SELECT proceso_id, punto, texto FROM precarga WHERE proceso_id IN (SELECT id FROM procesos WHERE campana_id=?)').bind(campId).all()
   ]);
-  return { precarga_borrador: borradores.results, extracciones: extracciones.results };
+  const vigente = new Map(vigentes.results.map(v => [v.proceso_id + '|' + v.punto, v.texto]));
+  const lista = borradores.results;
+  lista.forEach(b => {
+    const v = vigente.get(b.proceso_id + '|' + b.punto) || '';
+    Object.assign(b, alertaDe(v, b.texto, lista.filter(o => o !== b && o.proceso_id === b.proceso_id && o.punto === b.punto)), { vigente: v });
+  });
+  return { precarga_borrador: lista, extracciones: extracciones.results };
 }
 
 // POST /a/precarga/borrador  {proceso_id, decisiones[{id, accion:'aprobar'|'descartar', texto?}]}
@@ -365,25 +374,33 @@ export async function rutaPrecargaBorrador(env, b, deps) {
     WHERE b.proceso_id=? AND b.estado='borrador'`).bind(p.id).all()).results;
   const porId = new Map(filas.map(x => [x.id, x]));
   const previos = {};
-  (await env.DB.prepare('SELECT punto, archivos FROM precarga WHERE proceso_id=?').bind(p.id).all()).results.forEach(x => { previos[x.punto] = JSON.parse(x.archivos || '[]'); });
-  const aprobar = [], t = ahora(), st = [];
+  (await env.DB.prepare('SELECT punto, texto, archivos FROM precarga WHERE proceso_id=?').bind(p.id).all()).results.forEach(x => { previos[x.punto] = { texto: x.texto, archivos: JSON.parse(x.archivos || '[]') }; });
+  const aprobar = [], t = ahora(), st = [], aviso = { complementados: [], duplicados: [], sin_aplicar: [] };
   decisiones.forEach(x => {
     const fila = porId.get(txt(x && x.id, 60));
     if (!fila || (x.accion !== 'aprobar' && x.accion !== 'descartar')) return;
     if (x.accion === 'descartar') { st.push(env.DB.prepare("UPDATE precarga_borrador SET estado='descartado', actualizado=?, resuelto_por=? WHERE id=?").bind(t, ACTOR.nombre, fila.id)); return; }
-    const texto = txt(x.texto == null ? fila.texto : x.texto, 1500);
-    if (!texto) return;
-    const archivos = [...new Set([...(previos[fila.punto] || []), fila.documento])].slice(0, 10);
-    previos[fila.punto] = archivos;
-    aprobar.push({ punto: fila.punto, texto, archivos });
-    st.push(env.DB.prepare("UPDATE precarga_borrador SET estado='aprobado', texto=?, editado=?, actualizado=?, resuelto_por=? WHERE id=?").bind(texto, texto !== fila.texto ? 1 : fila.editado, t, ACTOR.nombre, fila.id));
+    const nuevo = txt(x.texto == null ? fila.texto : x.texto, MAX_TEXTO);
+    if (!nuevo) return;
+    // Lo aprobado se SUMA a lo que el punto ya tiene (de otro documento o de una carga anterior); nunca lo reemplaza.
+    const previo = previos[fila.punto] || { texto: '', archivos: [] };
+    const c = complementar(previo.texto, nuevo);
+    if (c.relacion === 'contradice' && !x.forzar) { aviso.sin_aplicar.push({ id: fila.id, punto: fila.punto, motivo: 'contradice' }); return; }
+    if (c.texto.length > MAX_TEXTO) { aviso.sin_aplicar.push({ id: fila.id, punto: fila.punto, motivo: 'largo' }); return; }
+    if (c.relacion === 'duplicado') aviso.duplicados.push(fila.punto);
+    else if (c.relacion !== 'nuevo') aviso.complementados.push(fila.punto);
+    const archivos = [...new Set([...previo.archivos, fila.documento])].slice(0, 10);
+    previos[fila.punto] = { texto: c.texto, archivos };
+    aprobar.push({ punto: fila.punto, texto: c.texto, archivos });
+    st.push(env.DB.prepare("UPDATE precarga_borrador SET estado='aprobado', texto=?, editado=?, actualizado=?, resuelto_por=? WHERE id=?").bind(nuevo, nuevo !== fila.texto ? 1 : fila.editado, t, ACTOR.nombre, fila.id));
   });
+  if (!st.length && aviso.sin_aplicar.length) return { ok: true, escritos: [], bloqueados: [], pendientes: filas.length, ...aviso };
   if (!st.length) throw new HttpError(400, 'Esos borradores ya no están pendientes');
   const r = aprobar.length ? await deps.aplicarPrecarga(env, p, aprobar, ACTOR) : { escritos: [], bloqueados: [] };
   await env.DB.batch(st);
-  await registrarAccion(env, p.campana_id, ACTOR, 'documento_precarga_revision', { proceso: p.id, aprobados: aprobar.length, descartados: st.length - aprobar.length, bloqueados: r.bloqueados.length });
+  await registrarAccion(env, p.campana_id, ACTOR, 'documento_precarga_revision', { proceso: p.id, aprobados: aprobar.length, descartados: st.length - aprobar.length, bloqueados: r.bloqueados.length, complementados: aviso.complementados.length, duplicados: aviso.duplicados.length, sin_aplicar: aviso.sin_aplicar.length });
   const quedan = (await env.DB.prepare("SELECT COUNT(*) AS n FROM precarga_borrador WHERE proceso_id=? AND estado='borrador'").bind(p.id).first()).n;
-  return { ok: true, escritos: r.escritos, bloqueados: r.bloqueados, pendientes: quedan };
+  return { ok: true, escritos: r.escritos, bloqueados: r.bloqueados, pendientes: quedan, ...aviso };
 }
 
 // ---------------------------------------------------------------- limpieza en cascada

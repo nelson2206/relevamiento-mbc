@@ -719,7 +719,7 @@
   function iniciarDocumentos(){
     if (!window.DocumentosConsola) return;
     window.DocumentosConsola.iniciar({api: api, datos: function(){ return C; }, esc: esc, fecha: fecha, base: function(){ return API; }, codigo: function(){ return CODIGO; },
-      recargarCampana: function(){ return abrir(C.campana.id); }, abrirProceso: function(pid){ detalle(pid); }});
+      recargarCampana: function(){ return abrir(C.campana.id); }, abrirProceso: function(pid){ return abrir(C.campana.id).then(function(){ detalle(pid); }); }});
   }
   function cargarFlujoAdmin(){
     iniciarUsuarios();
@@ -780,8 +780,10 @@
   function respuestasDe(pid){ var m = IX.resp[pid] || {}, out = []; Object.keys(m).forEach(function(k){ out = out.concat(m[k]); }); return out; }
   function estructuradoDe(pid){ return IX.est[pid]; }
   function nombreProc(p){ return p.subproceso || p.proceso || p.macroproceso; }
-  function desactualizado(pid){ var e = estructuradoDe(pid); return !!e && respuestasDe(pid).some(function(r){ return r.actualizado > e.generado; }); }
-  function pendienteIA(pid){ return respuestasDe(pid).length > 0 && (!estructuradoDe(pid) || desactualizado(pid)); }
+  function preDe(pid){ var m = IX.pre[pid] || {}; return Object.keys(m).map(function(k){ return m[k]; }).filter(function(x){ return String(x.texto || '').trim(); }); }
+  // Lo estructurado queda desactualizado con respuestas nuevas O con información previa de documentos aprobada después.
+  function desactualizado(pid){ var e = estructuradoDe(pid); return !!e && (respuestasDe(pid).some(function(r){ return r.actualizado > e.generado; }) || preDe(pid).some(function(x){ return x.actualizado > e.generado; })); }
+  function pendienteIA(pid){ return (respuestasDe(pid).length > 0 || preDe(pid).length > 0) && (!estructuradoDe(pid) || desactualizado(pid)); }
 
   // Avance de una persona en un proceso: puntos del checklist listos (cubiertos o "no aplica") en todas las preguntas.
   // Quien respondió las 6 preguntas del formato anterior cuenta como completo.
@@ -2229,7 +2231,7 @@
       var cuerpo = '';
       b.puntos.forEach(function(pt){
         var x = pre[pt[0]];
-        cuerpo += '<div class="campo"><div class="k">' + esc(pt[1]) + '</div><div><textarea data-pre="' + esc(pt[0]) + '" rows="2" style="width:100%;min-height:46px" aria-label="Lo que dicen los documentos sobre: ' + esc(pt[1]) + '">' + esc(x ? x.texto : '') + '</textarea>' +
+        cuerpo += '<div class="campo"><div class="k">' + esc(pt[1]) + '</div><div><textarea data-pre="' + esc(pt[0]) + '" data-base="' + esc(x ? x.texto : '') + '" rows="2" style="width:100%;min-height:46px" aria-label="Lo que dicen los documentos sobre: ' + esc(pt[1]) + '">' + esc(x ? x.texto : '') + '</textarea>' +
           '<div class="ev" id="preev-' + esc(pt[0]) + '">' + (x && x.archivos && x.archivos.length ? esc('De: ' + x.archivos.join(', ')) : '') + '</div>' + vigenteMatriz(p, pt[0], x) + '</div></div>';
       });
       h += bloqueHtml(b, cuerpo);
@@ -2241,10 +2243,21 @@
     var campo = (C.punto_campo || {})[punto]; if (!campo) return '';
     var v = String((p.matriz || {})[campo] || '').trim(); if (!v) return '';
     var igual = x && x.texto && x.texto.trim() === v;
+    var marca = (p.matriz_ia || {})[campo], incluida = !!(x && x.texto && marca && String(marca.pre || '').trim() === x.texto.trim());
+    if (incluida && !igual) return '<div class="ev">En la matriz: la precarga está incluida junto con lo que armó la IA con las respuestas. Cada fuente actualiza solo su parte.</div>';
     return '<div class="ev">' + (igual ? 'En la matriz: igual a la precarga.' : 'En la matriz hoy (es lo que ve la persona): «' + esc(v.length > 220 ? v.slice(0, 220) + '…' : v) + '»' +
       (x && x.texto ? '. La precarga no la reemplazó porque ya la escribió una persona o la fila está validada.' : '')) + '</div>';
   }
   // Borradores extraídos de un documento al confirmar su proceso: el administrador los revisa (puede corregir el texto) antes de que lleguen a la matriz.
+  // Lo aprobado se suma a lo que el punto ya tiene (nunca lo reemplaza); aquí se avisa de duplicados y de posibles contradicciones.
+  function alertaBorrador(b){
+    var v = b.vigente ? '<div class="ev">Ya registrado: «' + esc(b.vigente.length > 220 ? b.vigente.slice(0, 220) + '…' : b.vigente) + '»</div>' : '';
+    var con = esc(b.con || 'lo ya registrado');
+    if (b.alerta === 'contradice') return v + '<div class="ev" style="color:var(--bad,#b3261e);font-weight:600" role="alert">⚠ Posible contradicción con ' + con + '. Revisa los dos textos; si ambos valen, se sumarán.</div>';
+    if (b.alerta === 'duplicado') return v + '<div class="ev" style="font-weight:600">Posible duplicado de ' + con + ': al aprobar no se repite, solo se agrega este documento como fuente.</div>';
+    if (b.alerta === 'complementa' || b.alerta === 'amplia') return v + '<div class="ev">Se sumará a lo ya registrado, sin reemplazarlo.</div>';
+    return '';
+  }
   function borradoresHtml(p, bor){
     if (!bor.length) return '';
     var etiqueta = {}; (C.bloques || []).forEach(function(b){ b.puntos.forEach(function(pt){ etiqueta[pt[0]] = pt[1]; }); });
@@ -2253,8 +2266,8 @@
       bor.map(function(b){
         return '<div class="campo" data-borrador="' + esc(b.id) + '"><div class="k">' + esc(etiqueta[b.punto] || b.punto) + '</div><div>' +
           '<textarea data-bor-texto="' + esc(b.id) + '" rows="2" style="width:100%;min-height:46px" aria-label="Borrador: ' + esc(etiqueta[b.punto] || b.punto) + '">' + esc(b.texto) + '</textarea>' +
-          '<div class="ev">De: ' + esc(b.documento) + ' · «' + esc(b.cita) + '»</div>' +
-          '<div class="row" style="margin-top:4px"><button class="btn btn-xs" data-bor-acc="aprobar" data-bor="' + esc(b.id) + '">Aprobar</button>' +
+          '<div class="ev">De: ' + esc(b.documento) + ' · «' + esc(b.cita) + '»</div>' + alertaBorrador(b) +
+          '<div class="row" style="margin-top:4px"><button class="btn btn-xs" data-bor-acc="aprobar" data-bor="' + esc(b.id) + '"' + (b.alerta === 'contradice' ? ' data-forzar="1"' : '') + '>' + (b.alerta === 'contradice' ? 'Aprobar y sumar de todos modos' : 'Aprobar') + '</button>' +
           '<button class="btn btn-ghost btn-xs" data-bor-acc="descartar" data-bor="' + esc(b.id) + '">Descartar</button></div></div></div>';
       }).join('') +
       '<div class="row" style="margin-top:8px"><button class="btn" data-bor-acc="aprobar-todos">Aprobar todos</button><button class="btn btn-ghost" data-bor-acc="descartar-todos">Descartar todos</button><span class="muted" id="borMsg" aria-live="polite"></span></div></div>';
@@ -2314,20 +2327,31 @@
       var accion = acc.indexOf('aprobar') === 0 ? 'aprobar' : 'descartar', m = $('#borMsg') || $('#preMsg');
       var decisiones = ids.map(function(id){
         var t = det.querySelector('[data-bor-texto="' + id + '"]'), o = (IX.bor[p.id] || []).filter(function(x){ return x.id === id; })[0];
-        var d = {id: id, accion: accion}; if (accion === 'aprobar' && t && o && t.value !== o.texto) d.texto = t.value; return d;
+        var d = {id: id, accion: accion}; if (accion === 'aprobar' && t && o && t.value !== o.texto) d.texto = t.value;
+        if (accion === 'aprobar' && !todos && b.dataset.forzar) d.forzar = true;   // la persona vio la contradicción y decide sumar de todos modos
+        return d;
       });
       Array.prototype.forEach.call(det.querySelectorAll('[data-bor-acc]'), function(x){ x.disabled = true; });
       m.textContent = 'Guardando…';
       api('/a/precarga/borrador', {proceso_id: p.id, decisiones: decisiones}).then(function(j){
         var aviso = j.bloqueados && j.bloqueados.length ? ' ' + j.bloqueados.length + ' no llegaron a la matriz porque ya los escribió una persona o la fila está validada.' : '';
+        if (j.complementados && j.complementados.length) aviso += ' ' + j.complementados.length + ' se sumaron a lo ya registrado.';
+        if (j.duplicados && j.duplicados.length) aviso += ' ' + j.duplicados.length + ' ya estaban: solo se añadió la fuente.';
+        if (j.sin_aplicar && j.sin_aplicar.length) aviso += ' ' + j.sin_aplicar.length + ' quedaron pendientes: ' + (j.sin_aplicar.some(function(x){ return x.motivo === 'contradice'; }) ? 'contradicen lo registrado (apruébalos uno a uno con «Aprobar y sumar de todos modos» si ambos valen)' : 'el texto sumado superaría el máximo, acórtalo') + '.';
         return abrir(C.campana.id).then(function(){ detalle(p.id); var n = $('#preMsg'); if (n) n.textContent = (accion === 'aprobar' ? 'Aprobado: ' + j.escritos.length + ' en la matriz.' : 'Descartado.') + aviso; });
       }).catch(function(err){ Array.prototype.forEach.call(det.querySelectorAll('[data-bor-acc]'), function(x){ x.disabled = false; }); m.textContent = err.message; });
     });
     $('#preGuardar').addEventListener('click', function(){
-      var puntos = Array.prototype.map.call(det.querySelectorAll('[data-pre]'), function(t){ return {punto: t.dataset.pre, texto: t.value, archivos: arch[t.dataset.pre] || []}; });
+      // Solo viajan los puntos que la persona cambió, con el texto que veía (base): así una vista desactualizada no pisa ni borra lo guardado después.
+      var puntos = Array.prototype.filter.call(det.querySelectorAll('[data-pre]'), function(t){ return t.value.trim() !== (t.dataset.base || '').trim(); })
+        .map(function(t){ return {punto: t.dataset.pre, texto: t.value, base: t.dataset.base || '', archivos: arch[t.dataset.pre] || []}; });
+      if (!puntos.length){ msg('No hay cambios que guardar.'); return; }
       bloquear(true); msg('Guardando…');
       api('/a/precarga', {proceso_id: p.id, puntos: puntos}).then(function(j){
         return abrir(C.campana.id).then(function(){ detalle(p.id); $('#preMsg').textContent = 'Guardado: ' + j.precarga.length + ' puntos cubiertos; ' + (j.escritos || []).length + ' llegaron a la matriz.' +
+          ((j.complementados || []).length ? ' ' + j.complementados.length + ' se sumaron a lo que ya había (la vista estaba desactualizada).' : '') +
+          ((j.conservados || []).length ? ' ' + j.conservados.length + ' se conservaron tal como estaban (habían cambiado desde que abriste la ficha).' : '') +
+          ((j.sin_aplicar || []).length ? ' ' + j.sin_aplicar.length + ' no se aplicaron: ' + (j.sin_aplicar.some(function(x){ return x.motivo === 'contradice'; }) ? 'contradicen lo guardado, revísalos' : 'superarían el máximo de texto') + '.' : '') +
           ((j.bloqueados || []).length ? ' ' + j.bloqueados.length + ' no la reemplazaron porque ya los escribió una persona o la fila está validada (mira «En la matriz hoy» bajo cada punto).' : ''); });
       }).catch(function(err){ bloquear(false); msg(err.message); });
     });
@@ -2341,8 +2365,9 @@
     $('#dlgT').textContent = (p.codigo ? p.codigo + ' · ' : '') + nombreProc(p);
     $('#dlgS').textContent = [p.gerencia, p.seccion, p.macroproceso, p.proceso !== nombreProc(p) ? p.proceso : ''].filter(Boolean).join(' › ') + ' · ' + (FUENTE_TXT[p.fuente] || p.fuente);
     var h = '<div class="row" style="margin-bottom:12px"><span class="chip ' + {respondido:'c-ok', en_curso:'c-inf', sin_cobertura:'c-mut', no_vigente:'c-mut'}[cb.estado] + '">' + ESTADO_TXT[cb.estado] + '</span>' +
-      (pendienteIA(pid) ? '<span class="chip c-warn" title="La descripción que ven las personas en la encuesta todavía no incluye las respuestas más recientes">Respuestas nuevas sin estructurar</span>' : '') +
-      '<button class="btn btn-xs" id="dEstr"' + (rs.length ? '' : ' disabled title="Todavía nadie respondió"') + '>' + (e ? 'Regenerar con IA' : 'Estructurar con IA') + '</button>' +
+      (pendienteIA(pid) ? '<span class="chip c-warn" title="Hay respuestas o información de documentos más recientes que el último análisis de la IA">Información nueva sin estructurar</span>' : '') +
+      ((IX.bor[pid] || []).length ? '<span class="chip c-mut" title="La IA solo usa lo que ya aprobaste: los borradores de documentos pendientes no se consideran">' + IX.bor[pid].length + ' borradores sin aprobar no se consideran</span>' : '') +
+      '<button class="btn btn-xs" id="dEstr"' + (rs.length || preDe(pid).length ? '' : ' disabled title="Todavía nadie respondió ni hay documentos aprobados"') + '>' + (e ? 'Regenerar con IA' : 'Estructurar con IA') + '</button>' +
       '<button class="btn btn-ghost btn-xs" id="dEditar">Editar</button>' +
       '<button class="btn btn-ghost btn-xs" id="dExportar" title="Descarga un Excel con la matriz, el análisis, las respuestas y la precarga de este proceso">Exportar proceso (Excel)</button>' +
       '<button class="btn btn-ghost btn-xs" id="dBorrar"' + (rs.length ? ' disabled title="Tiene respuestas: no se puede borrar"' : '') + '>Borrar</button>' +
@@ -2430,7 +2455,7 @@
     activarPrecarga(p);
     if (irAMatriz) $('#fMatriz').scrollIntoView({block: 'start'});
     $('#dEstr').addEventListener('click', function(){
-      var b = this; b.disabled = true; $('#dMsg').textContent = 'La IA está leyendo las respuestas (suele tardar menos de un minuto)…';
+      var b = this; b.disabled = true; $('#dMsg').textContent = 'La IA está leyendo las respuestas y los documentos aprobados (suele tardar menos de un minuto)…';
       estructurar(pid).then(function(j){
         pintarTodo(); detalle(pid);
         $('#dMsg').textContent = j.completados ? 'La IA completó ' + j.completados + (j.completados === 1 ? ' campo' : ' campos') + ' de la matriz.' : 'La IA no tenía datos nuevos para los campos vacíos de la matriz.';
