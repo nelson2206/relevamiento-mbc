@@ -105,7 +105,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { leerEstructura, prepararEstructura, asegurarEstructura, areasDeEstructura } from './estructura.js';
 import { rutaFlujo, rutaFlujoCatalogo, rutaFlujoConfirmar, rutaFlujoRetroceder, rutaFlujoProceso, rutaFlujoAdmin, rutaFlujoReabrir, guardarCambio } from './flujo.js';
-import { rutaDocumentoSubir, rutaDocumentos, rutaDocumentoArchivo, rutaDocumentoGerencia, rutaDocumentoAnalizar, rutaDocumentoBorrar, rutaDocumentoProcesos, rutaUmbral,
+import { ESQUEMA_CLASIFICAR, mensajeErrorIA, rutaDocumentoSubir, rutaDocumentos, rutaDocumentoArchivo, rutaDocumentoGerencia, rutaDocumentoAnalizar, rutaDocumentoBorrar, rutaDocumentoProcesos, rutaUmbral,
   rutaDocumentoExtraer, rutaPrecargaBorrador, borradoresDeCampana, sentenciasRastroDeProcesos, sentenciasRastroDeCampana, borrarArchivosDeCampana } from './documentos.js';
 import { complementar, partesDe, componer } from './complemento.js';
 import { ambitoDe, enSecs, claveArea, registrarAccion } from './ambito.js';
@@ -125,7 +125,7 @@ function iaDe(env, tarea) {
 }
 const WHISPER = '@cf/openai/whisper-large-v3-turbo';
 const MAX_AUDIO = 8 * 1024 * 1024;       // por tramo; el navegador corta en tramos de 2 min
-const MAX_PDF = 10 * 1024 * 1024, MAX_PDF_PAGINAS = 10;   // el PDF se manda completo a la IA
+const MAX_PDF = 10 * 1024 * 1024, MAX_PDF_PAGINAS = 20;   // el PDF se manda completo a la IA
 const MAX_IMAGEN = 6 * 1024 * 1024;      // el navegador la reduce antes (máx. 1600 px, JPEG)
 const MAX_TEXTO = 12000;
 // Encuesta por bloques: cada bloque se responde con una grabación y trae el checklist de lo que la matriz necesita.
@@ -2228,7 +2228,7 @@ async function extraerPrecarga(env, ctx, a, p) {
     }).finalMessage();
   } catch (err) {
     log('precarga_error', { campana: p.campana_id, tipo: a.tipo, error: String((err && err.message) || err).slice(0, 200) });
-    throw new HttpError(502, `No pudimos leer ${a.que} en este momento. Intenta de nuevo en un minuto.`);
+    throw new HttpError(502, mensajeErrorIA(err, `No pudimos leer ${a.que} en este momento. Intenta de nuevo en un minuto.`));
   }
   registrarIA(ctx, 'precarga', msg, cfg, t0);
   if (msg.stop_reason === 'refusal') throw new HttpError(422, 'La IA no pudo procesar ese archivo.');
@@ -2367,23 +2367,16 @@ async function analizarDocumentoIA(env, ctx, archivo, catalogo, gerencia, seccio
   const esDocx = archivo.tipo === MIME_DOCX, esPdf = archivo.tipo === 'application/pdf';
   const doc = esDocx ? await textoDeDocx(archivo.buf).catch(() => null) : null;
   if (esDocx && !(doc && doc.texto)) throw new HttpError(422, 'No pudimos leer el texto de ese Word.');
-  const schema = {
-    type: 'object',
-    properties: { procesos: { type: 'array', items: { type: 'object', properties: {
-      proceso_id: { type: 'string', enum: catalogo.map(p => p.id) }, confianza: { type: 'number' }, motivo: { type: 'string' }
-    }, required: ['proceso_id', 'confianza', 'motivo'], additionalProperties: false } } },
-    required: ['procesos'], additionalProperties: false
-  };
   const lista = catalogo.map(p => `- ${p.id} | ${p.gerencia} / ${p.seccion} | ${[p.macroproceso, p.proceso, p.subproceso].filter(Boolean).join(' > ')}`).join('\n');
   const cfg = iaDe(env, 'estructurar'), t0 = Date.now();
   let msg;
   try {
     msg = await clienteClaude(env).beta.messages.stream({
       model: cfg.modelo,
-      max_tokens: 3000,
+      max_tokens: 16000,
       betas: ['server-side-fallback-2026-07-01'],
       fallbacks: 'default',
-      output_config: { effort: cfg.esfuerzo, format: { type: 'json_schema', schema } },
+      output_config: { effort: cfg.esfuerzo, format: { type: 'json_schema', schema: ESQUEMA_CLASIFICAR } },
       system: CLASIFICAR_PROMPT,
       messages: [{ role: 'user', content: [
         bloqueDeArchivo({ esDocx, esPdf, doc, tipo: archivo.tipo, buf: archivo.buf }),
@@ -2392,7 +2385,7 @@ async function analizarDocumentoIA(env, ctx, archivo, catalogo, gerencia, seccio
     }).finalMessage();
   } catch (err) {
     log('documento_ia_error', { error: String((err && err.message) || err).slice(0, 200) });
-    throw new HttpError(502, 'No pudimos analizar el documento en este momento. Intenta de nuevo en un minuto.');
+    throw new HttpError(502, mensajeErrorIA(err, 'No pudimos analizar el documento en este momento. Intenta de nuevo en un minuto.'));
   }
   registrarIA(ctx, 'clasificar_documento', msg, cfg, t0);
   if (msg.stop_reason === 'refusal') throw new HttpError(422, 'La IA no pudo procesar ese archivo.');
@@ -2702,6 +2695,8 @@ async function rutaClienteCampana(env, actor, recarga) {
     q('SELECT pc.proceso_id, pc.bloque, pc.punto FROM precarga pc JOIN procesos p ON p.id=pc.proceso_id WHERE p.campana_id=?'),
     q('SELECT gerencia, seccion, abre, cierra, mensaje FROM ventanas WHERE campana_id=?')
   ]);
+  // Esqueleto (hoja «Gerencias» de la plantilla): secciones que aún no tienen procesos ni personas también se ven en el panel.
+  let estructura = await leerEstructura(env, camp.id);
   if (actor.rol === 'supervisor') {
     const amb = await ambitoDe(env, actor), vis = await personasVisibles(env, camp, amb);
     const veo = x => amb.procs.has(x.proceso_id) && vis.has(x.encuestado_id);
@@ -2710,6 +2705,7 @@ async function rutaClienteCampana(env, actor, recarga) {
     revisiones = revisiones.filter(veo); respuestas = respuestas.filter(veo); asignaciones = asignaciones.filter(veo);
     precarga = precarga.filter(x => amb.procs.has(x.proceso_id));
     ventanas = ventanas.filter(v => enSecs(amb, v.gerencia, v.seccion) || (!v.seccion && amb.filas.some(p => mismaArea(p.gerencia, v.gerencia))));
+    estructura = estructura.filter(f => f.seccion && enSecs(amb, f.gerencia, f.seccion));
   }
   const limpias = respuestas.map(r => {
     const ck = leerMatriz(r.checklist), sano = {};
@@ -2726,7 +2722,7 @@ async function rutaClienteCampana(env, actor, recarga) {
     supervisores: actor.rol === 'cliente' ? await listaSupervisores(env, camp.id) : undefined,
     campana: { id: camp.id, nombre: camp.nombre, cliente: camp.cliente, logo: camp.logo || '', creada: camp.creada,
       codigo_publico: camp.codigo_publico || '', abierta: camp.abierta ? 1 : 0, invitacion: camp.invitacion || '' },
-    encuestados, procesos, revisiones, respuestas: limpias, asignaciones, precarga, ventanas, estructurado: [], sistemas: [], bloques: BLOQUES, generado: ahora() };
+    encuestados, procesos, revisiones, respuestas: limpias, asignaciones, precarga, ventanas, estructura, estructurado: [], sistemas: [], bloques: BLOQUES, generado: ahora() };
 }
 
 // ---------------------------------------------------------------- escritura acotada del panel del cliente

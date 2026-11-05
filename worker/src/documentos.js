@@ -19,6 +19,20 @@ const ESTADOS = ['pendiente', 'clasificado'];
 const ESTADOS_IA = ['sin_analizar', 'analizando', 'analizado', 'error'];
 const ACTOR = { rol: 'admin', sup: null, nombre: ACTOR_CONSOLA.nombre };   // el mismo nombre que usa la matriz: una sola persona en todas las bitácoras
 
+// Salida de la IA al clasificar. El id NO va como enum: con cientos de procesos la API responde «Schema is too complex for compilation».
+// El catálogo va en el mensaje, y analizarYGuardar descarta cualquier id que no esté en él.
+export const ESQUEMA_CLASIFICAR = {
+  type: 'object',
+  properties: { procesos: { type: 'array', items: { type: 'object', properties: {
+    proceso_id: { type: 'string' }, confianza: { type: 'number' }, motivo: { type: 'string' }
+  }, required: ['proceso_id', 'confianza', 'motivo'], additionalProperties: false } } },
+  required: ['procesos'], additionalProperties: false
+};
+// Si el intermediario de IA rechaza la clave, reintentar no sirve: el mensaje lo dice, para que el equipo no espere «un minuto».
+export const mensajeErrorIA = (err, porDefecto) => /rechazo la clave/i.test(String((err && err.message) || ''))
+  ? 'La IA no está disponible: Anthropic rechazó la clave configurada en el intermediario (processiq-api). El equipo técnico debe renovarla; reintentar no ayudará hasta entonces.'
+  : porDefecto;
+
 const unidad = n => { n = Number(n); return Number.isFinite(n) ? Math.min(1, Math.max(0, n)) : null; };
 export const bajaConfianza = (confianza, umbral) => confianza != null && Number(confianza) < Number(umbral);
 
