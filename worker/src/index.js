@@ -57,8 +57,12 @@
  *   GET  /a/documentos?campana_id=&gerencia=&estado=&estado_ia=&desde=&hasta=&q=&confianza=baja|sin&orden=confianza   bandeja con sus procesos y el umbral
  *   GET  /a/documentos/archivo?id=       el archivo, para abrirlo antes de clasificar
  *   POST /a/documentos/borrar {id} (elimina el documento, su archivo y sus borradores sin aprobar) | /a/documentos/gerencia {id, gerencia, seccion?} | /a/documentos/analizar {id} (la IA propone procesos con confianza) | /a/documentos/procesos {id, procesos[]} (lista final: confirma, quita y agrega;
- *        lo recién confirmado lanza la extracción de la precarga en segundo plano: queda como borrador)
- *   POST /a/documentos/extraer {id, proceso_id}   (extrae o reextrae la precarga de un proceso confirmado)  |  POST /a/precarga/borrador {proceso_id, decisiones[{id, accion:'aprobar'|'descartar', texto?}]}
+ *        lo recién confirmado queda «pendiente» (en cola, sin tope) y responde `por_extraer[proceso_id]`; la consola dispara la lectura de cada par, 2 en paralelo como máximo; el cron recoge los que no alcanzó)
+ *   POST /a/documentos/extraer {id, proceso_id, origen?:'confirmacion'|'reproceso'}   (lee o vuelve a leer el documento para UN proceso confirmado y ESPERA el resultado: estados pendiente > leyendo > procesando > generado|error,
+ *        tiempo máximo EXTRACCION_MAX_MIN (8 min); 409 si ese par ya se está leyendo; el resultado queda como borrador, cada ejecución en su historial)
+ *   GET  /a/documentos/historial?id=[&proceso_id=]   últimas 50 ejecuciones de lectura del documento (proceso, origen, quién, inicio, fin, resultado, mensaje)
+ *   POST /a/precarga/borrador {proceso_id, decisiones[{id, accion:'aprobar'|'descartar', texto?}]}
+ *   (cron cada 15 min: vence las lecturas colgadas, completa la matriz y lee hasta 4 pares «pendiente» de hace más de 2 min)
  *   POST /a/campana/umbral       {campana_id, umbral 0..1}   (bajo ese valor la clasificación se resalta como de baja confianza)
  *   POST /r/identificar          {c, g?, s?, id | correo}   (enlace de sección: la persona elige su nombre o escribe su correo y entra a su registro)
  *   POST /a/campana/renovar-accesos {campana_id}   cierra las sesiones y enlaces personales de la campaña (cada persona entra de nuevo con su PIN)
@@ -106,7 +110,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { leerEstructura, prepararEstructura, asegurarEstructura, areasDeEstructura } from './estructura.js';
 import { rutaFlujo, rutaFlujoCatalogo, rutaFlujoConfirmar, rutaFlujoRetroceder, rutaFlujoProceso, rutaFlujoAdmin, rutaFlujoReabrir, guardarCambio } from './flujo.js';
 import { ESQUEMA_CLASIFICAR, mensajeErrorIA, rutaDocumentoSubir, rutaDocumentos, rutaDocumentoArchivo, rutaDocumentoGerencia, rutaDocumentoAnalizar, rutaDocumentoBorrar, rutaDocumentoProcesos, rutaUmbral,
-  rutaDocumentoExtraer, rutaPrecargaBorrador, borradoresDeCampana, sentenciasRastroDeProcesos, sentenciasRastroDeCampana, borrarArchivosDeCampana } from './documentos.js';
+  rutaDocumentoExtraer, rutaDocumentoHistorial, extraerPendientes, vencerExtracciones, rutaPrecargaBorrador, borradoresDeCampana, sentenciasRastroDeProcesos, sentenciasRastroDeCampana, borrarArchivosDeCampana } from './documentos.js';
 import { complementar, partesDe, componer } from './complemento.js';
 import { ambitoDe, enSecs, claveArea, registrarAccion } from './ambito.js';
 import { limpiarDatos, evaluar, resumenTexto, UBICACIONES, ESQUEMA_IA, PROMPT_IA, desdeSalidaIA, camposMatriz } from './confidencial.js';
@@ -2858,7 +2862,13 @@ function estadoServicio(env) {
 export default {
   // Tarea programada (wrangler.toml [triggers]): la IA completa la matriz con las respuestas nuevas.
   async scheduled(event, env, ctx) {
-    await completarPendientes(env, ctx);
+    // Tres tareas independientes: si una falla, las otras corren igual; el primer error se relanza al final para que la corrida figure como fallida.
+    let fallo = null;
+    const tarea = async f => { try { await f(); } catch (err) { log('cron_error', { error: String((err && err.message) || err).slice(0, 200) }); fallo = fallo || err; } };
+    await tarea(() => vencerExtracciones(env));
+    await tarea(() => completarPendientes(env, ctx));
+    await tarea(() => extraerPendientes(env, ctx, { extraerPrecarga: extraerDeDocumento }));
+    if (fallo) throw fallo;
   },
 
   async fetch(req, env, ctx) {
@@ -2927,6 +2937,7 @@ export default {
         if (ruta === 'GET /a/campana/historial') return json(await rutaHistorialMatriz(env, url), 200, h);
         if (ruta === 'GET /a/documentos') return json(await rutaDocumentos(env, url), 200, h);
         if (ruta === 'GET /a/documentos/archivo') return await rutaDocumentoArchivo(env, url, h);
+        if (ruta === 'GET /a/documentos/historial') return json(await rutaDocumentoHistorial(env, url), 200, h);
         if (ruta === 'POST /a/documentos') return json(await rutaDocumentoSubir(env, req, url, { leerArchivo: leerArchivoSubido, analizarIA: analizarDocumentoIA, iaLista }, ctx), 200, h);
         if (ruta === 'POST /a/precarga/extraer') return json(await rutaPrecargaExtraer(env, req, url, ctx), 200, h);
         if (req.method === 'POST') {

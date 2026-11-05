@@ -316,7 +316,7 @@ CREATE INDEX IF NOT EXISTS ix_pb_proc ON precarga_borrador(proceso_id, estado);
 CREATE TABLE IF NOT EXISTS documento_extracciones (
   documento_id TEXT NOT NULL,
   proceso_id TEXT NOT NULL,
-  estado TEXT NOT NULL DEFAULT 'pendiente',
+  estado TEXT NOT NULL DEFAULT 'pendiente',   -- pendiente | leyendo | procesando | generado | error
   mensaje TEXT NOT NULL DEFAULT '',
   puntos INTEGER NOT NULL DEFAULT 0,
   descartados INTEGER NOT NULL DEFAULT 0,
@@ -324,3 +324,17 @@ CREATE TABLE IF NOT EXISTS documento_extracciones (
   actualizado TEXT NOT NULL,
   PRIMARY KEY (documento_id, proceso_id)
 );
+CREATE TABLE IF NOT EXISTS documento_extraccion_historial (
+  id TEXT PRIMARY KEY,
+  campana_id TEXT NOT NULL,
+  documento_id TEXT NOT NULL,
+  proceso_id TEXT NOT NULL,
+  origen TEXT NOT NULL,
+  solicitado_por TEXT NOT NULL DEFAULT '',
+  inicio TEXT NOT NULL,
+  fin TEXT NOT NULL DEFAULT '',
+  resultado TEXT NOT NULL DEFAULT 'en_curso',
+  mensaje TEXT NOT NULL DEFAULT '',
+  puntos INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS ix_dxh_doc ON documento_extraccion_historial(documento_id, proceso_id, inicio);

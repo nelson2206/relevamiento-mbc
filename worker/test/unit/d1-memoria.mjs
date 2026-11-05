@@ -14,7 +14,7 @@ export function crearD1() {
     bind: (...a) => stmt(sql, a.map(x => (x === undefined ? null : x))),
     first: async () => clon(db.prepare(sql).get(...args)),
     all: async () => ({ results: db.prepare(sql).all(...args).map(clon) }),
-    run: async () => { db.prepare(sql).run(...args); return { success: true }; }
+    run: async () => { const r = db.prepare(sql).run(...args); return { success: true, meta: { changes: Number(r.changes) } }; }
   });
   const d1 = { prepare: sql => stmt(sql), batch: async ss => { for (const s of ss) await s.run(); return []; } };
   const sinComentarios = t => t.split('\n').map(l => l.replace(/--.*$/, '')).join('\n');
