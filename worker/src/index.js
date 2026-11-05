@@ -124,7 +124,7 @@ function iaDe(env, tarea) {
 }
 const WHISPER = '@cf/openai/whisper-large-v3-turbo';
 const MAX_AUDIO = 8 * 1024 * 1024;       // por tramo; el navegador corta en tramos de 2 min
-const MAX_PDF = 10 * 1024 * 1024, MAX_PDF_PAGINAS = 10;   // el PDF se manda completo a la IA
+const MAX_PDF = 10 * 1024 * 1024, MAX_PDF_PAGINAS = 20;   // el PDF se manda completo a la IA
 const MAX_IMAGEN = 6 * 1024 * 1024;      // el navegador la reduce antes (máx. 1600 px, JPEG)
 const MAX_TEXTO = 12000;
 // Encuesta por bloques: cada bloque se responde con una grabación y trae el checklist de lo que la matriz necesita.

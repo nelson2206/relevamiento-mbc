@@ -1958,7 +1958,7 @@
     });
   }
   // PDF: se envía tal cual (la IA lo lee completo). Antes se cuentan sus páginas para no gastar de más.
-  var MAX_PDF_MB = 10, MAX_PDF_PAGINAS = 10;
+  var MAX_PDF_MB = 10, MAX_PDF_PAGINAS = 20;
   function revisarPdf(file){
     return file.arrayBuffer().then(function(buf){
       var n = contarPaginasPdf(buf);
