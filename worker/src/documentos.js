@@ -5,6 +5,7 @@ import { HttpError, ahora, uid, txt, normal, log } from './comun.js';
 import { registrarAccion } from './ambito.js';
 import { leerEstructura } from './estructura.js';
 import { ACTOR_CONSOLA } from './matriz-sync.js';
+import { complementar, alertaDe, MAX_TEXTO } from './complemento.js';
 
 export const TIPOS_DOCUMENTO = {
   'application/pdf': 'pdf',
@@ -137,7 +138,7 @@ async function conProcesos(env, docs, umbral) {
       proceso_id: f.proceso_id, nombre: nombreProceso(f), gerencia: f.gerencia, origen: f.origen, confianza: f.confianza,
       confirmado: !!f.confirmado, baja: f.origen === 'ia' && bajaConfianza(f.confianza, umbral),
       // Qué pasó con la extracción de la precarga de este par (solo existe una vez confirmado el proceso).
-      extraccion: e ? { estado: e.estado, mensaje: e.mensaje, puntos: e.puntos, descartados: e.descartados, motivo: e.motivo, borradores: borDe[k] || 0 } : null
+      extraccion: e ? { estado: e.estado, mensaje: e.mensaje, puntos: e.puntos, descartados: e.descartados, motivo: e.motivo, actualizado: e.actualizado, borradores: borDe[k] || 0 } : null
     });
   });
   return docs.map(d => ({ ...d, procesos: por[d.id] || [], baja_confianza: bajaConfianza(d.confianza_min, umbral) && d.estado === 'pendiente' }));
@@ -147,6 +148,7 @@ async function conProcesos(env, docs, umbral) {
 export async function rutaDocumentos(env, url) {
   const camp = await campanaDe(env, url.searchParams.get('campana_id'));
   const umbral = unidad(camp.umbral_confianza) ?? UMBRAL_POR_DEFECTO;
+  await vencerExtracciones(env, camp.id);
   const p = n => txt(url.searchParams.get(n), 120);
   const donde = ['campana_id=?'], args = [camp.id];
   if (p('gerencia')) { donde.push('gerencia=?'); args.push(p('gerencia')); }
@@ -162,7 +164,8 @@ export async function rutaDocumentos(env, url) {
   const docs = (await env.DB.prepare(`SELECT * FROM documentos WHERE ${donde.join(' AND ')} ORDER BY ${orden} LIMIT 500`).bind(...args).all()).results;
   const resumen = (await env.DB.prepare('SELECT estado, COUNT(*) n FROM documentos WHERE campana_id=? GROUP BY estado').bind(camp.id).all()).results;
   const gerencias = (await env.DB.prepare('SELECT DISTINCT gerencia FROM documentos WHERE campana_id=? ORDER BY gerencia').bind(camp.id).all()).results.map(x => x.gerencia);
-  return { ok: true, umbral, documentos: await conProcesos(env, docs, umbral), resumen: Object.fromEntries(resumen.map(r => [r.estado, r.n])), gerencias };
+  const lecturasError = (await env.DB.prepare("SELECT COUNT(*) AS n FROM documento_extracciones x JOIN documentos d ON d.id=x.documento_id WHERE d.campana_id=? AND x.estado='error'").bind(camp.id).first()).n;
+  return { ok: true, umbral, documentos: await conProcesos(env, docs, umbral), resumen: Object.fromEntries(resumen.map(r => [r.estado, r.n])), gerencias, lecturas_error: lecturasError };
 }
 
 // GET /a/documentos/archivo?id=  devuelve el archivo para abrirlo antes de clasificar.
@@ -251,6 +254,7 @@ export async function rutaDocumentoBorrar(env, b) {
   await env.DB.batch([
     env.DB.prepare('DELETE FROM documento_procesos WHERE documento_id=?').bind(d.id),
     env.DB.prepare('DELETE FROM documento_extracciones WHERE documento_id=?').bind(d.id),
+    env.DB.prepare('DELETE FROM documento_extraccion_historial WHERE documento_id=?').bind(d.id),
     env.DB.prepare("DELETE FROM precarga_borrador WHERE documento_id=? AND estado<>'aprobado'").bind(d.id),
     env.DB.prepare('DELETE FROM documentos WHERE id=?').bind(d.id)
   ]);
@@ -261,6 +265,7 @@ export async function rutaDocumentoBorrar(env, b) {
 
 // POST /a/documentos/procesos  {id, procesos[proceso_id]}   Deja la lista FINAL de procesos del documento:
 // lo que la IA sugirió y sigue en la lista queda confirmado, lo que falta se quita, lo nuevo se agrega a mano. Lista vacía = vuelve a Pendiente.
+// Responde también `por_extraer`: los procesos que quedaron en cola para leer el documento.
 export async function rutaDocumentoProcesos(env, b, ctx, deps) {
   const d = await documentoDe(env, b.id);
   const camp = await campanaDe(env, d.campana_id);
@@ -280,24 +285,31 @@ export async function rutaDocumentoProcesos(env, b, ctx, deps) {
   const estado = finales.length ? 'clasificado' : 'pendiente';
   const restantes = vigentes.filter(v => finales.includes(v.proceso_id) && v.confianza != null).map(v => v.confianza);
   st.push(env.DB.prepare('UPDATE documentos SET estado=?, confianza_min=?, actualizado=? WHERE id=?').bind(estado, restantes.length ? Math.min(...restantes) : null, t, d.id));
-  // Confirmar un proceso lanza la extracción de la precarga de ese par; el resultado queda como borrador para el administrador.
-  const nuevos = [...dif.confirmados, ...dif.agregados];
-  const lanzar = deps && deps.extraerPrecarga && ctx ? nuevos.slice(0, MAX_EXTRACCIONES) : [];
-  const omitidos = deps && deps.extraerPrecarga && ctx ? nuevos.slice(MAX_EXTRACCIONES) : [];
-  lanzar.forEach(id => st.push(marcarExtraccion(env, d.id, id, 'pendiente', '')));
-  omitidos.forEach(id => st.push(marcarExtraccion(env, d.id, id, 'error', 'Son muchos procesos a la vez: pulsa «Extraer» para este proceso.')));
+  // Lo recién confirmado o agregado queda «pendiente» (en cola), sin tope. Aquí no se lanza ninguna lectura: la consola dispara una solicitud
+  // por par (POST /a/documentos/extraer), y el cron recoge los que la consola no alcanzó. El estado de un par nunca afecta al de otro.
+  const porExtraer = deps && deps.extraerPrecarga ? [...dif.confirmados, ...dif.agregados] : [];
+  porExtraer.forEach(id => st.push(marcarExtraccion(env, d.id, id, 'pendiente', '')));
   await env.DB.batch(st);
   await registrarAccion(env, d.campana_id, ACTOR, 'documento_clasificacion', {
     documento: d.id, estado_anterior: d.estado, estado_resultante: estado,
     sugeridos_ia: vigentes.filter(v => v.origen === 'ia').map(v => ({ proceso_id: v.proceso_id, confianza: v.confianza })),
     confirmados: finales, modificaciones: dif
   });
-  if (lanzar.length) ejecutarExtracciones(env, ctx, d, lanzar, deps);
-  return { ok: true, documento: await fichaDe(env, d.id, camp.umbral_confianza) };
+  return { ok: true, documento: await fichaDe(env, d.id, camp.umbral_confianza), por_extraer: porExtraer };
 }
 
 // ---------------------------------------------------------------- extracción de la precarga desde un documento (borradores)
-const MAX_EXTRACCIONES = 8;   // pares (documento, proceso) por confirmación; el resto se extrae a pedido
+// Estados de cada par (documento, proceso): pendiente (en cola) -> leyendo (bajando el archivo y esperando a la IA) -> procesando (la IA respondió;
+// se escriben los borradores) -> generado | error. Cada par se ejecuta en su propia solicitud: uno colgado o con error no afecta a los demás.
+export const EXTRACCION_MAX_MIN = 8;          // tiempo máximo de una lectura (variable EXTRACCION_MAX_MIN; en pruebas, deps.maxMin)
+const CRON_MAX_PARES = 4, CRON_ESPERA_MIN = 2;
+const ORIGENES = ['confirmacion', 'reproceso', 'automatico'];
+
+const maxMinutos = (env, deps) => {
+  const v = Number(deps && deps.maxMin != null ? deps.maxMin : env.EXTRACCION_MAX_MIN);
+  return v > 0 ? v : EXTRACCION_MAX_MIN;
+};
+const mensajeVencido = min => `Se superó el tiempo máximo de lectura (${min} min)`;
 
 function marcarExtraccion(env, documentoId, procesoId, estado, mensaje, extra) {
   const x = extra || {};
@@ -305,67 +317,161 @@ function marcarExtraccion(env, documentoId, procesoId, estado, mensaje, extra) {
     ON CONFLICT(documento_id, proceso_id) DO UPDATE SET estado=excluded.estado, mensaje=excluded.mensaje, puntos=excluded.puntos, descartados=excluded.descartados, motivo=excluded.motivo, actualizado=excluded.actualizado`)
     .bind(documentoId, procesoId, estado, txt(mensaje, 300), x.puntos || 0, x.descartados || 0, txt(x.motivo, 300), ahora());
 }
+// Toma el par para leerlo (→ «leyendo») solo si nadie más lo está leyendo: dos solicitudes simultáneas no pueden leer el mismo par.
+async function reclamarPar(env, documentoId, procesoId) {
+  const r = await env.DB.prepare(`INSERT INTO documento_extracciones (documento_id, proceso_id, estado, mensaje, puntos, descartados, motivo, actualizado) VALUES (?,?,'leyendo','',0,0,'',?)
+    ON CONFLICT(documento_id, proceso_id) DO UPDATE SET estado='leyendo', mensaje='', actualizado=excluded.actualizado
+    WHERE documento_extracciones.estado NOT IN ('leyendo','procesando')`).bind(documentoId, procesoId, ahora()).run();
+  return !!(r && r.meta && r.meta.changes);
+}
 
-// Lee el archivo de R2, lo manda a la IA y deja el resultado como borrador. Nunca lanza: un fallo queda en el estado del par.
-async function extraerPar(env, ctx, d, procesoId, deps) {
+// Lee el archivo de R2, lo manda a la IA (con tiempo máximo) y deja el resultado como borrador. Lanza si algo falla; las reglas de borradores no cambian.
+async function leerYGuardar(env, ctx, d, procesoId, deps, maxMin) {
+  exigirR2(env);
+  const p = await env.DB.prepare('SELECT * FROM procesos WHERE id=?').bind(procesoId).first();
+  if (!p) throw new HttpError(404, 'El proceso ya no existe');
+  const obj = await env.DOCS.get(d.clave_r2);
+  if (!obj) throw new HttpError(404, 'El archivo ya no está almacenado');
+  const tipo = Object.keys(TIPOS_DOCUMENTO).find(k => TIPOS_DOCUMENTO[k] === d.tipo);
+  let reloj;
+  const limite = new Promise((_, no) => { reloj = setTimeout(() => no(new Error(mensajeVencido(maxMin))), maxMin * 60000); });
+  let r;
+  try { r = await Promise.race([Promise.resolve().then(async () => deps.extraerPrecarga(env, ctx, { tipo, buf: await obj.arrayBuffer() }, p)), limite]); }
+  finally { clearTimeout(reloj); }
+  await marcarExtraccion(env, d.id, procesoId, 'procesando', '').run();
+  const t = ahora(), st = [];
+  // Qué pasó antes con cada punto de este par: lo aprobado ya llegó a la precarga y no se vuelve a proponer; lo descartado SÍ se vuelve a proponer
+  // (quien pide «Volver a leer» quiere verlo de nuevo); lo que sigue como borrador sin tocar se actualiza; lo corregido a mano no se pisa.
+  const previos = new Map((await env.DB.prepare('SELECT punto, estado FROM precarga_borrador WHERE documento_id=? AND proceso_id=?').bind(d.id, procesoId).all()).results.map(x => [x.punto, x.estado]));
+  const yaAprobados = r.puntos.filter(x => previos.get(x.id) === 'aprobado').length;
+  r.puntos.forEach(x => st.push(env.DB.prepare(`INSERT INTO precarga_borrador (id, campana_id, proceso_id, documento_id, punto, bloque, texto, cita, estado, editado, creado, actualizado)
+    VALUES (?,?,?,?,?,?,?,?, 'borrador', 0, ?, ?)
+    ON CONFLICT(documento_id, proceso_id, punto) DO UPDATE SET texto=excluded.texto, cita=excluded.cita, bloque=excluded.bloque, estado='borrador', resuelto_por='', actualizado=excluded.actualizado
+    WHERE precarga_borrador.estado IN ('borrador','descartado') AND precarga_borrador.editado=0`).bind(uid(), d.campana_id, procesoId, d.id, x.id, x.bloque || '', x.texto, x.cita, t, t)));
+  // Un borrador anterior que esta lectura ya no encuentra queda descartado, para no dejar descripciones sin sustento.
+  st.push(env.DB.prepare(`UPDATE precarga_borrador SET estado='descartado', actualizado=? WHERE documento_id=? AND proceso_id=? AND estado='borrador' AND editado=0
+    AND punto NOT IN (${r.puntos.map(() => '?').join(',') || "''"})`).bind(t, d.id, procesoId, ...r.puntos.map(x => x.id)));
+  const nuevos = r.puntos.length - yaAprobados;
+  const motivo = !nuevos && yaAprobados ? 'Todo lo que dice el documento ya estaba aprobado para este proceso' : r.motivo;
+  st.push(marcarExtraccion(env, d.id, procesoId, 'generado', '', { puntos: nuevos, descartados: r.descartados, motivo }));
+  await env.DB.batch(st);
+  await registrarAccion(env, d.campana_id, ACTOR, 'documento_precarga', { documento: d.id, proceso: procesoId, puntos: r.puntos.length, descartados: r.descartados });
+  return nuevos;
+}
+
+// Una ejecución propia por par (documento, proceso): lo marca «leyendo», abre su historial, lee, escribe los borradores y lo deja «generado» o «error».
+// Nunca lanza. Devuelve {resultado: 'generado' | 'error' | 'ocupado', mensaje, puntos}; «ocupado» = otra ejecución ya tenía el par (no se tocó nada).
+export async function ejecutarPar(env, ctx, d, procesoId, deps, origen, solicitante) {
+  const id = uid(), inicio = ahora(), maxMin = maxMinutos(env, deps);
   try {
-    exigirR2(env);
-    const p = await env.DB.prepare('SELECT * FROM procesos WHERE id=?').bind(procesoId).first();
-    if (!p) throw new HttpError(404, 'El proceso ya no existe');
-    const obj = await env.DOCS.get(d.clave_r2);
-    if (!obj) throw new HttpError(404, 'El archivo ya no está almacenado');
-    const tipo = Object.keys(TIPOS_DOCUMENTO).find(k => TIPOS_DOCUMENTO[k] === d.tipo);
-    const r = await deps.extraerPrecarga(env, ctx, { tipo, buf: await obj.arrayBuffer() }, p);
-    const t = ahora(), st = [];
-    // Se actualiza lo que sigue siendo borrador sin tocar: lo aprobado, descartado o corregido por el administrador no se pisa.
-    r.puntos.forEach(x => st.push(env.DB.prepare(`INSERT INTO precarga_borrador (id, campana_id, proceso_id, documento_id, punto, bloque, texto, cita, estado, editado, creado, actualizado)
-      VALUES (?,?,?,?,?,?,?,?, 'borrador', 0, ?, ?)
-      ON CONFLICT(documento_id, proceso_id, punto) DO UPDATE SET texto=excluded.texto, cita=excluded.cita, bloque=excluded.bloque, actualizado=excluded.actualizado
-      WHERE precarga_borrador.estado='borrador' AND precarga_borrador.editado=0`).bind(uid(), d.campana_id, procesoId, d.id, x.id, x.bloque || '', x.texto, x.cita, t, t)));
-    // Un borrador anterior que esta lectura ya no encuentra queda descartado, para no dejar descripciones sin sustento.
-    st.push(env.DB.prepare(`UPDATE precarga_borrador SET estado='descartado', actualizado=? WHERE documento_id=? AND proceso_id=? AND estado='borrador' AND editado=0
-      AND punto NOT IN (${r.puntos.map(() => '?').join(',') || "''"})`).bind(t, d.id, procesoId, ...r.puntos.map(x => x.id)));
-    st.push(marcarExtraccion(env, d.id, procesoId, 'ok', '', { puntos: r.puntos.length, descartados: r.descartados, motivo: r.motivo }));
-    await env.DB.batch(st);
-    await registrarAccion(env, d.campana_id, ACTOR, 'documento_precarga', { documento: d.id, proceso: procesoId, puntos: r.puntos.length, descartados: r.descartados });
+    if (!(await reclamarPar(env, d.id, procesoId))) return { resultado: 'ocupado', mensaje: 'Este documento ya se está leyendo para este proceso.', puntos: 0 };
   } catch (err) {
-    const msg = txt(err && err.message, 250) || 'No se pudo leer el documento';
-    log('documento_precarga_error', { campana: d.campana_id, error: msg });
-    try {
-      await marcarExtraccion(env, d.id, procesoId, 'error', msg).run();
-      await registrarAccion(env, d.campana_id, ACTOR, 'documento_precarga_error', { documento: d.id, proceso: procesoId, motivo: msg });
-    } catch (x) { /* el estado queda «pendiente»: Reintentar lo corrige */ }
+    log('documento_precarga_error', { campana: d.campana_id, error: txt(err && err.message, 250) });
+    return { resultado: 'error', mensaje: 'No se pudo iniciar la lectura', puntos: 0 };
   }
-}
-// Uno tras otro, para no saturar a la IA ni el límite de la solicitud; la respuesta ya salió.
-function ejecutarExtracciones(env, ctx, d, procesos, deps) {
-  ctx.waitUntil((async () => { for (const id of procesos) await extraerPar(env, ctx, d, id, deps); })());
+  let resultado = 'generado', mensaje = '', puntos = 0;
+  try {
+    await env.DB.prepare(`INSERT INTO documento_extraccion_historial (id, campana_id, documento_id, proceso_id, origen, solicitado_por, inicio, resultado) VALUES (?,?,?,?,?,?,?,'en_curso')`)
+      .bind(id, d.campana_id, d.id, procesoId, ORIGENES.includes(origen) ? origen : 'reproceso', txt(solicitante, 80), inicio).run();
+  } catch (err) { /* sin historial la lectura igual corre */ }
+  try { puntos = await leerYGuardar(env, ctx, d, procesoId, deps, maxMin); }
+  catch (err) {
+    resultado = 'error'; mensaje = txt(err && err.message, 250) || 'No se pudo leer el documento';
+    log('documento_precarga_error', { campana: d.campana_id, error: mensaje });
+    try {
+      await marcarExtraccion(env, d.id, procesoId, 'error', mensaje).run();
+      await registrarAccion(env, d.campana_id, ACTOR, 'documento_precarga_error', { documento: d.id, proceso: procesoId, motivo: mensaje });
+    } catch (x) { /* el barrido por tiempo máximo (vencerExtracciones) lo dejará en error */ }
+  }
+  try {
+    await env.DB.prepare('UPDATE documento_extraccion_historial SET fin=?, resultado=?, mensaje=?, puntos=? WHERE id=?').bind(ahora(), resultado, mensaje, puntos, id).run();
+  } catch (x) { /* ídem */ }
+  return { resultado, mensaje, puntos };
 }
 
-// POST /a/documentos/extraer  {id, proceso_id}   Extrae (o vuelve a extraer) la precarga de un proceso ya confirmado para el documento.
+// Pares «leyendo» o «procesando» que llevan más del máximo sin avanzar (la solicitud murió o la IA se colgó): quedan en «error» y su historial se cierra.
+export async function vencerExtracciones(env, campId, maxMin) {
+  const min = maxMin != null ? maxMin : maxMinutos(env), corte = new Date(Date.now() - min * 60000).toISOString();
+  const donde = campId ? ' AND documento_id IN (SELECT id FROM documentos WHERE campana_id=?)' : '';
+  const vencidos = (await env.DB.prepare(`SELECT documento_id, proceso_id FROM documento_extracciones WHERE estado IN ('leyendo','procesando') AND actualizado<?${donde}`)
+    .bind(...(campId ? [corte, campId] : [corte])).all()).results;
+  if (!vencidos.length) return 0;
+  const msg = mensajeVencido(min), t = ahora(), st = [];
+  vencidos.forEach(v => {
+    st.push(env.DB.prepare("UPDATE documento_extracciones SET estado='error', mensaje=?, actualizado=? WHERE documento_id=? AND proceso_id=? AND estado IN ('leyendo','procesando')").bind(msg, t, v.documento_id, v.proceso_id));
+    st.push(env.DB.prepare("UPDATE documento_extraccion_historial SET fin=?, resultado='error', mensaje=? WHERE documento_id=? AND proceso_id=? AND resultado='en_curso'").bind(t, msg, v.documento_id, v.proceso_id));
+  });
+  await env.DB.batch(st);
+  log('documento_precarga_vencida', { pares: vencidos.length, max_min: min });
+  return vencidos.length;
+}
+
+// Cron: pares «pendiente» desde hace más de 2 min (la consola no los alcanzó, p. ej. se cerró la pestaña); hasta 4 por corrida, uno tras otro.
+export async function extraerPendientes(env, ctx, deps) {
+  const corte = new Date(Date.now() - CRON_ESPERA_MIN * 60000).toISOString();
+  const pares = (await env.DB.prepare(`SELECT x.documento_id, x.proceso_id FROM documento_extracciones x
+    JOIN documento_procesos dp ON dp.documento_id=x.documento_id AND dp.proceso_id=x.proceso_id AND dp.vigente=1 AND dp.confirmado=1
+    WHERE x.estado='pendiente' AND x.actualizado<? ORDER BY x.actualizado LIMIT ?`).bind(corte, CRON_MAX_PARES).all()).results;
+  let n = 0;
+  for (const par of pares) {
+    const d = await env.DB.prepare('SELECT * FROM documentos WHERE id=?').bind(par.documento_id).first();
+    if (!d) continue;
+    const r = await ejecutarPar(env, ctx, d, par.proceso_id, deps, 'automatico', 'automático');
+    if (r.resultado !== 'ocupado') n++;
+  }
+  return n;
+}
+
+// POST /a/documentos/extraer  {id, proceso_id, origen?}   Lee (o vuelve a leer) el documento para un proceso ya confirmado y ESPERA el resultado:
+// cada par viaja en su propia solicitud. 409 si el par ya se está leyendo. origen: 'confirmacion' | 'reproceso' (por defecto).
 export async function rutaDocumentoExtraer(env, b, ctx, deps) {
   exigirR2(env);
   const d = await documentoDe(env, b.id), camp = await campanaDe(env, d.campana_id);
   const procesoId = txt(b.proceso_id, 60);
   const par = await env.DB.prepare('SELECT 1 AS ok FROM documento_procesos WHERE documento_id=? AND proceso_id=? AND vigente=1 AND confirmado=1').bind(d.id, procesoId).first();
   if (!par) throw new HttpError(409, 'Confirma primero este proceso para el documento');
-  const e = await env.DB.prepare('SELECT estado, actualizado FROM documento_extracciones WHERE documento_id=? AND proceso_id=?').bind(d.id, procesoId).first();
-  // Una extracción «pendiente» reciente sigue en curso; si pasaron más de 10 minutos se considera perdida y se puede reintentar.
-  if (e && e.estado === 'pendiente' && Date.now() - Date.parse(e.actualizado) < 10 * 60000) throw new HttpError(409, 'Este documento ya se está leyendo para este proceso. Espera un momento.');
-  await marcarExtraccion(env, d.id, procesoId, 'pendiente', '').run();
-  ejecutarExtracciones(env, ctx, d, [procesoId], deps);
+  await vencerExtracciones(env, d.campana_id, maxMinutos(env, deps));
+  const e = await env.DB.prepare('SELECT estado FROM documento_extracciones WHERE documento_id=? AND proceso_id=?').bind(d.id, procesoId).first();
+  const ocupado = new HttpError(409, 'Este documento ya se está leyendo para este proceso. Espera un momento.');
+  if (e && (e.estado === 'leyendo' || e.estado === 'procesando')) throw ocupado;
+  const origen = b.origen === 'confirmacion' ? 'confirmacion' : 'reproceso';
+  const r = await ejecutarPar(env, ctx, d, procesoId, deps, origen, ACTOR.nombre);
+  if (r.resultado === 'ocupado') throw ocupado;
   return { ok: true, documento: await fichaDe(env, d.id, camp.umbral_confianza) };
 }
 
+// GET /a/documentos/historial?id=<documento_id>[&proceso_id=]   Últimas 50 ejecuciones de lectura del documento, más recientes primero.
+export async function rutaDocumentoHistorial(env, url) {
+  const d = await documentoDe(env, url.searchParams.get('id'));
+  const pid = txt(url.searchParams.get('proceso_id'), 60);
+  const filas = (await env.DB.prepare(`SELECT h.id, h.proceso_id, h.origen, h.solicitado_por, h.inicio, h.fin, h.resultado, h.mensaje, h.puntos,
+      p.gerencia, p.seccion, p.macroproceso, p.proceso, p.subproceso
+    FROM documento_extraccion_historial h LEFT JOIN procesos p ON p.id=h.proceso_id
+    WHERE h.documento_id=?${pid ? ' AND h.proceso_id=?' : ''} ORDER BY h.inicio DESC, h.id DESC LIMIT 50`).bind(...(pid ? [d.id, pid] : [d.id])).all()).results;
+  return { ok: true, documento: { id: d.id, nombre: d.nombre }, historial: filas.map(f => ({
+    id: f.id, proceso_id: f.proceso_id, proceso: f.gerencia != null ? nombreProceso({ ...f, id: f.proceso_id }) : f.proceso_id,
+    origen: f.origen, solicitado_por: f.solicitado_por, inicio: f.inicio, fin: f.fin, resultado: f.resultado, mensaje: f.mensaje, puntos: f.puntos
+  })) };
+}
+
 // Borradores y estado de extracción de una campaña, para la consola (solo administrador).
+// Cada borrador trae su `alerta` frente a lo ya registrado y a los otros borradores del mismo punto: duplicado | contradice | complementa | amplia | nuevo.
 export async function borradoresDeCampana(env, campId) {
-  const [borradores, extracciones] = await Promise.all([
+  await vencerExtracciones(env, campId);
+  const [borradores, extracciones, vigentes] = await Promise.all([
     env.DB.prepare(`SELECT b.id, b.proceso_id, b.documento_id, d.nombre AS documento, b.punto, b.bloque, b.texto, b.cita, b.editado, b.actualizado
       FROM precarga_borrador b JOIN documentos d ON d.id=b.documento_id WHERE b.campana_id=? AND b.estado='borrador' ORDER BY b.proceso_id, b.bloque, b.punto`).bind(campId).all(),
     env.DB.prepare(`SELECT x.documento_id, x.proceso_id, x.estado, x.mensaje, x.puntos, x.descartados, x.motivo, x.actualizado FROM documento_extracciones x
-      JOIN documentos d ON d.id=x.documento_id WHERE d.campana_id=?`).bind(campId).all()
+      JOIN documentos d ON d.id=x.documento_id WHERE d.campana_id=?`).bind(campId).all(),
+    env.DB.prepare('SELECT proceso_id, punto, texto FROM precarga WHERE proceso_id IN (SELECT id FROM procesos WHERE campana_id=?)').bind(campId).all()
   ]);
-  return { precarga_borrador: borradores.results, extracciones: extracciones.results };
+  const vigente = new Map(vigentes.results.map(v => [v.proceso_id + '|' + v.punto, v.texto]));
+  const lista = borradores.results;
+  lista.forEach(b => {
+    const v = vigente.get(b.proceso_id + '|' + b.punto) || '';
+    Object.assign(b, alertaDe(v, b.texto, lista.filter(o => o !== b && o.proceso_id === b.proceso_id && o.punto === b.punto), b.punto), { vigente: v });
+  });
+  return { precarga_borrador: lista, extracciones: extracciones.results };
 }
 
 // POST /a/precarga/borrador  {proceso_id, decisiones[{id, accion:'aprobar'|'descartar', texto?}]}
@@ -379,25 +485,33 @@ export async function rutaPrecargaBorrador(env, b, deps) {
     WHERE b.proceso_id=? AND b.estado='borrador'`).bind(p.id).all()).results;
   const porId = new Map(filas.map(x => [x.id, x]));
   const previos = {};
-  (await env.DB.prepare('SELECT punto, archivos FROM precarga WHERE proceso_id=?').bind(p.id).all()).results.forEach(x => { previos[x.punto] = JSON.parse(x.archivos || '[]'); });
-  const aprobar = [], t = ahora(), st = [];
+  (await env.DB.prepare('SELECT punto, texto, archivos FROM precarga WHERE proceso_id=?').bind(p.id).all()).results.forEach(x => { previos[x.punto] = { texto: x.texto, archivos: JSON.parse(x.archivos || '[]') }; });
+  const aprobar = [], t = ahora(), st = [], aviso = { complementados: [], duplicados: [], sin_aplicar: [] };
   decisiones.forEach(x => {
     const fila = porId.get(txt(x && x.id, 60));
     if (!fila || (x.accion !== 'aprobar' && x.accion !== 'descartar')) return;
     if (x.accion === 'descartar') { st.push(env.DB.prepare("UPDATE precarga_borrador SET estado='descartado', actualizado=?, resuelto_por=? WHERE id=?").bind(t, ACTOR.nombre, fila.id)); return; }
-    const texto = txt(x.texto == null ? fila.texto : x.texto, 1500);
-    if (!texto) return;
-    const archivos = [...new Set([...(previos[fila.punto] || []), fila.documento])].slice(0, 10);
-    previos[fila.punto] = archivos;
-    aprobar.push({ punto: fila.punto, texto, archivos });
-    st.push(env.DB.prepare("UPDATE precarga_borrador SET estado='aprobado', texto=?, editado=?, actualizado=?, resuelto_por=? WHERE id=?").bind(texto, texto !== fila.texto ? 1 : fila.editado, t, ACTOR.nombre, fila.id));
+    const nuevo = txt(x.texto == null ? fila.texto : x.texto, MAX_TEXTO);
+    if (!nuevo) return;
+    // Lo aprobado se SUMA a lo que el punto ya tiene (de otro documento o de una carga anterior); nunca lo reemplaza.
+    const previo = previos[fila.punto] || { texto: '', archivos: [] };
+    const c = complementar(previo.texto, nuevo, fila.punto);
+    if (c.relacion === 'contradice' && !x.forzar) { aviso.sin_aplicar.push({ id: fila.id, punto: fila.punto, motivo: 'contradice' }); return; }
+    if (c.texto.length > MAX_TEXTO) { aviso.sin_aplicar.push({ id: fila.id, punto: fila.punto, motivo: 'largo' }); return; }
+    if (c.relacion === 'duplicado') aviso.duplicados.push(fila.punto);
+    else if (c.relacion !== 'nuevo') aviso.complementados.push(fila.punto);
+    const archivos = [...new Set([...previo.archivos, fila.documento])].slice(0, 10);
+    previos[fila.punto] = { texto: c.texto, archivos };
+    aprobar.push({ punto: fila.punto, texto: c.texto, archivos });
+    st.push(env.DB.prepare("UPDATE precarga_borrador SET estado='aprobado', texto=?, editado=?, actualizado=?, resuelto_por=? WHERE id=?").bind(nuevo, nuevo !== fila.texto ? 1 : fila.editado, t, ACTOR.nombre, fila.id));
   });
+  if (!st.length && aviso.sin_aplicar.length) return { ok: true, escritos: [], bloqueados: [], pendientes: filas.length, ...aviso };
   if (!st.length) throw new HttpError(400, 'Esos borradores ya no están pendientes');
   const r = aprobar.length ? await deps.aplicarPrecarga(env, p, aprobar, ACTOR) : { escritos: [], bloqueados: [] };
   await env.DB.batch(st);
-  await registrarAccion(env, p.campana_id, ACTOR, 'documento_precarga_revision', { proceso: p.id, aprobados: aprobar.length, descartados: st.length - aprobar.length, bloqueados: r.bloqueados.length });
+  await registrarAccion(env, p.campana_id, ACTOR, 'documento_precarga_revision', { proceso: p.id, aprobados: aprobar.length, descartados: st.length - aprobar.length, bloqueados: r.bloqueados.length, complementados: aviso.complementados.length, duplicados: aviso.duplicados.length, sin_aplicar: aviso.sin_aplicar.length });
   const quedan = (await env.DB.prepare("SELECT COUNT(*) AS n FROM precarga_borrador WHERE proceso_id=? AND estado='borrador'").bind(p.id).first()).n;
-  return { ok: true, escritos: r.escritos, bloqueados: r.bloqueados, pendientes: quedan };
+  return { ok: true, escritos: r.escritos, bloqueados: r.bloqueados, pendientes: quedan, ...aviso };
 }
 
 // ---------------------------------------------------------------- limpieza en cascada
@@ -407,6 +521,7 @@ export function sentenciasRastroDeProcesos(env, subconsulta, args) {
   return [
     env.DB.prepare(`DELETE FROM documento_procesos WHERE proceso_id IN (${subconsulta})`).bind(...args),
     env.DB.prepare(`DELETE FROM documento_extracciones WHERE proceso_id IN (${subconsulta})`).bind(...args),
+    env.DB.prepare(`DELETE FROM documento_extraccion_historial WHERE proceso_id IN (${subconsulta})`).bind(...args),
     env.DB.prepare(`DELETE FROM precarga_borrador WHERE proceso_id IN (${subconsulta})`).bind(...args),
     env.DB.prepare(`DELETE FROM matriz_historial WHERE proceso_id IN (${subconsulta})`).bind(...args),
     env.DB.prepare(`UPDATE documentos SET estado='pendiente', confianza_min=NULL, actualizado=? WHERE estado='clasificado'
@@ -417,6 +532,7 @@ export function sentenciasRastroDeCampana(env, campId) {
   return [
     env.DB.prepare('DELETE FROM documento_procesos WHERE documento_id IN (SELECT id FROM documentos WHERE campana_id=?)').bind(campId),
     env.DB.prepare('DELETE FROM documento_extracciones WHERE documento_id IN (SELECT id FROM documentos WHERE campana_id=?)').bind(campId),
+    env.DB.prepare('DELETE FROM documento_extraccion_historial WHERE campana_id=?').bind(campId),
     env.DB.prepare('DELETE FROM precarga_borrador WHERE campana_id=?').bind(campId),
     env.DB.prepare('DELETE FROM matriz_historial WHERE campana_id=?').bind(campId),
     env.DB.prepare('DELETE FROM documentos WHERE campana_id=?').bind(campId)

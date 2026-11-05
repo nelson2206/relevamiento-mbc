@@ -5,7 +5,7 @@
   'use strict';
   var X = null;                     // lo que entrega la consola (api, datos, esc, fecha, base, codigo)
   var RAIZ = null;                  // contenedor de la pestaña
-  var ST = {docs: [], umbral: 0.7, gerencias: [], resumen: {}, abierto: '', cargando: false, subiendo: false, resultados: [], editaUbic: '', filtros: {gerencia: '', seccion: '', estado: '', estado_ia: '', confianza: '', desde: '', hasta: '', q: '', prioridad: false}};
+  var ST = {docs: [], umbral: 0.7, gerencias: [], resumen: {}, abierto: '', cargando: false, subiendo: false, resultados: [], editaUbic: '', lecturasError: 0, cola: [], activos: 0, histDoc: '', hist: null, filtros: {gerencia: '', seccion: '', estado: '', estado_ia: '', confianza: '', desde: '', hasta: '', q: '', prioridad: false}};
   var TIPOS = {pdf: 'application/pdf', docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png'};
   var MAX_IMAGEN = 6 * 1024 * 1024, MAX_OTROS = 10 * 1024 * 1024;
 
@@ -88,7 +88,7 @@
   }
   function recargar(){
     ST.cargando = true; pintarBandeja();
-    return X.api(consulta()).then(function(j){ ST.docs = j.documentos; ST.umbral = j.umbral; ST.gerencias = j.gerencias; ST.resumen = j.resumen || {}; })
+    return X.api(consulta()).then(function(j){ ST.docs = j.documentos; ST.umbral = j.umbral; ST.gerencias = j.gerencias; ST.resumen = j.resumen || {}; ST.lecturasError = j.lecturas_error || 0; })
       .catch(function(err){ aviso(err.message); })
       .then(function(){ ST.cargando = false; pintarBandeja(); vigilar(); });
   }
@@ -110,27 +110,59 @@
       return '<span class="chip ' + cls + '" title="' + esc(p.gerencia || '') + (p.confirmado ? ' · confirmado' : ' · sugerido por la IA') + '">' + esc(p.nombre) + (p.confianza != null ? ' · ' + pct(p.confianza) : '') + '</span>' + extraccion(p);
     }).join(' ');
   }
-  // Qué pasó con la lectura del documento para precargar ese proceso: leyendo, borradores por revisar, sin datos o con error (con reintento).
+  // Qué pasó con la lectura del documento para precargar ese proceso. Cada proceso tiene su propio estado: En cola, Leyendo…, Procesando…,
+  // Borradores generados / Sin datos nuevos, o Con error (con el motivo a la vista). El botón se deshabilita mientras la lectura sigue en curso.
+  var EN_CURSO = {pendiente: 1, leyendo: 1, procesando: 1};
   function extraccion(p){
     var e = p.extraccion; if (!p.confirmado || !e) return '';
-    var pid = esc(p.proceso_id);
-    if (e.estado === 'pendiente') return ' <span class="chip c-inf" title="La IA está leyendo el documento para precargar este proceso">Leyendo…</span>';
-    if (e.estado === 'error') return ' <span class="chip c-warn" title="' + esc(e.mensaje) + '">Precarga con error</span> <button class="btn btn-ghost btn-xs" data-acc="extraer" data-pid="' + pid + '">Reintentar</button>';
-    if (e.borradores) return ' <button class="btn btn-navy btn-xs" data-acc="revisar" data-pid="' + pid + '" title="Revisar y aprobar lo que la IA extrajo">Revisar ' + e.borradores + (e.borradores === 1 ? ' borrador' : ' borradores') + '</button>';
-    return ' <span class="chip c-mut" title="' + esc(e.motivo || 'El documento no dice nada explícito para los puntos del checklist') + '">Sin datos nuevos</span> <button class="btn btn-ghost btn-xs" data-acc="extraer" data-pid="' + pid + '">Volver a leer</button>';
+    var pid = esc(p.proceso_id), cuando = e.actualizado ? ' <span class="muted" title="Último procesamiento">' + esc(X.fecha(e.actualizado)) + '</span>' : '';
+    var boton = function(txt, activo){ return ' <button class="btn btn-ghost btn-xs" data-acc="extraer" data-pid="' + pid + '"' + (activo ? '' : ' disabled') + '>' + txt + '</button>'; };
+    if (e.estado === 'pendiente') return ' <span class="chip c-mut" title="Esperando su turno para que la IA lea el documento">En cola</span>' + cuando + boton('Volver a leer', false);
+    if (e.estado === 'leyendo') return ' <span class="chip c-inf" title="La IA está leyendo el documento para precargar este proceso">Leyendo…</span>' + cuando + boton('Volver a leer', false);
+    if (e.estado === 'procesando') return ' <span class="chip c-inf" title="La IA respondió; se están guardando los borradores">Procesando…</span>' + cuando + boton('Volver a leer', false);
+    if (e.estado === 'error') return ' <span class="chip c-warn">Con error</span>' + cuando + boton('Reintentar', true) + '<div class="muted" style="color:var(--warn);max-width:420px">' + esc(e.mensaje || 'No se pudo leer el documento') + '</div>';
+    if (e.borradores) return ' <span class="chip c-ok">Borradores generados</span>' + cuando + ' <button class="btn btn-navy btn-xs" data-acc="revisar" data-pid="' + pid + '" title="Revisar y aprobar lo que la IA extrajo">Revisar ' + e.borradores + (e.borradores === 1 ? ' borrador' : ' borradores') + '</button>' + boton('Volver a leer', true);
+    return ' <span class="chip c-mut" title="' + esc(e.motivo || 'El documento no dice nada explícito para los puntos del checklist') + '">Sin datos nuevos</span>' + cuando + boton('Volver a leer', true);
   }
-  // Mientras alguna lectura siga en curso se vuelve a consultar la bandeja (la extracción corre en segundo plano).
+  // Las lecturas viajan una por solicitud, como máximo 2 a la vez: un proceso lento o con error no frena a los demás.
+  function lanzarLecturas(docId, pids, origen){
+    pids.forEach(function(pid){ ST.cola.push({doc: docId, pid: pid, origen: origen}); });
+    bombear();
+  }
+  function bombear(){
+    while (ST.activos < 2 && ST.cola.length){
+      var t = ST.cola.shift(); ST.activos++;
+      X.api('/a/documentos/extraer', {id: t.doc, proceso_id: t.pid, origen: t.origen})
+        .catch(function(err){ aviso(err.message); })
+        .then(function(){ ST.activos--; if (RAIZ && document.body.contains(RAIZ)) recargar(); bombear(); });
+    }
+  }
+  // Mientras alguna lectura siga en curso se vuelve a consultar la bandeja.
   function vigilar(){
     clearTimeout(ST.sondeo);
     var reciente = function(d){ return Date.now() - Date.parse(d.actualizado) < 10 * 60000; };   // pasados 10 min se da por trabado
-    var enCurso = ST.docs.some(function(d){ return (d.estado_ia === 'analizando' && reciente(d)) || d.procesos.some(function(p){ return p.extraccion && p.extraccion.estado === 'pendiente'; }); });
-    if (enCurso && RAIZ && document.body.contains(RAIZ)) ST.sondeo = setTimeout(function(){ if (document.body.contains(RAIZ)) recargar(); }, 4000);
+    var enCurso = ST.docs.some(function(d){ return (d.estado_ia === 'analizando' && reciente(d)) || d.procesos.some(function(p){ return p.extraccion && EN_CURSO[p.extraccion.estado]; }); });
+    if ((enCurso || ST.activos || ST.cola.length) && RAIZ && document.body.contains(RAIZ)) ST.sondeo = setTimeout(function(){ if (document.body.contains(RAIZ)) recargar(); }, 4000);
+  }
+
+  // Historial de lecturas del documento: qué proceso, cómo se pidió, quién, cuándo y con qué resultado.
+  var ORIGEN = {confirmacion: 'Confirmación', reproceso: 'Reproceso', automatico: 'Automático'};
+  function pintarHistorial(){
+    var cont = $('#dbHist'); if (!cont) return;
+    if (!ST.hist){ cont.innerHTML = '<span class="muted">Cargando historial…</span>'; return; }
+    if (!ST.hist.length){ cont.innerHTML = '<span class="muted">Este documento todavía no tiene lecturas registradas.</span>'; return; }
+    var chip = {generado: ['c-ok', 'Generado'], error: ['c-warn', 'Con error'], en_curso: ['c-inf', 'En curso']};
+    cont.innerHTML = '<div class="muted" style="margin-bottom:6px">Últimas ' + ST.hist.length + ' lecturas de este documento, la más reciente primero.</div><div class="tblwrap"><table><thead><tr><th>Proceso</th><th>Origen</th><th>Quién</th><th>Inicio</th><th>Fin</th><th>Resultado</th></tr></thead><tbody>' + ST.hist.map(function(h){
+      var c = chip[h.resultado] || ['c-mut', h.resultado];
+      return '<tr><td>' + esc(h.proceso) + '</td><td>' + esc(ORIGEN[h.origen] || h.origen) + '</td><td>' + esc(h.solicitado_por || '—') + '</td><td>' + esc(X.fecha(h.inicio)) + '</td><td>' + esc(h.fin ? X.fecha(h.fin) : '—') + '</td>' +
+        '<td><span class="chip ' + c[0] + '">' + c[1] + '</span> <span class="muted">' + esc(h.resultado === 'generado' ? (h.puntos || 0) + (h.puntos === 1 ? ' punto nuevo' : ' puntos nuevos') : h.mensaje || '') + '</span></td></tr>';
+    }).join('') + '</tbody></table></div>';
   }
 
   function pintarBandeja(){
     var c = $('#dbLista'); if (!c) return;
     var r = ST.resumen;
-    $('#dbResumen').textContent = (r.pendiente || 0) + ' pendientes de clasificación · ' + (r.clasificado || 0) + ' clasificados';
+    $('#dbResumen').textContent = (r.pendiente || 0) + ' pendientes de clasificación · ' + (r.clasificado || 0) + ' clasificados' + (ST.lecturasError ? ' · ' + ST.lecturasError + (ST.lecturasError === 1 ? ' proceso con la lectura con error' : ' procesos con la lectura con error') : '');
     if (ST.cargando && !ST.docs.length){ c.innerHTML = '<p class="muted">Cargando…</p>'; return; }
     if (!ST.docs.length){ c.innerHTML = '<p class="muted">No hay documentos con esos filtros.</p>'; return; }
     c.innerHTML = '<div class="tblwrap"><table><thead><tr><th>Documento</th><th>Gerencia / sección</th><th>Cargado</th><th>Estado</th><th>Análisis IA</th><th>Procesos</th><th></th></tr></thead><tbody>' + ST.docs.map(function(d){
@@ -140,10 +172,12 @@
         '<td>' + chipsEstado(d) + '</td><td>' + chipsIA(d) + '</td><td>' + chipsProcesos(d) + '</td>' +
         '<td style="white-space:nowrap"><button class="btn btn-ghost btn-xs" data-acc="analizar"' + (ST.analizando === d.id ? ' disabled' : '') + '>' + (ST.analizando === d.id ? 'Analizando…' : d.estado_ia === 'analizado' ? 'Volver a analizar' : 'Analizar con IA') + '</button> ' +
         '<button class="btn btn-navy btn-xs" data-acc="clasificar">' + (ST.abierto === d.id ? 'Cerrar' : 'Clasificar') + '</button> ' +
+        '<button class="btn btn-ghost btn-xs" data-acc="historial" title="Ver las lecturas de este documento por proceso">' + (ST.histDoc === d.id ? 'Ocultar historial' : 'Historial') + '</button> ' +
         '<button class="btn btn-ghost btn-xs" data-acc="borrar" title="Eliminar el documento">Eliminar</button></td></tr>';
-      return fila + (ST.abierto === d.id ? '<tr><td colspan="7" id="dbPanel"></td></tr>' : '');
+      return fila + (ST.abierto === d.id ? '<tr><td colspan="7" id="dbPanel"></td></tr>' : '') + (ST.histDoc === d.id ? '<tr><td colspan="7" id="dbHist"></td></tr>' : '');
     }).join('') + '</tbody></table></div>';
     if (ST.abierto) pintarPanel();
+    if (ST.histDoc) pintarHistorial();
   }
 
   // Edición de dónde está el documento: gerencia y sección en dos selectos.
@@ -196,14 +230,26 @@
       X.api('/a/documentos/analizar', {id: id}).catch(function(err){ aviso(err.message); }).then(function(){ ST.analizando = ''; ST.sel = null; return recargar(); });
     } else if (acc === 'extraer'){
       aviso('Leyendo el documento para este proceso…');
-      X.api('/a/documentos/extraer', {id: id, proceso_id: pid}).catch(function(err){ aviso(err.message); }).then(recargar);
+      lanzarLecturas(id, [pid], 'reproceso');
+      setTimeout(recargar, 700);   // la solicitud ya marcó el par como «Leyendo…»: el sondeo sigue desde ahí
+    } else if (acc === 'historial'){
+      if (ST.histDoc === id){ ST.histDoc = ''; ST.hist = null; pintarBandeja(); return; }
+      ST.histDoc = id; ST.hist = null; pintarBandeja();
+      X.api('/a/documentos/historial?id=' + encodeURIComponent(id)).then(function(j){ if (ST.histDoc === id){ ST.hist = j.historial; pintarHistorial(); } })
+        .catch(function(err){ aviso(err.message); ST.histDoc = ''; pintarBandeja(); });
     } else if (acc === 'revisar'){
       if (X.abrirProceso) X.abrirProceso(pid);
     } else if (acc === 'clasificar'){
       ST.abierto = ST.abierto === id ? '' : id; ST.sel = null; ST.busca = ''; pintarBandeja();
     } else if (acc === 'confirmar'){
       var ids = Object.keys(ST.sel || {});
-      X.api('/a/documentos/procesos', {id: id, procesos: ids}).then(function(){ ST.abierto = ''; ST.sel = null; aviso(ids.length ? 'Clasificación confirmada. La IA está leyendo el documento para dejar la precarga como borrador; aparecerá aquí para tu revisión.' : 'El documento volvió a Pendiente.'); return recargar(); }).catch(function(err){ aviso(err.message); });
+      X.api('/a/documentos/procesos', {id: id, procesos: ids}).then(function(j){
+        ST.abierto = ''; ST.sel = null;
+        var cola = j.por_extraer || [];
+        aviso(ids.length ? 'Clasificación confirmada.' + (cola.length ? ' La IA lee el documento proceso por proceso (de a dos); cada uno muestra su estado y los borradores aparecerán aquí para tu revisión.' : '') : 'El documento volvió a Pendiente.');
+        lanzarLecturas(id, cola, 'confirmacion');
+        return recargar();
+      }).catch(function(err){ aviso(err.message); });
     }
   }
 

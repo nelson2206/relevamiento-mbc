@@ -57,8 +57,12 @@
  *   GET  /a/documentos?campana_id=&gerencia=&estado=&estado_ia=&desde=&hasta=&q=&confianza=baja|sin&orden=confianza   bandeja con sus procesos y el umbral
  *   GET  /a/documentos/archivo?id=       el archivo, para abrirlo antes de clasificar
  *   POST /a/documentos/borrar {id} (elimina el documento, su archivo y sus borradores sin aprobar) | /a/documentos/gerencia {id, gerencia, seccion?} | /a/documentos/analizar {id} (la IA propone procesos con confianza) | /a/documentos/procesos {id, procesos[]} (lista final: confirma, quita y agrega;
- *        lo recién confirmado lanza la extracción de la precarga en segundo plano: queda como borrador)
- *   POST /a/documentos/extraer {id, proceso_id}   (extrae o reextrae la precarga de un proceso confirmado)  |  POST /a/precarga/borrador {proceso_id, decisiones[{id, accion:'aprobar'|'descartar', texto?}]}
+ *        lo recién confirmado queda «pendiente» (en cola, sin tope) y responde `por_extraer[proceso_id]`; la consola dispara la lectura de cada par, 2 en paralelo como máximo; el cron recoge los que no alcanzó)
+ *   POST /a/documentos/extraer {id, proceso_id, origen?:'confirmacion'|'reproceso'}   (lee o vuelve a leer el documento para UN proceso confirmado y ESPERA el resultado: estados pendiente > leyendo > procesando > generado|error,
+ *        tiempo máximo EXTRACCION_MAX_MIN (8 min); 409 si ese par ya se está leyendo; el resultado queda como borrador, cada ejecución en su historial)
+ *   GET  /a/documentos/historial?id=[&proceso_id=]   últimas 50 ejecuciones de lectura del documento (proceso, origen, quién, inicio, fin, resultado, mensaje)
+ *   POST /a/precarga/borrador {proceso_id, decisiones[{id, accion:'aprobar'|'descartar', texto?}]}
+ *   (cron cada 15 min: vence las lecturas colgadas, completa la matriz y lee hasta 4 pares «pendiente» de hace más de 2 min)
  *   POST /a/campana/umbral       {campana_id, umbral 0..1}   (bajo ese valor la clasificación se resalta como de baja confianza)
  *   POST /r/identificar          {c, g?, s?, id | correo}   (enlace de sección: la persona elige su nombre o escribe su correo y entra a su registro)
  *   POST /a/campana/renovar-accesos {campana_id}   cierra las sesiones y enlaces personales de la campaña (cada persona entra de nuevo con su PIN)
@@ -106,7 +110,8 @@ import Anthropic from '@anthropic-ai/sdk';
 import { leerEstructura, prepararEstructura, asegurarEstructura, areasDeEstructura } from './estructura.js';
 import { rutaFlujo, rutaFlujoCatalogo, rutaFlujoConfirmar, rutaFlujoRetroceder, rutaFlujoProceso, rutaFlujoAdmin, rutaFlujoReabrir, guardarCambio } from './flujo.js';
 import { ESQUEMA_CLASIFICAR, mensajeErrorIA, rutaDocumentoSubir, rutaDocumentos, rutaDocumentoArchivo, rutaDocumentoGerencia, rutaDocumentoAnalizar, rutaDocumentoBorrar, rutaDocumentoProcesos, rutaUmbral,
-  rutaDocumentoExtraer, rutaPrecargaBorrador, borradoresDeCampana, sentenciasRastroDeProcesos, sentenciasRastroDeCampana, borrarArchivosDeCampana } from './documentos.js';
+  rutaDocumentoExtraer, rutaDocumentoHistorial, extraerPendientes, vencerExtracciones, rutaPrecargaBorrador, borradoresDeCampana, sentenciasRastroDeProcesos, sentenciasRastroDeCampana, borrarArchivosDeCampana } from './documentos.js';
+import { complementar, partesDe, componer } from './complemento.js';
 import { ambitoDe, enSecs, claveArea, registrarAccion } from './ambito.js';
 import { limpiarDatos, evaluar, resumenTexto, UBICACIONES, ESQUEMA_IA, PROMPT_IA, desdeSalidaIA, camposMatriz } from './confidencial.js';
 import { PUNTO_CAMPO, ACTOR_IA, ACTOR_CONSOLA, actorEncuestado, sentenciasHistorial, conBorrados, ultimosEventos, puedeAutomatico, valoresDeProceso, validarCampoDeEncuesta, rutaHistorialMatriz } from './matriz-sync.js';
@@ -374,7 +379,7 @@ async function rutaSesion(env, url) {
     env.DB.prepare('SELECT proceso_id, estado, comentario FROM revisiones WHERE encuestado_id=?').bind(e.id).all(),
     env.DB.prepare('SELECT proceso_id, pregunta, texto, sistemas, checklist, datos FROM respuestas WHERE encuestado_id=?').bind(e.id).all(),
     env.DB.prepare('SELECT nombre, tipo FROM sistemas WHERE campana_id=? ORDER BY nombre').bind(e.campana_id).all(),
-    env.DB.prepare('SELECT pc.proceso_id, pc.punto FROM precarga pc JOIN procesos p ON p.id=pc.proceso_id WHERE p.campana_id=?').bind(e.campana_id).all(),
+    env.DB.prepare('SELECT pc.proceso_id, pc.punto, pc.texto, pc.archivos, pc.actualizado FROM precarga pc JOIN procesos p ON p.id=pc.proceso_id WHERE p.campana_id=?').bind(e.campana_id).all(),
     // Responsables asignados por el equipo (nombres sugeridos) y personas que ya empezaron a responder un proceso.
     env.DB.prepare("SELECT a.proceso_id, a.encuestado_id, x.nombre FROM asignaciones a JOIN encuestados x ON x.id=a.encuestado_id WHERE x.campana_id=? AND a.origen='consultor'").bind(e.campana_id).all(),
     env.DB.prepare("SELECT DISTINCT r.proceso_id, x.nombre FROM respuestas r JOIN encuestados x ON x.id=r.encuestado_id WHERE x.campana_id=? AND x.id<>? AND (trim(r.texto)<>'' OR r.sistemas<>'[]')").bind(e.campana_id, e.id).all(),
@@ -408,9 +413,18 @@ async function rutaSesion(env, url) {
       completando: completandoPor[p.id] || []           // otras personas que ya empezaron a responderlo (solo nombres, nunca lo que dijeron)
     }));
   log('sesion', { campana: e.campana_id, origen: e.origen, estado: e.estado, procesos: procesos.length, k: mascara(e.token) });
-  // Puntos del checklist que el equipo ya cubrió con documentos: solo sus ids (el texto es interno).
-  const precarga = {}, visibles = new Set(procesos.map(x => x.id));
-  pre.results.forEach(x => { if (visibles.has(x.proceso_id)) (precarga[x.proceso_id] = precarga[x.proceso_id] || []).push(x.punto); });
+  // Puntos que el equipo precargó (ids) y su texto: la encuesta lo muestra tal cual, de solo lectura, sin importar lo que tenga la matriz.
+  // La precarga no marca ningún check: eso solo lo hace la respuesta de la persona.
+  const precarga = {}, precarga_txt = {}, visibles = new Set(procesos.map(x => x.id));
+  pre.results.forEach(x => {
+    if (!visibles.has(x.proceso_id)) return;
+    (precarga[x.proceso_id] = precarga[x.proceso_id] || []).push(x.punto);
+    const texto = String(x.texto || '').trim();
+    if (!texto) return;
+    let archivos = [];
+    try { archivos = JSON.parse(x.archivos || '[]'); } catch (_) { /* sin archivos */ }
+    (precarga_txt[x.proceso_id] = precarga_txt[x.proceso_id] || {})[x.punto] = { texto, archivos: Array.isArray(archivos) ? archivos : [], actualizado: x.actualizado };
+  });
   // Lo ya trabajado de cada proceso (IA, documentos, equipo, otras validaciones) desde la matriz, la única fuente: la persona
   // lo conserva, lo edita o lo reemplaza. Solo los campos con punto en el checklist; nunca el resto de la matriz.
   const eventos = await ultimosEventos(env, { campana_id: e.campana_id }), valores = {};
@@ -451,7 +465,7 @@ async function rutaSesion(env, url) {
     ok: true,
     campana: camp,
     encuestado: { nombre: e.nombre, gerencia: e.gerencia, seccion: e.seccion, rol: e.rol, estado: e.estado, origen: e.origen },
-    procesos, revisiones, respuestas, precarga, otros, valores,
+    procesos, revisiones, respuestas, precarga, precarga_txt, otros, valores,
     sistemas: sis.results,
     bloques: BLOQUES,
     fuera_alcance: (await env.DB.prepare('SELECT COUNT(*) AS n FROM procesos WHERE campana_id=? AND fuera_alcance=1').bind(e.campana_id).first()).n,
@@ -1560,6 +1574,9 @@ Reglas:
 - Los campos que se deducen de las actividades (por ejemplo la frecuencia) se completan desde ellas; no los trates como una pregunta aparte.
 - Si la persona dijo que algo no existe en su proceso (no hay terceros, no manejan datos personales, no hay indicadores), escribe "No aplica" con estado "dicho".
 - Si hay una ficha del inventario anterior, compárala con lo que contaron: lo que cambió va en "contradicciones".
+- Hay DOS fuentes y debes usar ambas: (1) la información previa de DOCUMENTOS que cargó el equipo consultor y (2) las respuestas de las ENCUESTAS. En la evidencia di de cuál sale cada dato (el documento por su nombre; la encuesta por el cargo o rol de la persona).
+- Si las dos fuentes dicen lo mismo, no lo repitas. Si una amplía a la otra, combínalas sin perder ningún dato. Si difieren (cifras, frecuencias, sistemas, una afirma y la otra niega), no elijas una en silencio: conserva ambas versiones en el valor (indicando de dónde viene cada una), regístralo en "contradicciones" como «encuesta vs. documento» y agrega una pregunta en "preguntas_validacion".
+- Si no hay respuestas de encuestas, trabaja solo con los documentos: lo que dicen explícitamente es "dicho" (cita el documento); lo que no cubren queda "vacio", sin inferir.
 - Estándares ("estandar_tdp", "estandar_tmc", "otros_estandares") y "normativa": ${REGLAS_ESTANDARES}
 - "vigencia": resume lo que dijeron sobre si el proceso sigue vigente. Quien marcó "existe, pero no participa" confirma que existe. Usa "contradictorio" si difieren y "sin_revision" si nadie lo marcó.
 - "contradicciones": diferencias entre lo que dijeron las distintas personas, o entre la ficha anterior y lo que contaron ahora.
@@ -1572,7 +1589,7 @@ const VIGENCIA_TEXTO = {
 };
 const ORIGEN_TEXTO = { nuevo: 'agregado por un colaborador en la encuesta', consultor: 'agregado por el equipo consultor' };
 
-function textoParaClaude(camp, p, encuestados, revisiones, respuestas, sistemas, precarga) {
+export function textoParaClaude(camp, p, encuestados, revisiones, respuestas, sistemas, precarga) {
   const PREG = { q1: 'Objetivo, inicio y fin', q2: 'Actividades y participantes', q3: 'Sistemas y manualidad',
     q4: 'Terceros', q5: 'Datos personales', q6: 'Indicadores, normas y frecuencia' };
   BLOQUES.forEach((b, i) => { PREG[b.id] = 'Bloque ' + (i + 1) + ' · ' + b.t; });
@@ -1598,9 +1615,18 @@ function textoParaClaude(camp, p, encuestados, revisiones, respuestas, sistemas,
   lineas.push(`GLOSARIO DE ESTÁNDARES DE LA CAMPAÑA: ${estandaresDe(camp)}`);
   lineas.push('');
   if (precarga && precarga.length) {
-    lineas.push('=== DOCUMENTOS DEL PROCESO CARGADOS POR EL EQUIPO CONSULTOR (fuente documental; cuenta como "dicho" y en la evidencia cita el documento) ===');
-    precarga.forEach(x => lineas.push(`[${PUNTO_TXT[x.punto] || x.punto}] ${String(x.texto).replace(/\s+/g, ' ')}`));
+    lineas.push('=== FUENTE 1 · INFORMACIÓN PREVIA DE DOCUMENTOS DEL PROCESO (cargada y aprobada por el equipo consultor; cuenta como "dicho" y en la evidencia cita el documento) ===');
+    precarga.forEach(x => {
+      let docs = [];
+      try { docs = JSON.parse(x.archivos || '[]'); } catch (e) { /* sin nombres de documento */ }
+      lineas.push(`[${PUNTO_TXT[x.punto] || x.punto}] ${String(x.texto).replace(/\s+/g, ' ')}${docs.length ? ' (Fuente: ' + docs.join(', ') + ')' : ''}`);
+    });
     lineas.push('');
+  }
+  if (!respuestas.some(r => (r.texto || '').trim()) && precarga && precarga.length) {
+    lineas.push('=== FUENTE 2 · ENCUESTAS: todavía nadie respondió; trabaja solo con la información previa de documentos ===', '');
+  } else if (encuestados.length) {
+    lineas.push('=== FUENTE 2 · RESPUESTAS DE LAS ENCUESTAS (una sección por colaborador) ===', '');
   }
   encuestados.forEach(e => {
     const rev = revisiones.find(r => r.encuestado_id === e.id);
@@ -1685,9 +1711,9 @@ async function estructurarProceso(env, procesoId, ctx, origen) {
     env.DB.prepare('SELECT * FROM revisiones WHERE proceso_id=?').bind(p.id).all(),
     env.DB.prepare('SELECT * FROM respuestas WHERE proceso_id=?').bind(p.id).all(),
     env.DB.prepare('SELECT nombre, tipo FROM sistemas WHERE campana_id=?').bind(p.campana_id).all(),
-    env.DB.prepare('SELECT punto, texto FROM precarga WHERE proceso_id=? ORDER BY bloque, punto').bind(p.id).all()
+    env.DB.prepare('SELECT punto, texto, archivos FROM precarga WHERE proceso_id=? ORDER BY bloque, punto').bind(p.id).all()
   ]);
-  if (!resps.results.some(r => (r.texto || '').trim())) throw new HttpError(409, 'Este proceso todavía no tiene respuestas');
+  if (!resps.results.some(r => (r.texto || '').trim()) && !pre.results.some(x => (x.texto || '').trim())) throw new HttpError(409, 'Este proceso todavía no tiene respuestas ni documentos');
 
   const client = clienteClaude(env), cfg = iaDe(env, 'estructurar'), t0 = Date.now();
   let msg;
@@ -1735,18 +1761,22 @@ async function estructurarProceso(env, procesoId, ctx, origen) {
 // deduce queda como sugerencia en la ficha. Nunca se pisa un dato del inventario anterior ni uno que escribió el
 // equipo, y una fila validada no se toca.
 const APROB_CAMPOS = ['aprob_area', 'aprob_responsable', 'aprob_momento'];
-async function completarMatriz(env, p, datos) {
+export async function completarMatriz(env, p, datos) {
   const m = leerMatriz(p.matriz), ia = leerMatriz(p.matriz_ia), antes = Object.assign({}, m);
   if (p.validacion === 'validado') return { n: 0, matriz: m, matriz_ia: ia };
   const c = (datos && datos.campos) || {}, t = ahora();
   const libre = k => !String(m[k] || '').trim() || !!ia[k];   // vacío, o lo llenó la IA y nadie lo editó
   const valor = k => { const x = c[k]; return x && x.estado !== 'vacio' ? String(x.valor || '').trim().slice(0, 4000) : ''; };
   const dicho = k => c[k] && c[k].estado === 'dicho' && !!valor(k);
-  let n = 0;
+  let n = 0, partesCambiadas = false;   // partesCambiadas: cambió el aporte guardado de un campo aunque su texto visible sea el mismo
   const poner = (k, v, estado) => { if (m[k] === v) return; m[k] = v; ia[k] = { estado, en: t }; n++; };
   CAMPOS.forEach(([k]) => {
     if (APROB_CAMPOS.includes(k) || !MATRIZ_CLAVES.includes(k)) return;
-    if (dicho(k) && libre(k)) poner(k, valor(k), 'dicho');
+    if (!(dicho(k) && libre(k))) return;
+    // La IA actualiza SU parte; lo que aprobó el equipo desde documentos (precarga) se conserva y se muestra junto a ella.
+    const partes = partesDe(m[k], ia[k]), v = valor(k), junto = componer(partes.pre, v).slice(0, 4000);
+    if (m[k] === junto) { if (ia[k] && ia[k].ia !== v) { ia[k] = Object.assign({}, ia[k], { pre: partes.pre, ia: v }); partesCambiadas = true; } return; }
+    m[k] = junto; ia[k] = { estado: 'dicho', en: t, pre: partes.pre, ia: v }; n++;
   });
   // Aprobaciones: las tres columnas van juntas, una línea por aprobación y en el mismo orden («—» si falta un dato).
   // Se escriben cuando la persona dijo de dónde depende; cada columna guarda si fue dicha o deducida.
@@ -1760,6 +1790,7 @@ async function completarMatriz(env, p, datos) {
     env.DB.prepare('UPDATE procesos SET matriz=?, matriz_ia=?, actualizado_en=? WHERE id=?').bind(JSON.stringify(m), JSON.stringify(ia), t, p.id),
     ...sentenciasHistorial(env, p, antes, m, ACTOR_IA, 'ia')
   ]);
+  else if (partesCambiadas) await env.DB.prepare('UPDATE procesos SET matriz_ia=? WHERE id=?').bind(JSON.stringify(ia), p.id).run();
   return { n, matriz: m, matriz_ia: ia };
 }
 
@@ -1768,17 +1799,19 @@ async function completarMatriz(env, p, datos) {
 // uno, dentro de los 15 minutos que Cloudflare da a una tarea programada). Un proceso que falla no se reintenta hasta
 // que llegue una respuesta nueva. Solo en campañas con ia_auto = 1 y nunca en filas validadas.
 const AUTO_ESPERA_MIN = 10, AUTO_MAX = 6;
-async function completarPendientes(env, ctx) {
+export async function completarPendientes(env, ctx) {
   const hasta = new Date(Date.now() - AUTO_ESPERA_MIN * 60000).toISOString();
-  const pend = (await env.DB.prepare(`SELECT p.id, MAX(r.actualizado) AS ultima, MAX(e.generado) AS generado,
+  // «Última novedad» = lo más reciente entre las respuestas con texto y la información previa de documentos (precarga aprobada).
+  const pend = (await env.DB.prepare(`SELECT * FROM (
+      SELECT p.id,
+        MAX(COALESCE((SELECT MAX(r.actualizado) FROM respuestas r WHERE r.proceso_id = p.id AND trim(r.texto) <> ''), ''),
+            COALESCE((SELECT MAX(pc.actualizado) FROM precarga pc WHERE pc.proceso_id = p.id AND trim(pc.texto) <> ''), '')) AS ultima,
+        (SELECT e.generado FROM estructurado e WHERE e.proceso_id = p.id) AS generado,
         json_extract(p.matriz_ia, '$._fallo') AS fallo
       FROM procesos p
       JOIN campanas c ON c.id = p.campana_id AND c.ia_auto = 1
-      JOIN respuestas r ON r.proceso_id = p.id AND trim(r.texto) <> ''
-      LEFT JOIN estructurado e ON e.proceso_id = p.id
-      WHERE p.validacion <> 'validado' AND p.fuera_alcance = 0
-      GROUP BY p.id
-      HAVING ultima <= ? AND (generado IS NULL OR ultima > generado) AND (fallo IS NULL OR ultima > fallo)
+      WHERE p.validacion <> 'validado' AND p.fuera_alcance = 0)
+      WHERE ultima <> '' AND ultima <= ? AND (generado IS NULL OR ultima > generado) AND (fallo IS NULL OR ultima > fallo)
       ORDER BY ultima LIMIT ?`).bind(hasta, AUTO_MAX).all()).results;
   let ok = 0;
   for (const x of pend) {
@@ -1917,19 +1950,20 @@ async function rutaVerificar(env, b, ctx) {
   let sistemas = [];
   try { sistemas = JSON.parse((r && r.sistemas) || '[]'); } catch (x) { /* sin sistemas */ }
   // La huella incluye los puntos del bloque: si cambia el checklist, la respuesta se vuelve a revisar.
-  const cubiertosEquipo = (await env.DB.prepare('SELECT punto FROM precarga WHERE proceso_id=? AND bloque=? ORDER BY punto').bind(p.id, bloque.id).all()).results.map(x => x.punto);
+  // La precarga del equipo no descuenta puntos: la IA revisa lo que la persona respondió contra todo el checklist.
   const otrosCubren = new Set();
   (await env.DB.prepare('SELECT checklist FROM respuestas WHERE proceso_id=? AND pregunta=? AND encuestado_id<>?').bind(p.id, bloque.id, e.id).all()).results.forEach(r => {
     const ck = leerMatriz(r.checklist);
     bloque.puntos.forEach(([id]) => { if (ck[id] && ck[id].estado === 'cubierto') otrosCubren.add(id); });
   });
-  const yaCubiertos = [...new Set([...cubiertosEquipo, ...otrosCubren])].sort();
+  const yaCubiertos = [...otrosCubren].sort();
   const firmaDe = lista => huella(texto + '|' + lista.join(',') + '|' + bloque.puntos.map(x => x[0]).join(',') + '|eq:' + yaCubiertos.join(','));
   const firma = await firmaDe(sistemas);
   if (previo._huella === firma) return { ok: true, checklist: previo, sistemas, sistemas_nuevos: [] };
   const nuevo = { _huella: firma, _sugerencia: '' };
   if (previo._sistemas_rechazados) nuevo._sistemas_rechazados = previo._sistemas_rechazados;
   if (previo._sistemas_ia) nuevo._sistemas_ia = previo._sistemas_ia;
+  if (previo._vigentes) nuevo._vigentes = previo._vigentes;   // «Sigue vigente» sobre la precarga: la revisión no lo borra
   let nuevosSis = [];
   const manual = id => previo[id] && previo[id].fuente === 'persona';
   let sistemasFinal = sistemas;
@@ -1955,7 +1989,7 @@ async function rutaVerificar(env, b, ctx) {
           'CHECKLIST:', ...bloque.puntos.map(([id, t]) => `- ${id}: ${t}`),
           '', 'RESPUESTA:', texto || '(sin texto)',
           sistemas.length ? '\nSISTEMAS MARCADOS EN LA LISTA: ' + sistemas.join(', ') : '',
-          yaCubiertos.length ? '\nPUNTOS YA CUBIERTOS POR EL EQUIPO U OTRAS PERSONAS (no los pidas): ' + yaCubiertos.join(', ') : '',
+          yaCubiertos.length ? '\nPUNTOS YA CUBIERTOS POR OTRAS PERSONAS (no los pidas): ' + yaCubiertos.join(', ') : '',
           glosarioEst ? '\nGLOSARIO DE ESTÁNDARES DE LA CAMPAÑA: ' + glosarioEst : '',
           bloque.sistemas ? '\nCATÁLOGO DE SISTEMAS DE LA CAMPAÑA: ' + (catalogo.length ? catalogo.join('; ') : '(vacío)') : '(Este bloque no detecta sistemas: devuelve "sistemas" vacío.)'
         ].join('\n') }]
@@ -2262,14 +2296,22 @@ async function aplicarPrecarga(env, p, puntos, actor) {
     const id = txt(x && x.punto, 40), campo = PUNTO_CAMPO[id], texto = txt(x && x.texto, 1500);
     if (!campo) return;
     const libre = puedeAutomatico(p, m, ia, campo);
+    // Cada campo guarda por separado el aporte de los documentos y el de la IA: aquí solo se cambia el de los documentos.
+    const partes = libre ? partesDe(m[campo], ia[campo]) : { pre: '', ia: '' };
     if (!texto) {
-      // Vaciar el punto retira la descripción solo si la había puesto la precarga: lo que escribió una persona o la IA no se toca.
-      if (libre && ia[campo] && ia[campo].estado === 'precarga' && m[campo]) { delete m[campo]; delete ia[campo]; origenes[campo] = 'precarga'; escritos.push({ punto: id, campo, vaciado: true }); }
+      // Vaciar el punto retira solo el aporte de los documentos: lo que escribió una persona o armó la IA se conserva.
+      if (libre && ia[campo] && partes.pre) {
+        const resto = partes.ia;
+        if (resto) { m[campo] = resto; ia[campo] = { estado: ia[campo].estado === 'precarga' ? 'dicho' : ia[campo].estado, en: t, pre: '', ia: resto }; }
+        else { delete m[campo]; delete ia[campo]; }
+        origenes[campo] = 'precarga'; escritos.push({ punto: id, campo, vaciado: true });
+      }
       return;
     }
-    if (m[campo] === texto) return;
     if (!libre) { bloqueados.push({ punto: id, campo }); return; }
-    m[campo] = texto; ia[campo] = { estado: 'precarga', en: t };
+    const junto = componer(texto, partes.ia).slice(0, 4000);
+    if (m[campo] === junto && partes.pre === texto) return;
+    m[campo] = junto; ia[campo] = { estado: partes.ia ? (ia[campo] && ia[campo].estado !== 'precarga' ? ia[campo].estado : 'dicho') : 'precarga', en: t, pre: texto, ia: partes.ia };
     origenes[campo] = Array.isArray(x.archivos) && x.archivos.length ? 'documento' : 'precarga';
     escritos.push({ punto: id, campo });
   });
@@ -2285,7 +2327,8 @@ async function aplicarPrecarga(env, p, puntos, actor) {
     if (!texto) { st.push(env.DB.prepare('DELETE FROM precarga WHERE proceso_id=? AND punto=?').bind(p.id, id)); return; }
     const archivos = (Array.isArray(x.archivos) ? x.archivos : []).map(n => txt(n, 150)).filter(Boolean).slice(0, 10);
     st.push(env.DB.prepare(`INSERT INTO precarga (proceso_id, bloque, punto, texto, archivos, creado, actualizado) VALUES (?,?,?,?,?,?,?)
-      ON CONFLICT(proceso_id, punto) DO UPDATE SET texto=excluded.texto, archivos=excluded.archivos, actualizado=excluded.actualizado`)
+      ON CONFLICT(proceso_id, punto) DO UPDATE SET texto=excluded.texto, archivos=excluded.archivos,
+        actualizado=CASE WHEN precarga.texto <> excluded.texto THEN excluded.actualizado ELSE precarga.actualizado END`)
       .bind(p.id, BLOQUE_DE_PUNTO[id], id, texto, JSON.stringify(archivos), t, t));
   });
   if (!st.length) throw new HttpError(400, 'No hay nada que guardar');
@@ -2293,14 +2336,33 @@ async function aplicarPrecarga(env, p, puntos, actor) {
   return { escritos, bloqueados };
 }
 
+const MAX_PRECARGA = 1500;   // lo que admite un punto de la precarga (igual que en aplicarPrecarga)
 async function rutaPrecarga(env, b) {
   const p = await env.DB.prepare('SELECT id, campana_id, matriz, matriz_ia, validacion FROM procesos WHERE id=?').bind(txt(b.proceso_id, 60)).first();
   if (!p) throw new HttpError(404, 'Proceso no encontrado');
-  const r = await aplicarPrecarga(env, p, b.puntos);
+  // Cada punto puede traer `base`: el texto que la persona veía al abrir la ficha. Si coincide con lo guardado, su edición manda (reemplaza o vacía);
+  // si lo guardado cambió mientras tanto (vista desactualizada), lo suyo se SUMA y nada se borra. Sin `base` (clientes antiguos) se guarda tal cual.
+  const vigentes = {};
+  (await env.DB.prepare('SELECT punto, texto, archivos FROM precarga WHERE proceso_id=?').bind(p.id).all()).results.forEach(x => { vigentes[x.punto] = { texto: x.texto, archivos: JSON.parse(x.archivos || '[]') }; });
+  const aviso = { complementados: [], conservados: [], sin_aplicar: [] }, lista = [];
+  (Array.isArray(b.puntos) ? b.puntos : []).slice(0, 40).forEach(x => {
+    const id = txt(x && x.punto, 40), texto = txt(x && x.texto, MAX_PRECARGA), v = vigentes[id];
+    if (typeof (x && x.base) !== 'string' || !TODOS_PUNTOS.includes(id)) { lista.push(x); return; }
+    const alDia = !v || txt(x.base, MAX_PRECARGA) === v.texto;
+    if (alDia) { lista.push(x); return; }
+    if (!texto) { aviso.conservados.push(id); return; }
+    const c = complementar(v.texto, texto, id);
+    if (c.relacion === 'contradice' && !b.forzar) { aviso.sin_aplicar.push({ punto: id, motivo: 'contradice' }); return; }
+    if (c.texto.length > MAX_PRECARGA) { aviso.sin_aplicar.push({ punto: id, motivo: 'largo' }); return; }
+    if (c.texto === v.texto) { aviso.conservados.push(id); return; }
+    aviso.complementados.push(id);
+    lista.push({ punto: id, texto: c.texto, archivos: [...new Set([...v.archivos, ...(Array.isArray(x.archivos) ? x.archivos : [])])].slice(0, 10) });
+  });
+  const r = lista.length ? await aplicarPrecarga(env, p, lista) : { escritos: [], bloqueados: [] };
   const filas = (await env.DB.prepare('SELECT proceso_id, bloque, punto, texto, archivos, actualizado FROM precarga WHERE proceso_id=?').bind(p.id).all()).results;
   filas.forEach(x => { x.archivos = JSON.parse(x.archivos || '[]'); });
-  log('precarga', { campana: p.campana_id, puntos: filas.length, escritos: r.escritos.length, bloqueados: r.bloqueados.length });
-  return { ok: true, precarga: filas, escritos: r.escritos, bloqueados: r.bloqueados };
+  log('precarga', { campana: p.campana_id, puntos: filas.length, escritos: r.escritos.length, bloqueados: r.bloqueados.length, complementados: aviso.complementados.length, conservados: aviso.conservados.length });
+  return { ok: true, precarga: filas, escritos: r.escritos, bloqueados: r.bloqueados, ...aviso };
 }
 
 // ---------------------------------------------------------------- clasificación de documentos en procesos (HU02)
@@ -2372,21 +2434,26 @@ async function rutaPunto(env, b) {
   return { ok: true, checklist: c };
 }
 
-// La persona confirma que la descripción de un punto sigue vigente. La descripción es un resumen automático (documentos del equipo e IA):
-// no se edita aquí. Si algo cambió, la persona lo cuenta en su respuesta y la IA la actualiza. El punto queda cubierto en su checklist.
+// La persona confirma que la información previa de un punto sigue vigente. NO marca el check del punto: el check solo lo activa
+// lo que la persona responde. Sobre una precarga del equipo, la confirmación queda en su checklist (_vigentes) y no toca la matriz;
+// sobre un texto de la matriz, valida el campo (historial). Si algo cambió, la persona lo cuenta en su respuesta y la IA lo actualiza.
 async function rutaCampo(env, b) {
   const e = await encuestadoPorToken(env, b.k);
   const p = await procesoPermitido(env, e, b.proceso_id);
   if (b.texto !== undefined) throw new HttpError(400, 'Esta descripción no se edita: cuenta lo que cambió en tu respuesta y se actualiza sola.');
   const punto = txt(b.punto, 40), bloqueId = BLOQUE_DE_PUNTO[punto];
-  if (!PUNTO_CAMPO[punto] || !bloqueId) throw new HttpError(400, 'Punto inválido');
-  await validarCampoDeEncuesta(env, e, p, punto);
-  const prev = await env.DB.prepare('SELECT checklist FROM respuestas WHERE encuestado_id=? AND proceso_id=? AND pregunta=?').bind(e.id, p.id, bloqueId).first();
-  const c = leerMatriz(prev && prev.checklist);
-  if (!c[punto] || c[punto].estado !== 'cubierto') {
-    c[punto] = { estado: 'cubierto', fuente: 'persona', evidencia: 'vigente' };
+  if (!TODOS_PUNTOS.includes(punto) || !bloqueId) throw new HttpError(400, 'Punto inválido');
+  const pre = await env.DB.prepare('SELECT texto FROM precarga WHERE proceso_id=? AND punto=?').bind(p.id, punto).first();
+  if (pre && String(pre.texto || '').trim()) {
+    const prev = await env.DB.prepare('SELECT checklist FROM respuestas WHERE encuestado_id=? AND proceso_id=? AND pregunta=?').bind(e.id, p.id, bloqueId).first();
+    const c = leerMatriz(prev && prev.checklist);
+    c._vigentes = Object.assign({}, c._vigentes, { [punto]: ahora() });
     await guardarChecklist(env, e, p, bloqueId, c);
+    await marcarEnCurso(env, e);
+    return { ok: true, vigente: true, checklist: c };
   }
+  if (!PUNTO_CAMPO[punto]) throw new HttpError(400, 'Este punto no tiene información previa que confirmar');
+  await validarCampoDeEncuesta(env, e, p, punto);
   await marcarEnCurso(env, e);
   const ev = (await ultimosEventos(env, { proceso_id: p.id }))[p.id];
   return { ok: true, valor: valoresDeProceso(p, leerMatriz(p.matriz), ev)[punto] || null };
@@ -2795,7 +2862,13 @@ function estadoServicio(env) {
 export default {
   // Tarea programada (wrangler.toml [triggers]): la IA completa la matriz con las respuestas nuevas.
   async scheduled(event, env, ctx) {
-    await completarPendientes(env, ctx);
+    // Tres tareas independientes: si una falla, las otras corren igual; el primer error se relanza al final para que la corrida figure como fallida.
+    let fallo = null;
+    const tarea = async f => { try { await f(); } catch (err) { log('cron_error', { error: String((err && err.message) || err).slice(0, 200) }); fallo = fallo || err; } };
+    await tarea(() => vencerExtracciones(env));
+    await tarea(() => completarPendientes(env, ctx));
+    await tarea(() => extraerPendientes(env, ctx, { extraerPrecarga: extraerDeDocumento }));
+    if (fallo) throw fallo;
   },
 
   async fetch(req, env, ctx) {
@@ -2864,6 +2937,7 @@ export default {
         if (ruta === 'GET /a/campana/historial') return json(await rutaHistorialMatriz(env, url), 200, h);
         if (ruta === 'GET /a/documentos') return json(await rutaDocumentos(env, url), 200, h);
         if (ruta === 'GET /a/documentos/archivo') return await rutaDocumentoArchivo(env, url, h);
+        if (ruta === 'GET /a/documentos/historial') return json(await rutaDocumentoHistorial(env, url), 200, h);
         if (ruta === 'POST /a/documentos') return json(await rutaDocumentoSubir(env, req, url, { leerArchivo: leerArchivoSubido, analizarIA: analizarDocumentoIA, iaLista }, ctx), 200, h);
         if (ruta === 'POST /a/precarga/extraer') return json(await rutaPrecargaExtraer(env, req, url, ctx), 200, h);
         if (req.method === 'POST') {
