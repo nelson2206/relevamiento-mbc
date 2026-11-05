@@ -375,7 +375,7 @@ async function rutaSesion(env, url) {
     env.DB.prepare('SELECT proceso_id, estado, comentario FROM revisiones WHERE encuestado_id=?').bind(e.id).all(),
     env.DB.prepare('SELECT proceso_id, pregunta, texto, sistemas, checklist, datos FROM respuestas WHERE encuestado_id=?').bind(e.id).all(),
     env.DB.prepare('SELECT nombre, tipo FROM sistemas WHERE campana_id=? ORDER BY nombre').bind(e.campana_id).all(),
-    env.DB.prepare('SELECT pc.proceso_id, pc.punto FROM precarga pc JOIN procesos p ON p.id=pc.proceso_id WHERE p.campana_id=?').bind(e.campana_id).all(),
+    env.DB.prepare('SELECT pc.proceso_id, pc.punto, pc.texto, pc.archivos, pc.actualizado FROM precarga pc JOIN procesos p ON p.id=pc.proceso_id WHERE p.campana_id=?').bind(e.campana_id).all(),
     // Responsables asignados por el equipo (nombres sugeridos) y personas que ya empezaron a responder un proceso.
     env.DB.prepare("SELECT a.proceso_id, a.encuestado_id, x.nombre FROM asignaciones a JOIN encuestados x ON x.id=a.encuestado_id WHERE x.campana_id=? AND a.origen='consultor'").bind(e.campana_id).all(),
     env.DB.prepare("SELECT DISTINCT r.proceso_id, x.nombre FROM respuestas r JOIN encuestados x ON x.id=r.encuestado_id WHERE x.campana_id=? AND x.id<>? AND (trim(r.texto)<>'' OR r.sistemas<>'[]')").bind(e.campana_id, e.id).all(),
@@ -409,9 +409,18 @@ async function rutaSesion(env, url) {
       completando: completandoPor[p.id] || []           // otras personas que ya empezaron a responderlo (solo nombres, nunca lo que dijeron)
     }));
   log('sesion', { campana: e.campana_id, origen: e.origen, estado: e.estado, procesos: procesos.length, k: mascara(e.token) });
-  // Puntos del checklist que el equipo ya cubrió con documentos: solo sus ids (el texto es interno).
-  const precarga = {}, visibles = new Set(procesos.map(x => x.id));
-  pre.results.forEach(x => { if (visibles.has(x.proceso_id)) (precarga[x.proceso_id] = precarga[x.proceso_id] || []).push(x.punto); });
+  // Puntos que el equipo precargó (ids) y su texto: la encuesta lo muestra tal cual, de solo lectura, sin importar lo que tenga la matriz.
+  // La precarga no marca ningún check: eso solo lo hace la respuesta de la persona.
+  const precarga = {}, precarga_txt = {}, visibles = new Set(procesos.map(x => x.id));
+  pre.results.forEach(x => {
+    if (!visibles.has(x.proceso_id)) return;
+    (precarga[x.proceso_id] = precarga[x.proceso_id] || []).push(x.punto);
+    const texto = String(x.texto || '').trim();
+    if (!texto) return;
+    let archivos = [];
+    try { archivos = JSON.parse(x.archivos || '[]'); } catch (_) { /* sin archivos */ }
+    (precarga_txt[x.proceso_id] = precarga_txt[x.proceso_id] || {})[x.punto] = { texto, archivos: Array.isArray(archivos) ? archivos : [], actualizado: x.actualizado };
+  });
   // Lo ya trabajado de cada proceso (IA, documentos, equipo, otras validaciones) desde la matriz, la única fuente: la persona
   // lo conserva, lo edita o lo reemplaza. Solo los campos con punto en el checklist; nunca el resto de la matriz.
   const eventos = await ultimosEventos(env, { campana_id: e.campana_id }), valores = {};
@@ -452,7 +461,7 @@ async function rutaSesion(env, url) {
     ok: true,
     campana: camp,
     encuestado: { nombre: e.nombre, gerencia: e.gerencia, seccion: e.seccion, rol: e.rol, estado: e.estado, origen: e.origen },
-    procesos, revisiones, respuestas, precarga, otros, valores,
+    procesos, revisiones, respuestas, precarga, precarga_txt, otros, valores,
     sistemas: sis.results,
     bloques: BLOQUES,
     fuera_alcance: (await env.DB.prepare('SELECT COUNT(*) AS n FROM procesos WHERE campana_id=? AND fuera_alcance=1').bind(e.campana_id).first()).n,
@@ -1937,19 +1946,20 @@ async function rutaVerificar(env, b, ctx) {
   let sistemas = [];
   try { sistemas = JSON.parse((r && r.sistemas) || '[]'); } catch (x) { /* sin sistemas */ }
   // La huella incluye los puntos del bloque: si cambia el checklist, la respuesta se vuelve a revisar.
-  const cubiertosEquipo = (await env.DB.prepare('SELECT punto FROM precarga WHERE proceso_id=? AND bloque=? ORDER BY punto').bind(p.id, bloque.id).all()).results.map(x => x.punto);
+  // La precarga del equipo no descuenta puntos: la IA revisa lo que la persona respondió contra todo el checklist.
   const otrosCubren = new Set();
   (await env.DB.prepare('SELECT checklist FROM respuestas WHERE proceso_id=? AND pregunta=? AND encuestado_id<>?').bind(p.id, bloque.id, e.id).all()).results.forEach(r => {
     const ck = leerMatriz(r.checklist);
     bloque.puntos.forEach(([id]) => { if (ck[id] && ck[id].estado === 'cubierto') otrosCubren.add(id); });
   });
-  const yaCubiertos = [...new Set([...cubiertosEquipo, ...otrosCubren])].sort();
+  const yaCubiertos = [...otrosCubren].sort();
   const firmaDe = lista => huella(texto + '|' + lista.join(',') + '|' + bloque.puntos.map(x => x[0]).join(',') + '|eq:' + yaCubiertos.join(','));
   const firma = await firmaDe(sistemas);
   if (previo._huella === firma) return { ok: true, checklist: previo, sistemas, sistemas_nuevos: [] };
   const nuevo = { _huella: firma, _sugerencia: '' };
   if (previo._sistemas_rechazados) nuevo._sistemas_rechazados = previo._sistemas_rechazados;
   if (previo._sistemas_ia) nuevo._sistemas_ia = previo._sistemas_ia;
+  if (previo._vigentes) nuevo._vigentes = previo._vigentes;   // «Sigue vigente» sobre la precarga: la revisión no lo borra
   let nuevosSis = [];
   const manual = id => previo[id] && previo[id].fuente === 'persona';
   let sistemasFinal = sistemas;
@@ -1975,7 +1985,7 @@ async function rutaVerificar(env, b, ctx) {
           'CHECKLIST:', ...bloque.puntos.map(([id, t]) => `- ${id}: ${t}`),
           '', 'RESPUESTA:', texto || '(sin texto)',
           sistemas.length ? '\nSISTEMAS MARCADOS EN LA LISTA: ' + sistemas.join(', ') : '',
-          yaCubiertos.length ? '\nPUNTOS YA CUBIERTOS POR EL EQUIPO U OTRAS PERSONAS (no los pidas): ' + yaCubiertos.join(', ') : '',
+          yaCubiertos.length ? '\nPUNTOS YA CUBIERTOS POR OTRAS PERSONAS (no los pidas): ' + yaCubiertos.join(', ') : '',
           glosarioEst ? '\nGLOSARIO DE ESTÁNDARES DE LA CAMPAÑA: ' + glosarioEst : '',
           bloque.sistemas ? '\nCATÁLOGO DE SISTEMAS DE LA CAMPAÑA: ' + (catalogo.length ? catalogo.join('; ') : '(vacío)') : '(Este bloque no detecta sistemas: devuelve "sistemas" vacío.)'
         ].join('\n') }]
@@ -2420,21 +2430,26 @@ async function rutaPunto(env, b) {
   return { ok: true, checklist: c };
 }
 
-// La persona confirma que la descripción de un punto sigue vigente. La descripción es un resumen automático (documentos del equipo e IA):
-// no se edita aquí. Si algo cambió, la persona lo cuenta en su respuesta y la IA la actualiza. El punto queda cubierto en su checklist.
+// La persona confirma que la información previa de un punto sigue vigente. NO marca el check del punto: el check solo lo activa
+// lo que la persona responde. Sobre una precarga del equipo, la confirmación queda en su checklist (_vigentes) y no toca la matriz;
+// sobre un texto de la matriz, valida el campo (historial). Si algo cambió, la persona lo cuenta en su respuesta y la IA lo actualiza.
 async function rutaCampo(env, b) {
   const e = await encuestadoPorToken(env, b.k);
   const p = await procesoPermitido(env, e, b.proceso_id);
   if (b.texto !== undefined) throw new HttpError(400, 'Esta descripción no se edita: cuenta lo que cambió en tu respuesta y se actualiza sola.');
   const punto = txt(b.punto, 40), bloqueId = BLOQUE_DE_PUNTO[punto];
-  if (!PUNTO_CAMPO[punto] || !bloqueId) throw new HttpError(400, 'Punto inválido');
-  await validarCampoDeEncuesta(env, e, p, punto);
-  const prev = await env.DB.prepare('SELECT checklist FROM respuestas WHERE encuestado_id=? AND proceso_id=? AND pregunta=?').bind(e.id, p.id, bloqueId).first();
-  const c = leerMatriz(prev && prev.checklist);
-  if (!c[punto] || c[punto].estado !== 'cubierto') {
-    c[punto] = { estado: 'cubierto', fuente: 'persona', evidencia: 'vigente' };
+  if (!TODOS_PUNTOS.includes(punto) || !bloqueId) throw new HttpError(400, 'Punto inválido');
+  const pre = await env.DB.prepare('SELECT texto FROM precarga WHERE proceso_id=? AND punto=?').bind(p.id, punto).first();
+  if (pre && String(pre.texto || '').trim()) {
+    const prev = await env.DB.prepare('SELECT checklist FROM respuestas WHERE encuestado_id=? AND proceso_id=? AND pregunta=?').bind(e.id, p.id, bloqueId).first();
+    const c = leerMatriz(prev && prev.checklist);
+    c._vigentes = Object.assign({}, c._vigentes, { [punto]: ahora() });
     await guardarChecklist(env, e, p, bloqueId, c);
+    await marcarEnCurso(env, e);
+    return { ok: true, vigente: true, checklist: c };
   }
+  if (!PUNTO_CAMPO[punto]) throw new HttpError(400, 'Este punto no tiene información previa que confirmar');
+  await validarCampoDeEncuesta(env, e, p, punto);
   await marcarEnCurso(env, e);
   const ev = (await ultimosEventos(env, { proceso_id: p.id }))[p.id];
   return { ok: true, valor: valoresDeProceso(p, leerMatriz(p.matriz), ev)[punto] || null };
