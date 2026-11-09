@@ -338,3 +338,10 @@ CREATE TABLE IF NOT EXISTS documento_extraccion_historial (
   puntos INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS ix_dxh_doc ON documento_extraccion_historial(documento_id, proceso_id, inicio);
+
+-- Tope diario de dictado por voz (migracion-025.sql).
+CREATE TABLE IF NOT EXISTS uso_ia (
+  dia TEXT PRIMARY KEY,              -- AAAA-MM-DD en UTC
+  segundos REAL NOT NULL DEFAULT 0,  -- audio enviado a Whisper (cada intento cuenta, también los reintentos)
+  llamadas INTEGER NOT NULL DEFAULT 0
+);

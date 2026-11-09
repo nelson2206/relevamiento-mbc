@@ -128,6 +128,25 @@ function iaDe(env, tarea) {
   return { modelo: String(v[0] || d[0]).trim(), esfuerzo: String(v[1] || d[1]).trim() };
 }
 const WHISPER = '@cf/openai/whisper-large-v3-turbo';
+// TOPE DE COSTO de la IA de Cloudflare. Con Workers Paid, lo que pasa del cupo gratuito (10.000 neuronas al día por
+// CUENTA, ~215 min de audio) se cobra sin límite: ~46,4 neuronas por minuto, US$ 0,00051/min. El tope no busca quedarse en
+// el cupo sino frenar un uso anormal: 1.000 min/día son ~US$ 0,40 de excedente como máximo.
+// Se cambia en wrangler.toml [vars] IA_MINUTOS_DIA. Al llegar al tope, el dictado se apaga hasta las 00:00 UTC (19:00 Lima).
+const IA_MINUTOS_DIA_POR_DEFECTO = 1000;
+const BYTES_POR_SEGUNDO_WAV = 32000;     // el navegador manda WAV 16 kHz, mono, 16 bits
+
+export async function reservarAudioIA(env, segundos) {
+  const tope = (Number(env.IA_MINUTOS_DIA) > 0 ? Number(env.IA_MINUTOS_DIA) : IA_MINUTOS_DIA_POR_DEFECTO) * 60;
+  const dia = new Date().toISOString().slice(0, 10);
+  // Suma solo si cabe: la condición va en el mismo UPDATE para que dos pedidos a la vez no pasen el tope.
+  await env.DB.prepare('INSERT OR IGNORE INTO uso_ia (dia) VALUES (?)').bind(dia).run();
+  const r = await env.DB.prepare('UPDATE uso_ia SET segundos = segundos + ?, llamadas = llamadas + 1 WHERE dia = ? AND segundos + ? <= ?')
+    .bind(segundos, dia, segundos, tope).run();
+  if (!r.meta || !r.meta.changes) {
+    log('tope_ia_diario', { dia, tope_min: tope / 60, segundos });
+    throw new HttpError(429, 'El dictado por voz llegó a su límite de hoy. Escribe tu respuesta; mañana vuelve a estar disponible.');
+  }
+}
 const MAX_AUDIO = 8 * 1024 * 1024;       // por tramo; el navegador corta en tramos de 2 min
 const MAX_PDF = 10 * 1024 * 1024, MAX_PDF_PAGINAS = 20;   // el PDF se manda completo a la IA
 const MAX_IMAGEN = 6 * 1024 * 1024;      // el navegador la reduce antes (máx. 1600 px, JPEG)
@@ -678,7 +697,10 @@ async function rutaTranscribir(env, req, url) {
   // El glosario orienta a Whisper con siglas y nombres propios que suele escribir mal.
   const pista = pistaWhisper(camp && camp.glosario, sis.results.map(s => s.nombre));
   const audio = aBase64(buf);
-  const whisper = p => env.AI.run(WHISPER, { audio, language: 'es', vad_filter: true, initial_prompt: p || undefined });
+  const segundos = Math.ceil(buf.byteLength / BYTES_POR_SEGUNDO_WAV);
+  // Cada intento se cobra aparte, así que cada uno pasa por el tope diario antes de llamar a Whisper.
+  const whisper = async p => { await reservarAudioIA(env, segundos);
+    return env.AI.run(WHISPER, { audio, language: 'es', vad_filter: true, initial_prompt: p || undefined }); };
   // Workers AI a veces responde "3030: Failed to decode audio file" con audio válido: el mismo archivo falla y al
   // repetirlo funciona (pruebas del 2026-09-30, ~1 de cada 3 llamadas). Se reintenta con pausa, alternando con y
   // sin pista por si la pista fuera la causa (sin pista solo se pierde la ayuda con siglas y nombres).
@@ -689,6 +711,7 @@ async function rutaTranscribir(env, req, url) {
     try {
       r = await whisper(intentos[i]);
     } catch (err) {
+      if (err instanceof HttpError) throw err;   // tope diario: no reintentar
       ultimo = err;
       log('whisper_reintento', { campana: e.campana_id, intento: i + 1, pista: intentos[i].length, bytes: buf.byteLength,
         error: String((err && err.message) || err).slice(0, 160) });
