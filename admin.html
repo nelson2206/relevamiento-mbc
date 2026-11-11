@@ -2253,7 +2253,7 @@
   // Borradores extraídos de un documento al confirmar su proceso: el administrador los revisa (puede corregir el texto) antes de que lleguen a la matriz.
   // Lo aprobado se suma a lo que el punto ya tiene (nunca lo reemplaza); aquí se avisa de duplicados y de posibles contradicciones.
   function cuenta(n, uno, varios){ return n + ' ' + (n === 1 ? uno : varios); }   // «1 se sumó» / «2 se sumaron»
-  var MAX_PUNTO = 1500;   // lo que admite un punto de la precarga (MAX_TEXTO en worker/src/complemento.js)
+  var MAX_PUNTO = 3000;   // lo que admite un punto de la precarga (MAX_TEXTO en worker/src/complemento.js)
   // Si lo ya registrado más este borrador supera el máximo, el servidor no lo aplica: se avisa antes de aprobar y se dice qué hacer.
   function sinEspacio(b){
     var v = String(b.vigente || '').trim(), n = String(b.texto || '').trim();
