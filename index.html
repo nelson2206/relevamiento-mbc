@@ -345,6 +345,9 @@
   if (K && params.has('k') && SESION_OK) history.replaceState(null, '', location.pathname + (params.has('bienvenida') ? '?bienvenida=1' : ''));
   var G = params.get('g') || '';
   var SEC = params.get('s') || '';   // enlace de sección (?c=&g=&s=): la sección viene en el enlace
+  // Seguimiento del proyecto: un id aleatorio por navegador (sin cookies ni huella). Viaja en las llamadas que ya existen; si el almacenamiento está bloqueado, no se envía y todo funciona igual.
+  var VISITANTE = '';
+  try { VISITANTE = localStorage.getItem('relev-v') || ''; if (!/^[0-9a-f-]{36}$/.test(VISITANTE)){ VISITANTE = crypto.randomUUID(); localStorage.setItem('relev-v', VISITANTE); } } catch(e){ VISITANTE = ''; }
   var S = null;   // sesión personal: {campana, encuestado, procesos, revisiones, respuestas, sistemas}
   var A = null;   // enlace abierto: {campana, dominio, areas}
 
@@ -523,7 +526,7 @@
   var QUIERE_NUEVO = false, NUEVO_TEXTO = '';
 
   function cargarAbierto(){
-    api('/r/abierta?c=' + encodeURIComponent(C) + (SEC ? '&g=' + encodeURIComponent(G) + '&s=' + encodeURIComponent(SEC) : '')).then(function(j){ A = j; if (SEC && j.seccion) pintarSeccion(); else pintarAbierto(); })
+    api('/r/abierta?c=' + encodeURIComponent(C) + (SEC ? '&g=' + encodeURIComponent(G) + '&s=' + encodeURIComponent(SEC) + (VISITANTE ? '&v=' + VISITANTE : '') : '')).then(function(j){ A = j; if (SEC && j.seccion) pintarSeccion(); else pintarAbierto(); })
       .catch(function(err){ $('#heroIntro').textContent = 'No pudimos abrir la encuesta.'; errorGeneral(err.message); });
   }
 
@@ -639,7 +642,7 @@
     function identificar(cuerpo, idMsg, boton){
       if (boton) boton.disabled = true;
       msg(idMsg, 'Entrando…');
-      api('/r/identificar', Object.assign({c: C}, cuerpo)).then(function(j){ entrarComo(j, false); })
+      api('/r/identificar', Object.assign({c: C, v: VISITANTE}, cuerpo)).then(function(j){ entrarComo(j, false); })
         .catch(function(err){ if (boton) boton.disabled = false; msg(idMsg, err.message, true); });
     }
     if (hay){
@@ -672,7 +675,7 @@
       c1.querySelector('#quienBus').addEventListener('input', function(){ pintarLista(this.value); });
     }
     c3.querySelector('#btnRegSec').addEventListener('click', function(){
-      var datos = {c: C, nombre: $('#nvNombre').value.trim(), gerencia: sc.gerencia, seccion: sc.seccion, pin: $('#nvPin').value.trim(), procesos: [], fija: true};
+      var datos = {c: C, v: VISITANTE, nombre: $('#nvNombre').value.trim(), gerencia: sc.gerencia, seccion: sc.seccion, pin: $('#nvPin').value.trim(), procesos: [], fija: true};
       var falta = !datos.nombre ? 'Escribe tu nombre y apellido.' : !/^\d{4}$/.test(datos.pin) ? 'Crea un PIN de 4 dígitos.' : '';
       if (falta){ msg('#regMsg', falta, true); return; }
       var b = this; b.disabled = true; msg('#regMsg', 'Registrando…');
@@ -721,7 +724,7 @@
         '<div><label for="rCargo">Cargo (opcional)</label><input type="text" id="rCargo" maxlength="80" autocomplete="organization-title"></div>' +
         '<div><label for="rPin">Crea un PIN de 4 dígitos *</label><input type="password" id="rPin" inputmode="numeric" pattern="[0-9]*" maxlength="4" autocomplete="off" style="max-width:140px"></div>' +
       '</div>' +
-      '<p class="aviso" style="margin-top:16px"><strong>Cómo tratamos lo que nos cuentas.</strong> Tu voz se convierte en texto y el audio se descarta al instante. La información se usa solo para el inventario de procesos y se borra al cierre del proyecto.</p>' +
+      '<p class="aviso" style="margin-top:16px"><strong>Cómo tratamos lo que nos cuentas.</strong> Tu voz se convierte en texto y el audio se descarta al instante. La información se usa solo para el inventario de procesos y se borra al cierre del proyecto. Registramos solo hitos de uso (abrir el enlace, crear tu acceso, guardar tu primera respuesta) para dar seguimiento al proyecto, sin cookies ni dirección IP.</p>' +
       '<div class="fila" style="margin-top:16px"><button class="btn" type="button" id="btnEmpezar">Empezar a responder</button><span class="estado" id="rEstado" role="status"></span></div>' +
       '</div></div>';
     var selG = c.querySelector('#rGer'), selS = c.querySelector('#rSec');
@@ -765,7 +768,7 @@
     var est = $('#rEstado');
     var ger = $('#rGer').value === '__otra' ? $('#rGerOtra').value.trim() : $('#rGer').value;
     var sec = $('#rSec').value === '__otra' ? $('#rSecOtra').value.trim() : $('#rSec').value;
-    var datos = {c: C, nombre: $('#rNombre').value.trim(), gerencia: ger, seccion: sec,
+    var datos = {c: C, v: VISITANTE, nombre: $('#rNombre').value.trim(), gerencia: ger, seccion: sec,
       cargo: $('#rCargo').value.trim(), pin: $('#rPin').value.trim(), procesos: ELEGIDOS.map(function(p){ return p.id; })};
     var falta = !datos.nombre ? 'Escribe tu nombre y apellido.' : !ger ? 'Indica tu gerencia.' : !sec ? 'Indica tu sección.' : !/^\d{4}$/.test(datos.pin) ? 'Crea un PIN de 4 dígitos.' : '';
     if (falta){ est.className = 'estado warn'; est.textContent = falta; return; }
@@ -836,7 +839,8 @@
     intro.innerHTML = (bienvenida ? '<h2>Listo, ya estás registrado</h2><p class="lead">Para volver, abre el enlace de tu sección, elige tu nombre y escribe tu PIN: no lo compartas.' +
         (porNombre ? ' Figuras en ' + (porNombre === 1 ? '1 proceso' : porNombre + ' procesos') + ' del inventario anterior: están en la parte 1 para que confirmes tu relación con cada uno.' : '') + '</p>' : '') +
       '<p class="aviso"><strong>Cómo tratamos lo que nos cuentas.</strong> Tu voz se convierte en texto y el audio se descarta al instante: no se guarda. ' +
-      'Antes de guardar, puedes leer y corregir el texto. La información se usa solo para el inventario de procesos y se borra al cierre del proyecto. ' +
+      'Antes de guardar, puedes leer y corregir el texto. La información se usa solo para el inventario de procesos y se borra al cierre del proyecto.' + 
+      ' Registramos solo hitos de uso (abrir el enlace, crear tu acceso, guardar tu primera respuesta) para dar seguimiento al proyecto, sin cookies ni dirección IP. ' +
       'Habla de cargos y áreas, no de personas, y no menciones datos reales de clientes o trabajadores.</p>' +
       (S.fuera_alcance ? '<p class="aviso" style="margin-top:10px"><strong>Compra de bienes y servicios.</strong> No incluyas el proceso de compra de bienes y servicios (los gastos): se levanta aparte con el equipo consultor, aunque tu área gestione compras. La compra de accesorios para vender a los clientes sí va.</p>' : '') +
       '<p class="lead" style="margin:14px 0 0"><strong>La siguiente información es la recopilada del último inventario del 2021.</strong> Agradeceremos tu apoyo para actualizarla y/o agregar los nuevos procesos que gestiona tu gerencia.</p>';
