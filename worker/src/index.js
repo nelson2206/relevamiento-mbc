@@ -57,8 +57,12 @@
  *   GET  /a/documentos?campana_id=&gerencia=&estado=&estado_ia=&desde=&hasta=&q=&confianza=baja|sin&orden=confianza   bandeja con sus procesos y el umbral
  *   GET  /a/documentos/archivo?id=       el archivo, para abrirlo antes de clasificar
  *   POST /a/documentos/borrar {id} (elimina el documento, su archivo y sus borradores sin aprobar) | /a/documentos/gerencia {id, gerencia, seccion?} | /a/documentos/analizar {id} (la IA propone procesos con confianza) | /a/documentos/procesos {id, procesos[]} (lista final: confirma, quita y agrega;
- *        lo recién confirmado lanza la extracción de la precarga en segundo plano: queda como borrador)
- *   POST /a/documentos/extraer {id, proceso_id}   (extrae o reextrae la precarga de un proceso confirmado)  |  POST /a/precarga/borrador {proceso_id, decisiones[{id, accion:'aprobar'|'descartar', texto?}]}
+ *        lo recién confirmado queda «pendiente» (en cola, sin tope) y responde `por_extraer[proceso_id]`; la consola dispara la lectura de cada par, 2 en paralelo como máximo; el cron recoge los que no alcanzó)
+ *   POST /a/documentos/extraer {id, proceso_id, origen?:'confirmacion'|'reproceso'}   (lee o vuelve a leer el documento para UN proceso confirmado y ESPERA el resultado: estados pendiente > leyendo > procesando > generado|error,
+ *        tiempo máximo EXTRACCION_MAX_MIN (8 min); 409 si ese par ya se está leyendo; el resultado queda como borrador, cada ejecución en su historial)
+ *   GET  /a/documentos/historial?id=[&proceso_id=]   últimas 50 ejecuciones de lectura del documento (proceso, origen, quién, inicio, fin, resultado, mensaje)
+ *   POST /a/precarga/borrador {proceso_id, decisiones[{id, accion:'aprobar'|'descartar', texto?}]}
+ *   (cron cada 15 min: vence las lecturas colgadas, completa la matriz y lee hasta 4 pares «pendiente» de hace más de 2 min)
  *   POST /a/campana/umbral       {campana_id, umbral 0..1}   (bajo ese valor la clasificación se resalta como de baja confianza)
  *   POST /r/identificar          {c, g?, s?, id | correo}   (enlace de sección: la persona elige su nombre o escribe su correo y entra a su registro)
  *   POST /a/campana/renovar-accesos {campana_id}   cierra las sesiones y enlaces personales de la campaña (cada persona entra de nuevo con su PIN)
@@ -105,8 +109,8 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { leerEstructura, prepararEstructura, asegurarEstructura, areasDeEstructura } from './estructura.js';
 import { rutaFlujo, rutaFlujoCatalogo, rutaFlujoConfirmar, rutaFlujoRetroceder, rutaFlujoProceso, rutaFlujoAdmin, rutaFlujoReabrir, guardarCambio } from './flujo.js';
-import { rutaDocumentoSubir, rutaDocumentos, rutaDocumentoArchivo, rutaDocumentoGerencia, rutaDocumentoAnalizar, rutaDocumentoBorrar, rutaDocumentoProcesos, rutaUmbral,
-  rutaDocumentoExtraer, rutaPrecargaBorrador, borradoresDeCampana, sentenciasRastroDeProcesos, sentenciasRastroDeCampana, borrarArchivosDeCampana } from './documentos.js';
+import { ESQUEMA_CLASIFICAR, mensajeErrorIA, rutaDocumentoSubir, rutaDocumentos, rutaDocumentoArchivo, rutaDocumentoGerencia, rutaDocumentoAnalizar, rutaDocumentoBorrar, rutaDocumentoProcesos, rutaUmbral,
+  rutaDocumentoExtraer, rutaDocumentoHistorial, extraerPendientes, vencerExtracciones, rutaPrecargaBorrador, borradoresDeCampana, sentenciasRastroDeProcesos, sentenciasRastroDeCampana, borrarArchivosDeCampana } from './documentos.js';
 import { complementar, partesDe, componer } from './complemento.js';
 import { ambitoDe, enSecs, claveArea, registrarAccion } from './ambito.js';
 import { limpiarDatos, evaluar, resumenTexto, UBICACIONES, ESQUEMA_IA, PROMPT_IA, desdeSalidaIA, camposMatriz } from './confidencial.js';
@@ -124,8 +128,27 @@ function iaDe(env, tarea) {
   return { modelo: String(v[0] || d[0]).trim(), esfuerzo: String(v[1] || d[1]).trim() };
 }
 const WHISPER = '@cf/openai/whisper-large-v3-turbo';
+// TOPE DE COSTO de la IA de Cloudflare. Con Workers Paid, lo que pasa del cupo gratuito (10.000 neuronas al día por
+// CUENTA, ~215 min de audio) se cobra sin límite: ~46,4 neuronas por minuto, US$ 0,00051/min. El tope no busca quedarse en
+// el cupo sino frenar un uso anormal: 1.000 min/día son ~US$ 0,40 de excedente como máximo.
+// Se cambia en wrangler.toml [vars] IA_MINUTOS_DIA. Al llegar al tope, el dictado se apaga hasta las 00:00 UTC (19:00 Lima).
+const IA_MINUTOS_DIA_POR_DEFECTO = 1000;
+const BYTES_POR_SEGUNDO_WAV = 32000;     // el navegador manda WAV 16 kHz, mono, 16 bits
+
+export async function reservarAudioIA(env, segundos) {
+  const tope = (Number(env.IA_MINUTOS_DIA) > 0 ? Number(env.IA_MINUTOS_DIA) : IA_MINUTOS_DIA_POR_DEFECTO) * 60;
+  const dia = new Date().toISOString().slice(0, 10);
+  // Suma solo si cabe: la condición va en el mismo UPDATE para que dos pedidos a la vez no pasen el tope.
+  await env.DB.prepare('INSERT OR IGNORE INTO uso_ia (dia) VALUES (?)').bind(dia).run();
+  const r = await env.DB.prepare('UPDATE uso_ia SET segundos = segundos + ?, llamadas = llamadas + 1 WHERE dia = ? AND segundos + ? <= ?')
+    .bind(segundos, dia, segundos, tope).run();
+  if (!r.meta || !r.meta.changes) {
+    log('tope_ia_diario', { dia, tope_min: tope / 60, segundos });
+    throw new HttpError(429, 'El dictado por voz llegó a su límite de hoy. Escribe tu respuesta; mañana vuelve a estar disponible.');
+  }
+}
 const MAX_AUDIO = 8 * 1024 * 1024;       // por tramo; el navegador corta en tramos de 2 min
-const MAX_PDF = 10 * 1024 * 1024, MAX_PDF_PAGINAS = 10;   // el PDF se manda completo a la IA
+const MAX_PDF = 10 * 1024 * 1024, MAX_PDF_PAGINAS = 20;   // el PDF se manda completo a la IA
 const MAX_IMAGEN = 6 * 1024 * 1024;      // el navegador la reduce antes (máx. 1600 px, JPEG)
 const MAX_TEXTO = 12000;
 // Encuesta por bloques: cada bloque se responde con una grabación y trae el checklist de lo que la matriz necesita.
@@ -375,7 +398,7 @@ async function rutaSesion(env, url) {
     env.DB.prepare('SELECT proceso_id, estado, comentario FROM revisiones WHERE encuestado_id=?').bind(e.id).all(),
     env.DB.prepare('SELECT proceso_id, pregunta, texto, sistemas, checklist, datos FROM respuestas WHERE encuestado_id=?').bind(e.id).all(),
     env.DB.prepare('SELECT nombre, tipo FROM sistemas WHERE campana_id=? ORDER BY nombre').bind(e.campana_id).all(),
-    env.DB.prepare('SELECT pc.proceso_id, pc.punto FROM precarga pc JOIN procesos p ON p.id=pc.proceso_id WHERE p.campana_id=?').bind(e.campana_id).all(),
+    env.DB.prepare('SELECT pc.proceso_id, pc.punto, pc.texto, pc.archivos, pc.actualizado FROM precarga pc JOIN procesos p ON p.id=pc.proceso_id WHERE p.campana_id=?').bind(e.campana_id).all(),
     // Responsables asignados por el equipo (nombres sugeridos) y personas que ya empezaron a responder un proceso.
     env.DB.prepare("SELECT a.proceso_id, a.encuestado_id, x.nombre FROM asignaciones a JOIN encuestados x ON x.id=a.encuestado_id WHERE x.campana_id=? AND a.origen='consultor'").bind(e.campana_id).all(),
     env.DB.prepare("SELECT DISTINCT r.proceso_id, x.nombre FROM respuestas r JOIN encuestados x ON x.id=r.encuestado_id WHERE x.campana_id=? AND x.id<>? AND (trim(r.texto)<>'' OR r.sistemas<>'[]')").bind(e.campana_id, e.id).all(),
@@ -409,9 +432,18 @@ async function rutaSesion(env, url) {
       completando: completandoPor[p.id] || []           // otras personas que ya empezaron a responderlo (solo nombres, nunca lo que dijeron)
     }));
   log('sesion', { campana: e.campana_id, origen: e.origen, estado: e.estado, procesos: procesos.length, k: mascara(e.token) });
-  // Puntos del checklist que el equipo ya cubrió con documentos: solo sus ids (el texto es interno).
-  const precarga = {}, visibles = new Set(procesos.map(x => x.id));
-  pre.results.forEach(x => { if (visibles.has(x.proceso_id)) (precarga[x.proceso_id] = precarga[x.proceso_id] || []).push(x.punto); });
+  // Puntos que el equipo precargó (ids) y su texto: la encuesta lo muestra tal cual, de solo lectura, sin importar lo que tenga la matriz.
+  // La precarga no marca ningún check: eso solo lo hace la respuesta de la persona.
+  const precarga = {}, precarga_txt = {}, visibles = new Set(procesos.map(x => x.id));
+  pre.results.forEach(x => {
+    if (!visibles.has(x.proceso_id)) return;
+    (precarga[x.proceso_id] = precarga[x.proceso_id] || []).push(x.punto);
+    const texto = String(x.texto || '').trim();
+    if (!texto) return;
+    let archivos = [];
+    try { archivos = JSON.parse(x.archivos || '[]'); } catch (_) { /* sin archivos */ }
+    (precarga_txt[x.proceso_id] = precarga_txt[x.proceso_id] || {})[x.punto] = { texto, archivos: Array.isArray(archivos) ? archivos : [], actualizado: x.actualizado };
+  });
   // Lo ya trabajado de cada proceso (IA, documentos, equipo, otras validaciones) desde la matriz, la única fuente: la persona
   // lo conserva, lo edita o lo reemplaza. Solo los campos con punto en el checklist; nunca el resto de la matriz.
   const eventos = await ultimosEventos(env, { campana_id: e.campana_id }), valores = {};
@@ -452,7 +484,7 @@ async function rutaSesion(env, url) {
     ok: true,
     campana: camp,
     encuestado: { nombre: e.nombre, gerencia: e.gerencia, seccion: e.seccion, rol: e.rol, estado: e.estado, origen: e.origen },
-    procesos, revisiones, respuestas, precarga, otros, valores,
+    procesos, revisiones, respuestas, precarga, precarga_txt, otros, valores,
     sistemas: sis.results,
     bloques: BLOQUES,
     fuera_alcance: (await env.DB.prepare('SELECT COUNT(*) AS n FROM procesos WHERE campana_id=? AND fuera_alcance=1').bind(e.campana_id).first()).n,
@@ -665,7 +697,10 @@ async function rutaTranscribir(env, req, url) {
   // El glosario orienta a Whisper con siglas y nombres propios que suele escribir mal.
   const pista = pistaWhisper(camp && camp.glosario, sis.results.map(s => s.nombre));
   const audio = aBase64(buf);
-  const whisper = p => env.AI.run(WHISPER, { audio, language: 'es', vad_filter: true, initial_prompt: p || undefined });
+  const segundos = Math.ceil(buf.byteLength / BYTES_POR_SEGUNDO_WAV);
+  // Cada intento se cobra aparte, así que cada uno pasa por el tope diario antes de llamar a Whisper.
+  const whisper = async p => { await reservarAudioIA(env, segundos);
+    return env.AI.run(WHISPER, { audio, language: 'es', vad_filter: true, initial_prompt: p || undefined }); };
   // Workers AI a veces responde "3030: Failed to decode audio file" con audio válido: el mismo archivo falla y al
   // repetirlo funciona (pruebas del 2026-09-30, ~1 de cada 3 llamadas). Se reintenta con pausa, alternando con y
   // sin pista por si la pista fuera la causa (sin pista solo se pierde la ayuda con siglas y nombres).
@@ -676,6 +711,7 @@ async function rutaTranscribir(env, req, url) {
     try {
       r = await whisper(intentos[i]);
     } catch (err) {
+      if (err instanceof HttpError) throw err;   // tope diario: no reintentar
       ultimo = err;
       log('whisper_reintento', { campana: e.campana_id, intento: i + 1, pista: intentos[i].length, bytes: buf.byteLength,
         error: String((err && err.message) || err).slice(0, 160) });
@@ -1937,19 +1973,20 @@ async function rutaVerificar(env, b, ctx) {
   let sistemas = [];
   try { sistemas = JSON.parse((r && r.sistemas) || '[]'); } catch (x) { /* sin sistemas */ }
   // La huella incluye los puntos del bloque: si cambia el checklist, la respuesta se vuelve a revisar.
-  const cubiertosEquipo = (await env.DB.prepare('SELECT punto FROM precarga WHERE proceso_id=? AND bloque=? ORDER BY punto').bind(p.id, bloque.id).all()).results.map(x => x.punto);
+  // La precarga del equipo no descuenta puntos: la IA revisa lo que la persona respondió contra todo el checklist.
   const otrosCubren = new Set();
   (await env.DB.prepare('SELECT checklist FROM respuestas WHERE proceso_id=? AND pregunta=? AND encuestado_id<>?').bind(p.id, bloque.id, e.id).all()).results.forEach(r => {
     const ck = leerMatriz(r.checklist);
     bloque.puntos.forEach(([id]) => { if (ck[id] && ck[id].estado === 'cubierto') otrosCubren.add(id); });
   });
-  const yaCubiertos = [...new Set([...cubiertosEquipo, ...otrosCubren])].sort();
+  const yaCubiertos = [...otrosCubren].sort();
   const firmaDe = lista => huella(texto + '|' + lista.join(',') + '|' + bloque.puntos.map(x => x[0]).join(',') + '|eq:' + yaCubiertos.join(','));
   const firma = await firmaDe(sistemas);
   if (previo._huella === firma) return { ok: true, checklist: previo, sistemas, sistemas_nuevos: [] };
   const nuevo = { _huella: firma, _sugerencia: '' };
   if (previo._sistemas_rechazados) nuevo._sistemas_rechazados = previo._sistemas_rechazados;
   if (previo._sistemas_ia) nuevo._sistemas_ia = previo._sistemas_ia;
+  if (previo._vigentes) nuevo._vigentes = previo._vigentes;   // «Sigue vigente» sobre la precarga: la revisión no lo borra
   let nuevosSis = [];
   const manual = id => previo[id] && previo[id].fuente === 'persona';
   let sistemasFinal = sistemas;
@@ -1975,7 +2012,7 @@ async function rutaVerificar(env, b, ctx) {
           'CHECKLIST:', ...bloque.puntos.map(([id, t]) => `- ${id}: ${t}`),
           '', 'RESPUESTA:', texto || '(sin texto)',
           sistemas.length ? '\nSISTEMAS MARCADOS EN LA LISTA: ' + sistemas.join(', ') : '',
-          yaCubiertos.length ? '\nPUNTOS YA CUBIERTOS POR EL EQUIPO U OTRAS PERSONAS (no los pidas): ' + yaCubiertos.join(', ') : '',
+          yaCubiertos.length ? '\nPUNTOS YA CUBIERTOS POR OTRAS PERSONAS (no los pidas): ' + yaCubiertos.join(', ') : '',
           glosarioEst ? '\nGLOSARIO DE ESTÁNDARES DE LA CAMPAÑA: ' + glosarioEst : '',
           bloque.sistemas ? '\nCATÁLOGO DE SISTEMAS DE LA CAMPAÑA: ' + (catalogo.length ? catalogo.join('; ') : '(vacío)') : '(Este bloque no detecta sistemas: devuelve "sistemas" vacío.)'
         ].join('\n') }]
@@ -2228,7 +2265,7 @@ async function extraerPrecarga(env, ctx, a, p) {
     }).finalMessage();
   } catch (err) {
     log('precarga_error', { campana: p.campana_id, tipo: a.tipo, error: String((err && err.message) || err).slice(0, 200) });
-    throw new HttpError(502, `No pudimos leer ${a.que} en este momento. Intenta de nuevo en un minuto.`);
+    throw new HttpError(502, mensajeErrorIA(err, `No pudimos leer ${a.que} en este momento. Intenta de nuevo en un minuto.`));
   }
   registrarIA(ctx, 'precarga', msg, cfg, t0);
   if (msg.stop_reason === 'refusal') throw new HttpError(422, 'La IA no pudo procesar ese archivo.');
@@ -2367,23 +2404,16 @@ async function analizarDocumentoIA(env, ctx, archivo, catalogo, gerencia, seccio
   const esDocx = archivo.tipo === MIME_DOCX, esPdf = archivo.tipo === 'application/pdf';
   const doc = esDocx ? await textoDeDocx(archivo.buf).catch(() => null) : null;
   if (esDocx && !(doc && doc.texto)) throw new HttpError(422, 'No pudimos leer el texto de ese Word.');
-  const schema = {
-    type: 'object',
-    properties: { procesos: { type: 'array', items: { type: 'object', properties: {
-      proceso_id: { type: 'string', enum: catalogo.map(p => p.id) }, confianza: { type: 'number' }, motivo: { type: 'string' }
-    }, required: ['proceso_id', 'confianza', 'motivo'], additionalProperties: false } } },
-    required: ['procesos'], additionalProperties: false
-  };
   const lista = catalogo.map(p => `- ${p.id} | ${p.gerencia} / ${p.seccion} | ${[p.macroproceso, p.proceso, p.subproceso].filter(Boolean).join(' > ')}`).join('\n');
   const cfg = iaDe(env, 'estructurar'), t0 = Date.now();
   let msg;
   try {
     msg = await clienteClaude(env).beta.messages.stream({
       model: cfg.modelo,
-      max_tokens: 3000,
+      max_tokens: 16000,
       betas: ['server-side-fallback-2026-07-01'],
       fallbacks: 'default',
-      output_config: { effort: cfg.esfuerzo, format: { type: 'json_schema', schema } },
+      output_config: { effort: cfg.esfuerzo, format: { type: 'json_schema', schema: ESQUEMA_CLASIFICAR } },
       system: CLASIFICAR_PROMPT,
       messages: [{ role: 'user', content: [
         bloqueDeArchivo({ esDocx, esPdf, doc, tipo: archivo.tipo, buf: archivo.buf }),
@@ -2392,7 +2422,7 @@ async function analizarDocumentoIA(env, ctx, archivo, catalogo, gerencia, seccio
     }).finalMessage();
   } catch (err) {
     log('documento_ia_error', { error: String((err && err.message) || err).slice(0, 200) });
-    throw new HttpError(502, 'No pudimos analizar el documento en este momento. Intenta de nuevo en un minuto.');
+    throw new HttpError(502, mensajeErrorIA(err, 'No pudimos analizar el documento en este momento. Intenta de nuevo en un minuto.'));
   }
   registrarIA(ctx, 'clasificar_documento', msg, cfg, t0);
   if (msg.stop_reason === 'refusal') throw new HttpError(422, 'La IA no pudo procesar ese archivo.');
@@ -2427,21 +2457,26 @@ async function rutaPunto(env, b) {
   return { ok: true, checklist: c };
 }
 
-// La persona confirma que la descripción de un punto sigue vigente. La descripción es un resumen automático (documentos del equipo e IA):
-// no se edita aquí. Si algo cambió, la persona lo cuenta en su respuesta y la IA la actualiza. El punto queda cubierto en su checklist.
+// La persona confirma que la información previa de un punto sigue vigente. NO marca el check del punto: el check solo lo activa
+// lo que la persona responde. Sobre una precarga del equipo, la confirmación queda en su checklist (_vigentes) y no toca la matriz;
+// sobre un texto de la matriz, valida el campo (historial). Si algo cambió, la persona lo cuenta en su respuesta y la IA lo actualiza.
 async function rutaCampo(env, b) {
   const e = await encuestadoPorToken(env, b.k);
   const p = await procesoPermitido(env, e, b.proceso_id);
   if (b.texto !== undefined) throw new HttpError(400, 'Esta descripción no se edita: cuenta lo que cambió en tu respuesta y se actualiza sola.');
   const punto = txt(b.punto, 40), bloqueId = BLOQUE_DE_PUNTO[punto];
-  if (!PUNTO_CAMPO[punto] || !bloqueId) throw new HttpError(400, 'Punto inválido');
-  await validarCampoDeEncuesta(env, e, p, punto);
-  const prev = await env.DB.prepare('SELECT checklist FROM respuestas WHERE encuestado_id=? AND proceso_id=? AND pregunta=?').bind(e.id, p.id, bloqueId).first();
-  const c = leerMatriz(prev && prev.checklist);
-  if (!c[punto] || c[punto].estado !== 'cubierto') {
-    c[punto] = { estado: 'cubierto', fuente: 'persona', evidencia: 'vigente' };
+  if (!TODOS_PUNTOS.includes(punto) || !bloqueId) throw new HttpError(400, 'Punto inválido');
+  const pre = await env.DB.prepare('SELECT texto FROM precarga WHERE proceso_id=? AND punto=?').bind(p.id, punto).first();
+  if (pre && String(pre.texto || '').trim()) {
+    const prev = await env.DB.prepare('SELECT checklist FROM respuestas WHERE encuestado_id=? AND proceso_id=? AND pregunta=?').bind(e.id, p.id, bloqueId).first();
+    const c = leerMatriz(prev && prev.checklist);
+    c._vigentes = Object.assign({}, c._vigentes, { [punto]: ahora() });
     await guardarChecklist(env, e, p, bloqueId, c);
+    await marcarEnCurso(env, e);
+    return { ok: true, vigente: true, checklist: c };
   }
+  if (!PUNTO_CAMPO[punto]) throw new HttpError(400, 'Este punto no tiene información previa que confirmar');
+  await validarCampoDeEncuesta(env, e, p, punto);
   await marcarEnCurso(env, e);
   const ev = (await ultimosEventos(env, { proceso_id: p.id }))[p.id];
   return { ok: true, valor: valoresDeProceso(p, leerMatriz(p.matriz), ev)[punto] || null };
@@ -2702,6 +2737,8 @@ async function rutaClienteCampana(env, actor, recarga) {
     q('SELECT pc.proceso_id, pc.bloque, pc.punto FROM precarga pc JOIN procesos p ON p.id=pc.proceso_id WHERE p.campana_id=?'),
     q('SELECT gerencia, seccion, abre, cierra, mensaje FROM ventanas WHERE campana_id=?')
   ]);
+  // Esqueleto (hoja «Gerencias» de la plantilla): secciones que aún no tienen procesos ni personas también se ven en el panel.
+  let estructura = await leerEstructura(env, camp.id);
   if (actor.rol === 'supervisor') {
     const amb = await ambitoDe(env, actor), vis = await personasVisibles(env, camp, amb);
     const veo = x => amb.procs.has(x.proceso_id) && vis.has(x.encuestado_id);
@@ -2710,6 +2747,7 @@ async function rutaClienteCampana(env, actor, recarga) {
     revisiones = revisiones.filter(veo); respuestas = respuestas.filter(veo); asignaciones = asignaciones.filter(veo);
     precarga = precarga.filter(x => amb.procs.has(x.proceso_id));
     ventanas = ventanas.filter(v => enSecs(amb, v.gerencia, v.seccion) || (!v.seccion && amb.filas.some(p => mismaArea(p.gerencia, v.gerencia))));
+    estructura = estructura.filter(f => f.seccion && enSecs(amb, f.gerencia, f.seccion));
   }
   const limpias = respuestas.map(r => {
     const ck = leerMatriz(r.checklist), sano = {};
@@ -2726,7 +2764,7 @@ async function rutaClienteCampana(env, actor, recarga) {
     supervisores: actor.rol === 'cliente' ? await listaSupervisores(env, camp.id) : undefined,
     campana: { id: camp.id, nombre: camp.nombre, cliente: camp.cliente, logo: camp.logo || '', creada: camp.creada,
       codigo_publico: camp.codigo_publico || '', abierta: camp.abierta ? 1 : 0, invitacion: camp.invitacion || '' },
-    encuestados, procesos, revisiones, respuestas: limpias, asignaciones, precarga, ventanas, estructurado: [], sistemas: [], bloques: BLOQUES, generado: ahora() };
+    encuestados, procesos, revisiones, respuestas: limpias, asignaciones, precarga, ventanas, estructura, estructurado: [], sistemas: [], bloques: BLOQUES, generado: ahora() };
 }
 
 // ---------------------------------------------------------------- escritura acotada del panel del cliente
@@ -2847,7 +2885,13 @@ function estadoServicio(env) {
 export default {
   // Tarea programada (wrangler.toml [triggers]): la IA completa la matriz con las respuestas nuevas.
   async scheduled(event, env, ctx) {
-    await completarPendientes(env, ctx);
+    // Tres tareas independientes: si una falla, las otras corren igual; el primer error se relanza al final para que la corrida figure como fallida.
+    let fallo = null;
+    const tarea = async f => { try { await f(); } catch (err) { log('cron_error', { error: String((err && err.message) || err).slice(0, 200) }); fallo = fallo || err; } };
+    await tarea(() => vencerExtracciones(env));
+    await tarea(() => completarPendientes(env, ctx));
+    await tarea(() => extraerPendientes(env, ctx, { extraerPrecarga: extraerDeDocumento }));
+    if (fallo) throw fallo;
   },
 
   async fetch(req, env, ctx) {
@@ -2916,6 +2960,7 @@ export default {
         if (ruta === 'GET /a/campana/historial') return json(await rutaHistorialMatriz(env, url), 200, h);
         if (ruta === 'GET /a/documentos') return json(await rutaDocumentos(env, url), 200, h);
         if (ruta === 'GET /a/documentos/archivo') return await rutaDocumentoArchivo(env, url, h);
+        if (ruta === 'GET /a/documentos/historial') return json(await rutaDocumentoHistorial(env, url), 200, h);
         if (ruta === 'POST /a/documentos') return json(await rutaDocumentoSubir(env, req, url, { leerArchivo: leerArchivoSubido, analizarIA: analizarDocumentoIA, iaLista }, ctx), 200, h);
         if (ruta === 'POST /a/precarga/extraer') return json(await rutaPrecargaExtraer(env, req, url, ctx), 200, h);
         if (req.method === 'POST') {

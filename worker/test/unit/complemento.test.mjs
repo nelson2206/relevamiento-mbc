@@ -144,7 +144,7 @@ test('volver a leer: un borrador descartado vuelve a aparecer; uno aprobado no, 
   const deps = { extraerPrecarga: async () => lectura };
   const cola = []; const ctx = { waitUntil: p => cola.push(p) };
   const e = { ...env, DOCS: { get: async () => ({ arrayBuffer: async () => new Uint8Array([1]) }), put: async () => {}, delete: async () => {} } };
-  await rutaDocumentoProcesos(e, { id: 'd9', procesos: ['p1'] }, ctx, deps); await Promise.all(cola.splice(0));
+  await rutaDocumentoProcesos(e, { id: 'd9', procesos: ['p1'] }, ctx, deps); await rutaDocumentoExtraer(e, { id: 'd9', proceso_id: 'p1' }, ctx, deps);
   const est = pt => uno("SELECT estado FROM precarga_borrador WHERE documento_id='d9' AND proceso_id='p1' AND punto=?", pt).estado;
   assert.equal(est('terceros'), 'borrador');
   const idT = uno("SELECT id FROM precarga_borrador WHERE documento_id='d9' AND punto='terceros'").id, idS = uno("SELECT id FROM precarga_borrador WHERE documento_id='d9' AND punto='sistemas'").id;

@@ -489,6 +489,7 @@
 <dialog id="dlg"><div class="dlg-h"><div style="flex:1;min-width:0"><h2 id="dlgT" style="font-size:16px"></h2><div class="muted" id="dlgS"></div></div><button class="btn btn-ghost btn-xs" id="dlgCerrar">Cerrar</button></div><div class="dlg-b" id="dlgB"></div></dialog>
 <datalist id="dlGer"></datalist><datalist id="dlSec"></datalist><datalist id="dlMacro"></datalist>
 
+<script src="red.js"></script>
 <script src="flujo-gerente.js"></script>
 <script src="flujo-admin.js"></script>
 <script src="usuarios-consola.js"></script>
@@ -616,7 +617,7 @@
   function api(path, body){
     var opt = {headers:{'x-admin-code': CODIGO}};
     if (body){ opt.method = 'POST'; opt.headers['content-type'] = 'application/json'; opt.body = JSON.stringify(body); }
-    return fetch(API + path, opt).then(function(r){
+    return pedirServidor(API + path, opt).then(function(r){
       return r.json().catch(function(){ return {ok:false, error:'Respuesta inesperada'}; }).then(function(j){
         if (!r.ok || !j.ok){ var e = new Error(j.error || ('Error ' + r.status)); e.status = r.status; throw e; }
         return j;
@@ -637,7 +638,7 @@
   function entrarCliente(){
     CODIGO = $('#inCodigo').value.trim() || CODIGO;
     $('#loginMsg').textContent = 'Verificando…';
-    fetch(API + '/c/campana', {headers: {'x-client-code': CODIGO}}).then(function(r){ return r.json().catch(function(){ return {ok: false, error: 'Respuesta inesperada'}; }).then(function(j){ return {r: r, j: j}; }); })
+    pedirServidor(API + '/c/campana', {headers: {'x-client-code': CODIGO}}).then(function(r){ return r.json().catch(function(){ return {ok: false, error: 'Respuesta inesperada'}; }).then(function(j){ return {r: r, j: j}; }); })
       .then(function(x){
         if (!x.r.ok || !x.j.ok) throw new Error(x.j.error || 'Código de acceso incorrecto');
         try { sessionStorage.setItem('relev-cliente', CODIGO); } catch(e){}
@@ -729,7 +730,8 @@
     window.FlujoAdmin.cargar(C.campana.id).then(repintarFlujoAdmin);
   }
   function repintarFlujoAdmin(){ pintarKpis(); pintarMapa(); pintarMatrizLista(); window.FlujoAdmin.tabla($('#clFlujoAdm')); }
-  function abrir(id){
+  // tras: viene de un guardado que ya funcionó; quien llama avisa «se guardó, pero…» en vez de un error genérico.
+  function abrir(id, tras){
     return api('/a/campana?id=' + encodeURIComponent(id)).then(function(j){
       C = j;
       C.asignaciones = C.asignaciones || [];
@@ -754,7 +756,7 @@
       llenarFiltros();
       pintarTodo();
       cargarFlujoAdmin();
-    }).catch(function(err){ alert(err.message); });
+    }).catch(function(err){ if (tras) throw err; alert(err.message); });
   }
   function pintarTodo(){ pintarKpis(); pintarMapa(); pintarConstructor(); pintarMatriz(); pintarBarrido(); pintarEncuestados(); if (!$('#tEntrevistas').classList.contains('hidden')) pintarEntrevistas(); }
 
@@ -2301,7 +2303,7 @@
       Array.prototype.forEach.call(det.querySelectorAll('textarea'), function(t){ t.disabled = v; });
     };
     var subir = function(x){
-      return fetch(API + '/a/precarga/extraer?proceso_id=' + encodeURIComponent(p.id) + '&nombre=' + encodeURIComponent(x.f.name),
+      return pedirServidor(API + '/a/precarga/extraer?proceso_id=' + encodeURIComponent(p.id) + '&nombre=' + encodeURIComponent(x.f.name),
         {method:'POST', headers:{'x-admin-code': CODIGO, 'content-type': x.m}, body: x.f})
         .then(function(r){ return r.json().catch(function(){ return {ok:false, error:'Respuesta inesperada'}; }).then(function(j){ if (!r.ok || !j.ok) throw new Error(j.error || 'Error ' + r.status); return j; }); });
     };
@@ -2357,7 +2359,7 @@
         if (j.complementados && j.complementados.length) aviso += ' ' + cuenta(j.complementados.length, 'se sumó', 'se sumaron') + ' a lo ya registrado.';
         if (j.duplicados && j.duplicados.length) aviso += ' ' + cuenta(j.duplicados.length, 'ya estaba', 'ya estaban') + ': solo se añadió la fuente.';
         if (j.sin_aplicar && j.sin_aplicar.length) aviso += ' ' + cuenta(j.sin_aplicar.length, 'quedó pendiente', 'quedaron pendientes') + ': ' + (j.sin_aplicar.some(function(x){ return x.motivo === 'contradice'; }) ? (j.sin_aplicar.length === 1 ? 'contradice' : 'contradicen') + ' lo registrado (apruébalos uno a uno con «Aprobar y sumar de todos modos» si ambos valen)' : 'el texto sumado superaría el máximo, acórtalo') + '.';
-        return abrir(C.campana.id).then(function(){ detalle(p.id); var n = $('#preMsg'); if (n) n.textContent = (accion === 'aprobar' ? 'Aprobado: ' + j.escritos.length + ' en la matriz.' : 'Descartado.') + aviso; });
+        return abrir(C.campana.id, true).then(function(){ detalle(p.id); var n = $('#preMsg'); if (n) n.textContent = (accion === 'aprobar' ? 'Aprobado: ' + j.escritos.length + ' en la matriz.' : 'Descartado.') + aviso; }, function(){ m.textContent = 'La decisión se guardó, pero el servidor no respondió al actualizar la pantalla. Recarga la página en unos segundos para verla.'; });
       }).catch(function(err){ Array.prototype.forEach.call(det.querySelectorAll('[data-bor-acc]'), function(x){ x.disabled = false; }); m.textContent = err.message; });
     });
     $('#preGuardar').addEventListener('click', function(){
@@ -2368,13 +2370,13 @@
       bloquear(true); msg('Guardando…');
       api('/a/precarga', {proceso_id: p.id, puntos: puntos}).then(function(j){
         var cont = (j.sin_aplicar || []).filter(function(x){ return x.motivo === 'contradice'; });
-        return abrir(C.campana.id).then(function(){ detalle(p.id); $('#preMsg').textContent = 'Guardado: ' + j.precarga.length + ' puntos cubiertos; ' + (j.escritos || []).length + ' llegaron a la matriz.' +
+        return abrir(C.campana.id, true).then(function(){ detalle(p.id); $('#preMsg').textContent = 'Guardado: ' + j.precarga.length + ' puntos cubiertos; ' + (j.escritos || []).length + ' llegaron a la matriz.' +
           ((j.complementados || []).length ? ' ' + cuenta(j.complementados.length, 'se sumó', 'se sumaron') + ' a lo que ya había (la vista estaba desactualizada).' : '') +
           ((j.conservados || []).length ? ' ' + cuenta(j.conservados.length, 'se conservó', 'se conservaron') + ' tal como estaban (habían cambiado desde que abriste la ficha).' : '') +
           ((j.sin_aplicar || []).length ? ' ' + cuenta(j.sin_aplicar.length, 'no se aplicó', 'no se aplicaron') + ': ' + (cont.length ? (cont.length === 1 ? 'contradice' : 'contradicen') + ' lo guardado, revísalos' : 'superarían el máximo de texto') + '.' : '') +
           ((j.bloqueados || []).length ? ' ' + j.bloqueados.length + ' no la reemplazaron porque ya los escribió una persona o la fila está validada (mira «En la matriz hoy» bajo cada punto).' : '');
           if (cont.length) mostrarConflictos(p, cont.map(function(x){ return puntos.filter(function(q){ return q.punto === x.punto; })[0]; }).filter(Boolean));
-        });
+        }, function(){ bloquear(false); msg('La precarga se guardó, pero el servidor no respondió al actualizar la pantalla. Recarga la página en unos segundos para verla.'); });
       }).catch(function(err){ bloquear(false); msg(err.message); });
     });
   }
@@ -2627,6 +2629,11 @@
       if (e.estado === 'pendiente'){ s.sinEmpezar++; if (e.correo) s.correosPend.push(e.correo); }
       if (e.estado === 'enviado') s.terminaron++;
     });
+    // Secciones del esqueleto (hoja «Gerencias» de la plantilla) que aún no tienen procesos ni personas: también tienen su enlace.
+    (C.estructura || []).forEach(function(f){
+      if (!f.gerencia || !f.seccion) return;
+      if (!Object.keys(m).some(function(k){ return mismaArea(m[k].gerencia, f.gerencia) && mismaArea(m[k].seccion, f.seccion); })) obtener(f.gerencia, f.seccion).esqueleto = true;
+    });
     return Object.keys(m).map(function(k){ m[k].prio = prioridadSeccion(m[k]); return m[k]; })
       .sort(function(a, b){ return a.gerencia.localeCompare(b.gerencia, 'es') || a.seccion.localeCompare(b.seccion, 'es'); });
   }
@@ -2768,7 +2775,7 @@
   // Excel con el enlace de cada sección para pegarlo en las actas (una fila por sección).
   function exportarEnlacesSeccion(){
     if (!C.campana.codigo_publico || !C.campana.abierta){ alert('Activa el enlace abierto de la campaña para generar los enlaces de las secciones.'); return; }
-    var filas = resumenSecciones().filter(function(f){ return f.procesos || f.personas || f.noVigentes; }).map(function(f){
+    var filas = resumenSecciones().filter(function(f){ return f.procesos || f.personas || f.noVigentes || f.esqueleto; }).map(function(f){
       var v = ventanaDe(f.gerencia, f.seccion) || {};
       return {Gerencia: f.gerencia, 'Sección': f.seccion, Enlace: enlaceAbierto(f.gerencia, f.seccion), 'Disponible desde': v.abre || '', 'Plazo (referencia)': v.cierra || '',
         Responsables: C.encuestados.filter(function(e){ return mismaArea(e.gerencia, f.gerencia) && mismaArea(e.seccion, f.seccion); }).map(function(e){ return e.nombre; }).join(', ')};
@@ -3701,6 +3708,11 @@
       if (!asignados.length && !tomado.length) s.sinResp++;
     });
     C.encuestados.forEach(function(e){ obt(e.gerencia, e.seccion).personas.push({e: e, i: info[e.id]}); });
+    // Secciones del esqueleto (hoja «Gerencias» de la plantilla) sin procesos ni personas todavía: aparecen para copiar su enlace y agregar personas.
+    (C.estructura || []).forEach(function(f){
+      if (!f.gerencia || !f.seccion) return;
+      if (!Object.keys(m).some(function(k){ return mismaAreaCl(m[k].gerencia, f.gerencia) && mismaAreaCl(m[k].seccion, f.seccion); })) obt(f.gerencia, f.seccion);
+    });
     // Un Supervisor solo gestiona secciones donde tiene procesos: una persona de otra sección con un proceso suyo delegado no crea una sección aparte.
     return Object.keys(m).map(function(k){ return m[k]; }).filter(function(s){ return C.rol !== 'supervisor' || s.procs.length || s.noVigentes; });
   }
@@ -3735,7 +3747,7 @@
   }
   // ---- lo único que puede editar el cliente: responsables de la sección, asignación de procesos y enlaces
   function apiCl(path, body){
-    return fetch(API + path, {method: 'POST', headers: {'x-client-code': CODIGO, 'content-type': 'application/json'}, body: JSON.stringify(body || {})}).then(function(r){
+    return pedirServidor(API + path, {method: 'POST', headers: {'x-client-code': CODIGO, 'content-type': 'application/json'}, body: JSON.stringify(body || {})}).then(function(r){
       return r.json().catch(function(){ return {ok: false, error: 'Respuesta inesperada'}; }).then(function(j){
         if (!r.ok || !j.ok){ var e = new Error(j.error || ('Error ' + r.status)); e.datos = j; throw e; }
         return j;
@@ -3750,7 +3762,7 @@
     });
   }
   function getCl(path){
-    return fetch(API + path, {headers: {'x-client-code': CODIGO}}).then(function(r){
+    return pedirServidor(API + path, {headers: {'x-client-code': CODIGO}}).then(function(r){
       return r.json().catch(function(){ return {ok: false, error: 'Respuesta inesperada'}; }).then(function(j){
         if (!r.ok || !j.ok) throw new Error(j.error || ('Error ' + r.status));
         return j;
@@ -3773,7 +3785,7 @@
   }
   function recargarCl(aviso){
     var y = window.scrollY;
-    return fetch(API + '/c/campana?recarga=1', {headers: {'x-client-code': CODIGO}}).then(function(r){ return r.json(); }).then(function(j){
+    return pedirServidor(API + '/c/campana?recarga=1', {headers: {'x-client-code': CODIGO}}).then(function(r){ return r.json(); }).then(function(j){
       if (!j.ok) throw new Error(j.error || 'No se pudo actualizar');
       cargarCliente(j); window.scrollTo(0, y);
       if (aviso) avisoCl(aviso);
@@ -4084,7 +4096,7 @@
   function cargarTrazaCl(){
     var cu = $('#clTrazaCuerpo'); if (!cu) return;
     cu.innerHTML = '<p class="muted">Cargando…</p>';
-    fetch(API + '/c/trazabilidad', {headers: {'x-client-code': CODIGO}}).then(function(r){ return r.json(); }).then(function(t){
+    pedirServidor(API + '/c/trazabilidad', {headers: {'x-client-code': CODIGO}}).then(function(r){ return r.json(); }).then(function(t){
       if (!t.ok) throw new Error(t.error || 'No se pudo cargar'); var c2 = $('#clTrazaCuerpo'); if (c2) renderTrazaCl(c2, t, false);
     }).catch(function(err){ var c2 = $('#clTrazaCuerpo'); if (c2) c2.innerHTML = '<p class="msg warn">' + esc(err.message) + '</p>'; });
   }

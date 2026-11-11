@@ -72,17 +72,19 @@ test('la descripción es de solo lectura: la encuesta no puede editarla', async 
   assert.equal(historial('p1', 'objetivo').length, 1);
 });
 
-test('confirmar que sigue vigente no cambia el texto: queda validado, cubre el punto y se registra', async () => {
-  const antes = historial('p1', 'terceros').length;
-  const r = await llamar('POST', '/r/campo', { k: maria, proceso_id: 'p1', punto: 'terceros' });
+test('confirmar que sigue vigente no cambia el texto: queda validado y se registra, pero no marca el check', async () => {
+  await admin('POST', '/a/matriz', { proceso_id: 'p1', matriz: { normativa: 'Ley 29733' } });   // texto de la matriz, sin precarga
+  const antes = historial('p1', 'normativa').length;
+  const r = await llamar('POST', '/r/campo', { k: maria, proceso_id: 'p1', punto: 'normativa' });
   assert.equal(r.status, 200, JSON.stringify(r));
-  assert.equal(r.valor.validado, true); assert.equal(r.valor.texto, 'Proveedores y notarías');
-  const h = historial('p1', 'terceros');
+  assert.equal(r.valor.validado, true); assert.equal(r.valor.texto, 'Ley 29733');
+  const h = historial('p1', 'normativa');
   assert.equal(h.length, antes + 1); assert.equal(h[h.length - 1].tipo, 'validacion'); assert.equal(h[h.length - 1].actor_nombre, 'María Quispe');
   assert.equal(h[h.length - 1].anterior, h[h.length - 1].nuevo);
   const s = await sesion(maria);
-  assert.equal(s.valores.p1.terceros.validado, true);
-  assert.equal(s.respuestas.p1.b2.checklist.terceros.estado, 'cubierto');
+  assert.equal(s.valores.p1.normativa.validado, true);
+  const ck = ((s.respuestas.p1 || {}).b3 || {}).checklist || {};
+  assert.ok(!ck.normativa, 'confirmar no marca el check del punto');
 });
 
 test('con información nueva la descripción se actualiza sola aunque estuviera validada, y la validación se vuelve a pedir', async () => {
@@ -95,7 +97,6 @@ test('con información nueva la descripción se actualiza sola aunque estuviera 
 });
 
 test('un cambio de la consola quita la validación y congela la descripción: la precarga ya no la pisa', async () => {
-  await llamar('POST', '/r/campo', { k: maria, proceso_id: 'p1', punto: 'terceros' });
   await admin('POST', '/a/matriz', { proceso_id: 'p1', matriz: { terceros: 'Proveedores, notarías y SUNARP (corregido)' } });
   assert.equal((await sesion(maria)).valores.p1.terceros.validado, false);
   const h = historial('p1', 'terceros');
@@ -139,8 +140,8 @@ test('el historial se consulta con filtros desde la consola y exige código de a
   const terc = await admin('GET', '/a/campana/historial?id=c1&proceso_id=p1&campo=terceros');
   assert.ok(terc.cambios.length >= 3 && terc.cambios[0].creado >= terc.cambios[1].creado);
   const dePersona = await admin('GET', '/a/campana/historial?id=c1&actor=' + encodeURIComponent('María'));
-  assert.ok(dePersona.cambios.length >= 2 && dePersona.cambios.every(c => c.tipo === 'validacion') && dePersona.cambios.every(c => c.actor_nombre === 'María Quispe'));
-  assert.equal((await admin('GET', '/a/campana/historial?id=c1&origen=documento')).cambios.length, 1);
+  assert.ok(dePersona.cambios.length >= 1 && dePersona.cambios.every(c => c.tipo === 'validacion') && dePersona.cambios.every(c => c.actor_nombre === 'María Quispe'));
+  assert.equal((await admin('GET', '/a/campana/historial?id=c1&proceso_id=p1&origen=documento')).cambios.length, 1);
   assert.equal((await admin('GET', '/a/campana/historial?id=nada')).status, 404);
 });
 
@@ -162,13 +163,15 @@ test('una validación de MBC sobre la fila cuenta como validada y se distingue d
 });
 
 test('deshacer la marca revoca la confirmación de vigencia y queda en el historial', async () => {
-  await llamar('POST', '/r/campo', { k: maria, proceso_id: 'p1', punto: 'objetivo' });
-  assert.equal((await sesion(maria)).valores.p1.objetivo.validado, true);
-  const r = await llamar('POST', '/r/punto', { k: maria, proceso_id: 'p1', pregunta: 'b1', punto: 'objetivo', estado: '' });
+  await admin('POST', '/a/matriz', { proceso_id: 'p1', matriz: { kpis: 'Contratos vencidos' } });   // texto de la matriz, sin precarga
+  await llamar('POST', '/r/campo', { k: maria, proceso_id: 'p1', punto: 'kpis' });
+  assert.equal((await sesion(maria)).valores.p1.kpis.validado, true);
+  await llamar('POST', '/r/punto', { k: maria, proceso_id: 'p1', pregunta: 'b3', punto: 'kpis', estado: 'cubierto' });   // «Lo mencioné»
+  const r = await llamar('POST', '/r/punto', { k: maria, proceso_id: 'p1', pregunta: 'b3', punto: 'kpis', estado: '' });
   assert.equal(r.status, 200, JSON.stringify(r));
-  const v = (await sesion(maria)).valores.p1.objetivo;
-  assert.equal(v.validado, false); assert.equal(v.origen, 'documento', 'el origen del texto no cambia por confirmar o revocar');
-  assert.deepEqual(historial('p1', 'objetivo').slice(-2).map(h => h.tipo), ['validacion', 'revocacion']);
+  const v = (await sesion(maria)).valores.p1.kpis;
+  assert.equal(v.validado, false);
+  assert.deepEqual(historial('p1', 'kpis').slice(-2).map(h => h.tipo), ['validacion', 'revocacion']);
 });
 
 test('la descripción queda «desactualizada» cuando hay una respuesta más nueva que el último análisis, y la sesión informa si la IA es automática', async () => {
@@ -194,4 +197,41 @@ test('las confirmaciones de las personas cuentan como cubiertas en el avance del
   const v = await puntosValidados(env, 'c1');
   assert.ok(v.every(x => x.proceso_id && x.punto));
   assert.ok(!v.some(x => x.proceso_id === 'p1' && x.punto === 'objetivo'), 'revocado: ya no cuenta');
+});
+
+// ---- HU04: la encuesta muestra la precarga y el check solo lo activa la respuesta de la persona
+const PUNTOS16 = ['objetivo', 'actividades', 'riesgos', 'aprobaciones', 'inicio_fin', 'carga', 'sistemas', 'manual_sistema', 'terceros',
+  'datos_personales', 'finalidad_dp', 'documentacion', 'estandar_tdp', 'estandar_global', 'normativa', 'kpis'];
+
+test('HU04 mockup del error: la precarga se ve entera en la encuesta aunque la matriz tenga inventario, y ningún punto aparece marcado', async () => {
+  db.prepare("INSERT INTO procesos (id, campana_id, gerencia, seccion, proceso, fuente, matriz) VALUES ('p5','c1',?,?,'Capacitación','inventario',?)")
+    .run(G, S, JSON.stringify({ objetivo: 'Contar con el personal altamente capacitado' }));
+  const r = await admin('POST', '/a/precarga', { proceso_id: 'p5', puntos: PUNTOS16.map(p => ({ punto: p, texto: 'PRECARGA ' + p, archivos: ['doc.pdf'] })) });
+  assert.equal(r.status, 200, JSON.stringify(r));
+  assert.deepEqual(r.bloqueados.map(b => b.punto), ['objetivo']);
+  assert.equal(matriz('p5').objetivo, 'Contar con el personal altamente capacitado', 'la matriz conserva el inventario');
+  const s = await sesion(maria);
+  const t = s.precarga_txt.p5;
+  assert.equal(Object.keys(t).length, 16);
+  PUNTOS16.forEach(p => { assert.equal(t[p].texto, 'PRECARGA ' + p); assert.deepEqual(t[p].archivos, ['doc.pdf']); });
+  assert.ok(t.riesgos && t.inicio_fin && t.manual_sistema);
+  assert.equal(s.respuestas.p5, undefined, 'ningún check por tener precarga');
+  assert.ok(!((await sesion(pedro)).precarga_txt || {}).p5);   // otra sección no ve nada
+});
+
+test('HU04 «Sigue vigente» sobre una precarga se guarda en el checklist de la persona, sin check, sin tocar la matriz ni el historial', async () => {
+  const antes = db.prepare('SELECT COUNT(*) n FROM matriz_historial WHERE proceso_id=?').get('p5').n;
+  const r = await llamar('POST', '/r/campo', { k: maria, proceso_id: 'p5', punto: 'riesgos' });
+  assert.equal(r.status, 200, JSON.stringify(r));
+  assert.equal(r.vigente, true);
+  const ck = (await sesion(maria)).respuestas.p5.b1.checklist;
+  assert.ok(ck._vigentes.riesgos); assert.ok(!ck.riesgos);
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM matriz_historial WHERE proceso_id=?').get('p5').n, antes);
+});
+
+test('HU04 la revisión sin texto deja los puntos en «falta» y conserva las confirmaciones de vigencia', async () => {
+  const r = await llamar('POST', '/r/verificar', { k: maria, proceso_id: 'p5', pregunta: 'b1' });
+  assert.equal(r.status, 200, JSON.stringify(r));
+  ['objetivo', 'actividades', 'riesgos', 'aprobaciones', 'inicio_fin'].forEach(p => assert.equal(r.checklist[p].estado, 'falta', p));
+  assert.ok(r.checklist._vigentes.riesgos);
 });
