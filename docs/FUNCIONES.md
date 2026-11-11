@@ -87,6 +87,7 @@ Ninguna clave de Supervisor se guarda en claro: en la base solo queda su huella 
 | `POST /c/enlace-abierto` | `rutaClienteEnlaceAbierto` | Devolver el enlace abierto de la campaña. |
 | `POST /c/supervisores` | `gestionarSupervisores` | Crear, editar, activar, desactivar o renovar la clave de un Supervisor. Solo administrador del cliente. |
 | `GET /c/trazabilidad` | `trazabilidad` | Delegaciones, acciones de los Supervisores y lista de Supervisores. Solo administrador del cliente. |
+| `GET /a/embudo/funnel?campana_id=` | `rutaAdminFunnel` → `calcularFunnel` (`embudo.js`) | Funnel de trazabilidad del llenado (gerencias, funnel, secciones, usuarios) para el botón «Exportar trazabilidad (Excel)» de Matriz y validación en la consola. Solo administración MBC. Ver `EMBUDO-funnel-trazabilidad.md`. |
 | `GET /c/flujo` | `rutaFlujo` | Estado de los 4 pasos del Gerente. |
 | `GET /c/flujo/catalogo` | `rutaFlujoCatalogo` | Procesos de MBC que el Gerente todavía no tiene en su alcance. |
 | `POST /c/flujo/confirmar` | `rutaFlujoConfirmar` | Confirma un paso. |

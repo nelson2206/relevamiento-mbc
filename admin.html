@@ -1649,6 +1649,7 @@
           ACT_ORDEN.map(function(k){ return '<option value="' + k + '"' + (k === FM.act ? ' selected' : '') + '>' + ACT_TXT[k] + '</option>'; }).join('') + '</select></div>' +
         '<div><button class="btn btn-ghost" id="mMasBtn" type="button" aria-expanded="' + FM.mas + '" aria-controls="mMas">Más filtros</button></div>' +
         '<div><button class="btn btn-navy" id="mExportar" type="button">Exportar matriz (Excel)</button></div>' +
+        '<div><button class="btn btn-ghost" id="mTrazabilidad" type="button" title="Excel con el avance del llenado: gerencias, funnel, secciones y usuarios">Exportar trazabilidad (Excel)</button></div>' +
       '</div><div id="mMas" class="mas' + (FM.mas ? '' : ' hidden') + '">' + panelMas() + '</div>' +
       '<div id="mFlujo" class="row" style="margin:6px 0"></div><div id="mResumen" class="cob"></div><div id="mLista"></div>';
     var repintar = function(){ pintarMatrizLista(); };
@@ -1661,6 +1662,7 @@
       this.setAttribute('aria-expanded', String(FM.mas)); $('#mMas').classList.toggle('hidden', !FM.mas);
     });
     $('#mExportar').addEventListener('click', exportarMatriz);
+    $('#mTrazabilidad').addEventListener('click', function(){ exportarFunnel(this); });
     pintarMatrizLista();
   }
 
@@ -4085,6 +4087,58 @@
     var wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(HISTORIAL.length ? HISTORIAL.map(filaHistorial) : [{'(sin datos)': ''}]), 'Historial');
     XLSX.writeFile(wb, nombreArchivo('Historial de la matriz - ' + C.campana.nombre));
   });
+
+  // ------------------------------------------------------------ trazabilidad del llenado (consola: tablas simples + Excel, sin gráficos)
+  // Sin pantalla propia: un botón de «Matriz y validación» baja el Excel. Respeta el filtro de gerencia de la matriz.
+  function exportarFunnel(boton){
+    var texto = boton.textContent; boton.disabled = true; boton.textContent = 'Preparando…';
+    api('/a/embudo/funnel?campana_id=' + encodeURIComponent(C.campana.id)).then(function(f){ libroFunnel(f, FM.ger); })
+      .catch(function(err){ alert('No se pudo generar la trazabilidad: ' + err.message); })
+      .then(function(){ boton.disabled = false; boton.textContent = texto; });
+  }
+  function filtrarFunnel(f, ger){
+    var ok = function(x){ return !ger || x.gerencia === ger; };
+    // «Total» solo va cuando no hay una gerencia elegida.
+    return {resumen: f.resumen.filter(ok), gerencias: f.gerencias.filter(function(x){ return ger ? x.gerencia === ger : true; }), secciones: f.secciones.filter(ok), usuarios: f.usuarios.filter(ok)};
+  }
+  // Funnel de una fila (gerencia o sección): primero las cantidades de personas y, a la derecha, los porcentajes.
+  function filaFunnel(x, claves){
+    var o = {}; claves.forEach(function(c){ o[c[0]] = x[c[1]]; });
+    o['Registrados'] = x.registrados; o['Con procesos seleccionados'] = x.con_procesos; o['Iniciados'] = x.iniciados; o['Avanzados'] = x.avanzados;
+    o['Terminados'] = x.terminados; o['Encuesta terminada'] = x.encuesta_terminada; o['Inactivos'] = x.inactivos;
+    o['% Con procesos seleccionados'] = x.pct_con_procesos; o['% Iniciados'] = x.pct_iniciados; o['% Avanzados'] = x.pct_avanzados;
+    o['% Terminados'] = x.pct_terminados; o['% Encuesta terminada'] = x.pct_encuesta_terminada; o['% Inactivos'] = x.pct_inactivos; o['Avance de procesos %'] = x.avance_pct;
+    return o;
+  }
+  function libroFunnel(f, ger){
+    var d = filtrarFunnel(f, ger), vacio = [{'(sin datos)': ''}];
+    var hoja = function(filas, ancho){ var ws = XLSX.utils.json_to_sheet(filas.length ? filas : vacio); ws['!cols'] = ancho.map(function(w){ return {wch: w}; }); if (filas.length) ws['!autofilter'] = {ref: ws['!ref']}; return ws; };
+    var anchoFunnel = [12, 26, 10, 11, 11, 18, 10, 28, 12, 13, 13, 20, 12, 20];
+    var wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, hoja(d.resumen.map(function(g){ return {Gerencia: g.gerencia, Estado: g.estado, 'Avance %': g.avance_pct, 'Última actividad': g.ultima_actividad, 'Días sin actividad': g.dias_sin_actividad}; }), [26, 20, 10, 16, 18]), 'Resumen');
+    XLSX.utils.book_append_sheet(wb, hoja(d.gerencias.map(function(g){ return filaFunnel(g, [['Gerencia', 'gerencia']]); }), [26].concat(anchoFunnel)), 'Gerencias');
+    XLSX.utils.book_append_sheet(wb, hoja(d.secciones.map(function(s){ return filaFunnel(s, [['Gerencia', 'gerencia'], ['Sección', 'seccion']]); }), [26, 26].concat(anchoFunnel)), 'Secciones');
+    // Usuarios: datos de la persona, cantidades (sin «x de N»), porcentajes sobre su total de procesos y, al final, los SÍ/NO.
+    XLSX.utils.book_append_sheet(wb, hoja(d.usuarios.map(function(u){ return {Gerencia: u.gerencia, 'Sección': u.seccion, Usuario: u.usuario, 'Fecha de creación': u.creado, 'Última actividad': u.ultima_actividad,
+      'Procesos confirmados': u.confirmados, 'Procesos nuevos': u.nuevos, 'Total de procesos': u.total, Iniciados: u.iniciados, Avanzados: u.avanzados, Terminados: u.terminados,
+      '% Iniciados': u.pct_iniciados, '% Avanzados': u.pct_avanzados, '% Terminados': u.pct_terminados, 'Encuesta terminada': u.encuesta_terminada, Inactivo: u.inactivo}; }), [26, 26, 26, 16, 16, 19, 16, 17, 10, 11, 11, 13, 13, 13, 18, 10]), 'Usuarios');
+    XLSX.utils.book_append_sheet(wb, hoja([
+      {Concepto: 'Resumen', Regla: 'Una fila por gerencia: estado, avance de procesos, última actividad y días sin actividad.'},
+      {Concepto: 'Gerencias y Secciones', Regla: 'El mismo funnel, en personas, por gerencia (con una fila Total) y por sección. A la izquierda las cantidades y a la derecha sus porcentajes.'},
+      {Concepto: 'Registrados', Regla: 'La persona creó su acceso (PIN). Es la base del 100% de todos los porcentajes.'},
+      {Concepto: 'Con procesos seleccionados', Regla: 'Confirmó o eligió al menos un proceso, o creó uno nuevo.'},
+      {Concepto: 'Iniciados', Regla: 'Respondió al menos 1 pregunta de algún proceso.'},
+      {Concepto: 'Avanzados', Regla: 'Algún proceso con al menos 2 preguntas respondidas.'},
+      {Concepto: 'Terminados', Regla: 'Todos sus procesos están completos según la regla de «Completo» del panel.'},
+      {Concepto: 'Encuesta terminada', Regla: 'La persona marcó «Terminé» (declarativo; puede haber más que «Terminados»).'},
+      {Concepto: 'Inactivos', Regla: '7 días o más sin actividad y sin haber terminado la encuesta.'},
+      {Concepto: '% de cada etapa', Regla: 'Personas de la etapa ÷ personas registradas.'},
+      {Concepto: 'Avance de procesos %', Regla: 'Procesos terminados ÷ procesos de las personas. Es el avance real del trabajo, distinto del % de personas.'},
+      {Concepto: 'Usuarios', Regla: 'Una fila por persona. Total de procesos = confirmados + nuevos; Iniciados, Avanzados y Terminados son cantidades de esos procesos y sus % son sobre ese total.'},
+      {Concepto: 'Estado de la gerencia', Regla: 'En levantamiento; Lista para validar (avance 100 %); Validada (todos sus procesos validados por MBC).'}
+    ], [26, 120]), 'Definiciones');
+    XLSX.writeFile(wb, nombreArchivo('Trazabilidad del llenado - ' + C.campana.nombre + (ger ? ' - ' + ger : '')));
+  }
 
   function pintarAdminCl(){
     var el = $('#clAdmin');

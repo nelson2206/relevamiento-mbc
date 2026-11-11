@@ -34,6 +34,7 @@
  *   POST /r/imagen?...&pregunta=bconf&finalidad=confidencial   cuerpo: imagen/PDF/DOCX -> {datos, completo, faltan}   (igual: propone, no guarda)
  *   POST /r/campo                {k, proceso_id, punto}   (la persona confirma que la descripción precargada sigue vigente; no se edita)
  *   GET  /a/embudo/export?campana_id=&conjunto=eventos|personas|todos&formato=json|csv&desde=&hasta=&limite=&despues=   embudo de puntos de contacto (solo lectura; sin textos, PIN ni correos)
+ *   GET  /a/embudo/funnel?campana_id=   tablas del funnel de trazabilidad (gerencias, funnel, secciones, usuarios)
  *   POST /a/embudo/backfill      {campana_id}   reconstruye eventos desde los datos anteriores (reconstruido=1; repetirla no duplica)
  *   GET  /a/campana/historial?id=&proceso_id=&campo=&origen=&actor=&desde=&hasta=&limite=&pagina=   historial de cambios de la matriz
  *   POST /r/transcribir?k=       cuerpo: audio WAV (bytes) -> {texto}
@@ -118,7 +119,7 @@ import { ambitoDe, enSecs, claveArea, registrarAccion } from './ambito.js';
 import { limpiarDatos, evaluar, resumenTexto, UBICACIONES, ESQUEMA_IA, PROMPT_IA, desdeSalidaIA, camposMatriz } from './confidencial.js';
 import { PUNTO_CAMPO, ACTOR_IA, ACTOR_CONSOLA, actorEncuestado, sentenciasHistorial, conBorrados, ultimosEventos, puedeAutomatico, valoresDeProceso, validarCampoDeEncuesta, rutaHistorialMatriz } from './matriz-sync.js';
 import { HttpError, ahora, uid, txt, normal, mismaArea, log, mascara, igualSeguro, tokenNuevo, pinValido, salNueva, hashPin, verificarPin } from './comun.js';
-import { registrarEventos, visitanteValido, eventosEnlaceCompartido, eventoDelegados, eventosPersonasAgregadas, eventoEnlaceAbierto, eventosIngreso, eventoPrimeraRespuesta, backfillEmbudo, exportarEmbudo } from './embudo.js';
+import { registrarEventos, visitanteValido, eventosEnlaceCompartido, eventoDelegados, eventosPersonasAgregadas, eventoEnlaceAbierto, eventosIngreso, eventoPrimeraRespuesta, backfillEmbudo, exportarEmbudo, eventoEncuestaTerminada, calcularFunnel } from './embudo.js';
 import { hashClaveSup, listaSupervisores, gestionarSupervisores, rutaPersonaPerfil, rutaUsuario, rutaClavesPerfiles, aplicarPerfil, asignarSeccionesYProcesos } from './usuarios.js';
 
 // Modelo de IA y esfuerzo por tarea: se cambian en wrangler.toml [vars] sin tocar el código (por defecto, Claude Sonnet 5.5).
@@ -729,10 +730,11 @@ async function rutaTranscribir(env, req, url) {
   return { ok: true, texto: String(r.text || '').trim() };
 }
 
-async function rutaEnviar(env, b) {
+async function rutaEnviar(env, b, ctx) {
   const e = await encuestadoPorToken(env, b.k);
   await env.DB.prepare("UPDATE encuestados SET estado='enviado', actualizado=? WHERE id=?").bind(ahora(), e.id).run();
   log('enviado', { campana: e.campana_id, k: mascara(e.token) });
+  registrarEventos(env, ctx, [eventoEncuestaTerminada(e)]);   // embudo: fecha del «Terminé» (solo la primera vez)
   return { ok: true };
 }
 
@@ -2780,6 +2782,13 @@ async function rutaClienteCampana(env, actor, recarga) {
     encuestados, procesos, revisiones, respuestas: limpias, asignaciones, precarga, ventanas, estructura, estructurado: [], sistemas: [], bloques: BLOQUES, generado: ahora() };
 }
 
+// Funnel de trazabilidad del llenado (botón de Matriz y validación y su Excel). Solo administración MBC: el panel del cliente no lo trae.
+async function rutaAdminFunnel(env, url) {
+  const camp = await env.DB.prepare('SELECT id, nombre FROM campanas WHERE id=?').bind(txt(url.searchParams.get('campana_id'), 60)).first();
+  if (!camp) throw new HttpError(404, 'Campaña no encontrada');
+  return calcularFunnel(env, camp, BLOQUES);
+}
+
 // ---------------------------------------------------------------- escritura acotada del panel del cliente
 // Administrador del cliente: agregar responsables a una sección que YA existe, asignar («delegar») procesos, pedir enlaces y activar el enlace abierto.
 // Supervisor: lo mismo, pero solo dentro de su alcance, sin el enlace abierto y sin gestionar supervisores. Nadie ve respuestas ni toca matriz,
@@ -2943,7 +2952,7 @@ export default {
         if (url.pathname === '/r/punto') return json(await rutaPunto(env, b, ctx), 200, h);
         if (url.pathname === '/r/campo') return json(await rutaCampo(env, b, ctx), 200, h);
         if (url.pathname === '/r/confidencial') return json(await rutaConfidencial(env, b, ctx), 200, h);
-        if (url.pathname === '/r/enviar') return json(await rutaEnviar(env, b), 200, h);
+        if (url.pathname === '/r/enviar') return json(await rutaEnviar(env, b, ctx), 200, h);
       }
 
       // Panel del cliente (solo lectura, solo su campaña): su propio código; nunca da acceso a /a/.
@@ -2975,6 +2984,7 @@ export default {
         if (ruta === 'GET /a/campana/flujo') return json(await rutaFlujoAdminCampana(env, url), 200, h);
         if (ruta === 'GET /a/campana/trazabilidad') return json(await rutaTrazabilidadAdmin(env, url), 200, h);
         if (ruta === 'GET /a/campana/historial') return json(await rutaHistorialMatriz(env, url), 200, h);
+        if (ruta === 'GET /a/embudo/funnel') return json(await rutaAdminFunnel(env, url), 200, h);
         if (ruta === 'GET /a/embudo/export') return await exportarEmbudo(env, url, BLOQUES, h);
         if (ruta === 'GET /a/documentos') return json(await rutaDocumentos(env, url), 200, h);
         if (ruta === 'GET /a/documentos/archivo') return await rutaDocumentoArchivo(env, url, h);

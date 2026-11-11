@@ -30,7 +30,8 @@ export const EVENTOS = Object.freeze({
   proceso_completo: { paso: 7, idem: true, paquete: 3 },
   proceso_validado: { paso: 7, idem: false, paquete: 3 },
   flujo_paso_confirmado: { paso: 7, idem: false, paquete: 3 },
-  aprobacion_final: { paso: 7, idem: false, paquete: 3 }
+  aprobacion_final: { paso: 7, idem: false, paquete: 3 },
+  encuesta_terminada: { paso: 7, idem: true, paquete: 3 }   // la persona marcó «Terminé» (declarativo); guarda la fecha que hoy no existe
 });
 export const ACTORES = ['gerente', 'supervisor', 'cliente', 'persona', 'admin', 'anonimo', 'sistema'];
 export const CANALES = ['correo', 'enlace', 'invitacion', 'outlook', 'copiar', 'whatsapp', 'otro'];
@@ -130,6 +131,10 @@ export const eventoPrimeraRespuesta = (e, procesoId, bloque) =>
   ({ campana_id: e.campana_id, tipo: 'primera_respuesta', actor_tipo: 'persona', actor_id: e.id, persona_id: e.id, ...deArea(e), proceso_id: procesoId,
     clave: 'primera_respuesta|' + e.id + '|' + procesoId, detalle: { bloque } });
 
+// La persona marcó «Terminé» (solo la primera vez: clave única; si la consola revierte el estado y vuelve a enviar, conserva la primera fecha).
+export const eventoEncuestaTerminada = e =>
+  ({ campana_id: e.campana_id, tipo: 'encuesta_terminada', actor_tipo: 'persona', actor_id: e.id, persona_id: e.id, ...deArea(e), clave: 'encuesta_terminada|' + e.id });
+
 // ---------------------------------------------------------------- reconstrucción (una sola vez, idempotente)
 const J = "json_object('reconstruido', json('true')";
 // Los eventos que se repiten (sin clave natural) solo se reconstruyen hasta el primer evento medido de ese tipo: lo posterior ya lo midió el código.
@@ -202,7 +207,11 @@ function sentenciasBackfill(campId) {
       FROM flujo_pasos f LEFT JOIN supervisores s ON s.id=f.supervisor_id WHERE f.campana_id=?`, [c]],
     ['aprobacion_final', `${INS} SELECT ${ID}, a.campana_id, 'aprobacion_final', COALESCE(s.perfil,'gerente'), a.supervisor_id, COALESCE(s.encuestado_id,''), '', '', '', '', '', 1,
         'aprob|' || a.id, ${J}, 'procesos', a.procesos), a.aprobado_en
-      FROM aprobaciones a LEFT JOIN supervisores s ON s.id=a.supervisor_id WHERE a.campana_id=?`, [c]]
+      FROM aprobaciones a LEFT JOIN supervisores s ON s.id=a.supervisor_id WHERE a.campana_id=?`, [c]],
+    // B12: encuestas ya marcadas como terminadas. No se guardó la fecha del envío: se toma la última actualización de la persona (cota superior).
+    ['encuesta_terminada', `${INS} SELECT ${ID}, e.campana_id, 'encuesta_terminada', 'persona', e.id, e.id, e.gerencia, e.seccion, '', '', '', 1, 'encuesta_terminada|' || e.id,
+        ${J}, 'aprox', 'cota'), COALESCE(NULLIF(e.actualizado,''), e.creado)
+      FROM encuestados e WHERE e.campana_id=? AND e.estado='enviado' AND COALESCE(NULLIF(e.actualizado,''), e.creado) IS NOT NULL`, [c]]
   ];
 }
 
@@ -331,6 +340,20 @@ async function conjuntoPersonas(env, camp, bloques, cuentas) {
     });
     if (ev.proceso_completo) primerCompleto = ev.proceso_completo.primero;
 
+    // Funnel de trazabilidad: los procesos de la persona son los que confirmó o eligió más los que creó ella (N). Iniciado = 1 pregunta con contenido,
+    // avanzado = 2 o más, terminado = completo según cobertura.js (lo ya completo cuenta también como iniciado y avanzado).
+    const esNuevo = p => p.fuente === 'nuevo' && p.creado_por === e.id;
+    const revDe = new Set(revs.filter(r => r.encuestado_id === e.id).map(r => r.proceso_id));
+    const mios = suyos.filter(p => esNuevo(p) || revDe.has(p.id) || elegidos.has(p.id));
+    let nIni = 0, nAv = 0, nTer = 0;
+    mios.forEach(p => {
+      const preguntas = new Set(respDe.filter(r => r.proceso_id === p.id && tieneContenido(r)).map(r => r.pregunta)).size;
+      const listo = cobertura.persona(p.id, e.id).completo;
+      if (listo) nTer++;
+      if (preguntas >= 1 || listo) nIni++;
+      if (preguntas >= 2 || listo) nAv++;
+    });
+
     // Apertura: primero lo medido (visitantes que solo se identificaron con esta persona), luego lo inferido de su identificación o su acceso.
     const propios = (visitantesDe[e.id] || []).filter(v => personasDe[v].size === 1), ambiguos = (visitantesDe[e.id] || []).filter(v => personasDe[v].size > 1);
     const deSeccion = (lista) => aperturas.filter(a => lista.includes(a.visitante) && mismaArea(a.gerencia, e.gerencia) && mismaArea(a.seccion, e.seccion));
@@ -356,7 +379,11 @@ async function conjuntoPersonas(env, camp, bloques, cuentas) {
       ultimo_paso: ultimoPaso, ultimo_paso_nombre: PASOS[ultimoPaso],
       dias_sin_actividad: ultima ? Math.max(0, Math.floor((Date.parse(ahoraIso) - Date.parse(ultima)) / 86400000)) : '',
       procesos_asignados: suyos.length, procesos_con_respuesta: conResp, procesos_completos: completos, procesos_validados: validadosN,
-      pct_procesos_completos: pct(completos, suyos.length), pct_puntos: pct(listos, total), bloqueada: e.bloqueada ? 1 : 0
+      pct_procesos_completos: pct(completos, suyos.length), pct_puntos: pct(listos, total), bloqueada: e.bloqueada ? 1 : 0,
+      // Solo para el funnel (no salen en el CSV):
+      estado: e.estado, registrada: (e.con_pin || f('acceso_creado')) ? 1 : 0, f_encuesta_terminada: f('encuesta_terminada'),
+      n_confirmados: mios.length - mios.filter(esNuevo).length, n_nuevos: mios.filter(esNuevo).length, n_procesos: mios.length,
+      n_iniciados: nIni, n_avanzados: nAv, n_terminados: nTer
     };
   });
 }
@@ -380,4 +407,67 @@ export async function exportarEmbudo(env, url, bloques, h) {
   const cab = { 'content-type': 'text/csv; charset=utf-8', 'cache-control': 'no-store', 'content-disposition': `attachment; filename="embudo-${conjunto}-${salida.generado.slice(0, 10)}.csv"` };
   if (eventos && conj.siguiente) cab['x-siguiente'] = conj.siguiente;   // cursor para pedir la página siguiente (parámetro «despues»)
   return new Response(aCsv(eventos ? COL_EVENTOS : COL_PERSONAS, conj.filas), { status: 200, headers: Object.assign(cab, h || {}, { 'Access-Control-Expose-Headers': 'x-siguiente, content-disposition' }) });
+}
+
+// ---------------------------------------------------------------- funnel de trazabilidad (botón de Matriz y validación y su Excel)
+// Tablas simples, sin gráficos: Resumen (estado, avance, última actividad por gerencia), Gerencias y Secciones (el funnel de 7 etapas con su %) y Usuarios.
+// Reglas en docs/EMBUDO-funnel-trazabilidad.md. Todo sale de los datos ya medidos; no guarda nada.
+export const DIAS_INACTIVA = 7;
+export const ETAPAS_FUNNEL = ['Registro de usuario', 'Con procesos seleccionados', 'Proceso iniciado', 'Proceso avanzado', 'Procesos terminados', 'Encuesta terminada'];
+const dia = iso => (iso ? fechaLima(iso).slice(0, 10) : '');
+const diasDesde = iso => (iso ? Math.max(0, Math.floor((Date.parse(ahora()) - Date.parse(iso)) / 86400000)) : '');
+const porcentaje = (a, b) => (b ? Math.round((a / b) * 100) : 0);
+
+// Etapas que alcanzó una persona. Las etapas 1 a 5 son acumulativas (alcanzar una exige haber alcanzado las anteriores); la 6 (declarativa) solo exige estar registrada.
+function etapasDe(r) {
+  const reg = !!r.registrada;
+  const sel = reg && r.n_procesos > 0, ini = sel && r.n_iniciados > 0, av = ini && r.n_avanzados > 0, ter = av && r.n_terminados === r.n_procesos;
+  return [reg, sel, ini, av, ter, reg && r.estado === 'enviado'];
+}
+
+export async function calcularFunnel(env, camp, bloques) {
+  const cuentas = (await env.DB.prepare('SELECT id, nombre, perfil, alcance, activo, encuestado_id FROM supervisores WHERE campana_id=?').bind(camp.id).all()).results;
+  const filas = (await conjuntoPersonas(env, camp, bloques, cuentas));
+  const procs = (await env.DB.prepare('SELECT gerencia, seccion, validacion FROM procesos WHERE campana_id=? AND fuera_alcance=0').bind(camp.id).all()).results;
+
+  const inactiva = r => r.estado !== 'enviado' && Number(diasDesde(r.f_ultima_actividad || r.f_agregado)) >= DIAS_INACTIVA;
+  const grupos = new Map(), llave = (g, s) => g + '\u0001' + s;
+  const grupo = (g, s) => { const k = llave(g, s); if (!grupos.has(k)) grupos.set(k, { gerencia: g, seccion: s, etapas: [0, 0, 0, 0, 0, 0], inactivos: 0, procesos: 0, terminados: 0, ultima: '' }); return grupos.get(k); };
+  filas.forEach(r => {
+    const g = grupo(r.gerencia, r.seccion);
+    etapasDe(r).forEach((v, i) => { if (v) g.etapas[i]++; });
+    if (inactiva(r)) g.inactivos++;
+    g.procesos += r.n_procesos; g.terminados += r.n_terminados;
+    g.ultima = maxFecha(g.ultima, r.f_ultima_actividad);
+  });
+
+  const lista = [...grupos.values()];
+  const suma = (items, extra) => items.reduce((t, g) => { g.etapas.forEach((n, i) => { t.etapas[i] += n; }); t.inactivos += g.inactivos; t.procesos += g.procesos; t.terminados += g.terminados; t.ultima = maxFecha(t.ultima, g.ultima); return t; },
+    Object.assign({ etapas: [0, 0, 0, 0, 0, 0], inactivos: 0, procesos: 0, terminados: 0, ultima: '' }, extra));
+  const gerencias = [...new Set(lista.map(g => g.gerencia))].sort((a, b) => a.localeCompare(b, 'es'));
+  const porGer = gerencias.map(g => suma(lista.filter(x => x.gerencia === g), { gerencia: g }));
+
+  const gerenciasT = porGer.map(g => {
+    const mias = procs.filter(p => mismaArea(p.gerencia, g.gerencia)), avance = porcentaje(g.terminados, g.procesos);
+    const validada = mias.length > 0 && mias.every(p => p.validacion === 'validado');
+    return { gerencia: g.gerencia, estado: validada ? 'Validada' : (g.procesos > 0 && avance === 100 ? 'Lista para validar' : 'En levantamiento'), avance_pct: avance,
+      ultima_actividad: dia(g.ultima), dias_sin_actividad: diasDesde(g.ultima) };
+  });
+  // Una fila por gerencia o sección: cantidad de personas en cada etapa y, al lado, su % (sobre las personas registradas).
+  // avance_pct = procesos terminados / procesos de las personas: el avance real del trabajo, no de las personas.
+  const filaDe = g => {
+    const e = g.etapas, base = e[0];
+    return { registrados: e[0], con_procesos: e[1], pct_con_procesos: porcentaje(e[1], base), iniciados: e[2], pct_iniciados: porcentaje(e[2], base),
+      avanzados: e[3], pct_avanzados: porcentaje(e[3], base), terminados: e[4], pct_terminados: porcentaje(e[4], base), encuesta_terminada: e[5], pct_encuesta_terminada: porcentaje(e[5], base),
+      inactivos: g.inactivos, pct_inactivos: porcentaje(g.inactivos, base), avance_pct: porcentaje(g.terminados, g.procesos) };
+  };
+  const gerenciasF = porGer.map(g => ({ gerencia: g.gerencia, ...filaDe(g) })).concat([{ gerencia: 'Total', ...filaDe(suma(lista, {})) }]);
+  const secciones = lista.filter(g => g.seccion).sort((a, b) => a.gerencia.localeCompare(b.gerencia, 'es') || a.seccion.localeCompare(b.seccion, 'es'))
+    .map(g => ({ gerencia: g.gerencia, seccion: g.seccion, ...filaDe(g) }));
+  const usuarios = filas.map(r => ({ gerencia: r.gerencia, seccion: r.seccion, usuario: r.persona_nombre, creado: dia(r.f_agregado), ultima_actividad: dia(r.f_ultima_actividad),
+    confirmados: r.n_confirmados, nuevos: r.n_nuevos, total: r.n_procesos, iniciados: r.n_iniciados, avanzados: r.n_avanzados, terminados: r.n_terminados,
+    pct_iniciados: porcentaje(r.n_iniciados, r.n_procesos), pct_avanzados: porcentaje(r.n_avanzados, r.n_procesos), pct_terminados: porcentaje(r.n_terminados, r.n_procesos),
+    encuesta_terminada: r.estado === 'enviado' ? 'SÍ' : 'NO', inactivo: inactiva(r) ? 'SÍ' : 'NO' }))
+    .sort((a, b) => a.gerencia.localeCompare(b.gerencia, 'es') || a.seccion.localeCompare(b.seccion, 'es') || a.usuario.localeCompare(b.usuario, 'es'));
+  return { ok: true, generado: ahora(), campana: { id: camp.id, nombre: camp.nombre }, dias_inactiva: DIAS_INACTIVA, etapas: ETAPAS_FUNNEL, resumen: gerenciasT, gerencias: gerenciasF, secciones, usuarios };
 }
