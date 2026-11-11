@@ -2253,8 +2253,19 @@
   // Borradores extraídos de un documento al confirmar su proceso: el administrador los revisa (puede corregir el texto) antes de que lleguen a la matriz.
   // Lo aprobado se suma a lo que el punto ya tiene (nunca lo reemplaza); aquí se avisa de duplicados y de posibles contradicciones.
   function cuenta(n, uno, varios){ return n + ' ' + (n === 1 ? uno : varios); }   // «1 se sumó» / «2 se sumaron»
+  var MAX_PUNTO = 3000;   // lo que admite un punto de la precarga (MAX_TEXTO en worker/src/complemento.js)
+  // Si lo ya registrado más este borrador supera el máximo, el servidor no lo aplica: se avisa antes de aprobar y se dice qué hacer.
+  function sinEspacio(b){
+    var v = String(b.vigente || '').trim(), n = String(b.texto || '').trim();
+    return !!v && b.alerta !== 'duplicado' && b.alerta !== 'amplia' && v.length + 1 + n.length > MAX_PUNTO;
+  }
+  function avisoSinEspacio(b){
+    return '<div class="ev" style="color:var(--bad,#b3261e);font-weight:600" role="alert">⚠ No cabe: este punto ya tiene ' + String(b.vigente || '').trim().length + ' de ' + MAX_PUNTO +
+      ' caracteres. Para sumarlo, primero resume el texto de este punto en la precarga del proceso, o descarta este borrador.</div>';
+  }
   function alertaBorrador(b){
     var v = b.vigente ? '<div class="ev">Ya registrado: «' + esc(b.vigente.length > 220 ? b.vigente.slice(0, 220) + '…' : b.vigente) + '»</div>' : '';
+    if (sinEspacio(b)) return v + avisoSinEspacio(b);
     var con = esc(b.con || 'lo ya registrado');
     if (b.alerta === 'contradice') return v + '<div class="ev" style="color:var(--bad,#b3261e);font-weight:600" role="alert">⚠ Posible contradicción con ' + con + '. Revisa los dos textos; si ambos valen, se sumarán.</div>';
     if (b.alerta === 'duplicado') return v + '<div class="ev" style="font-weight:600">Posible duplicado de ' + con + ': al aprobar no se repite, solo se agrega este documento como fuente.</div>';
@@ -2358,7 +2369,15 @@
         var aviso = j.bloqueados && j.bloqueados.length ? ' ' + j.bloqueados.length + ' no llegaron a la matriz porque ya los escribió una persona o la fila está validada.' : '';
         if (j.complementados && j.complementados.length) aviso += ' ' + cuenta(j.complementados.length, 'se sumó', 'se sumaron') + ' a lo ya registrado.';
         if (j.duplicados && j.duplicados.length) aviso += ' ' + cuenta(j.duplicados.length, 'ya estaba', 'ya estaban') + ': solo se añadió la fuente.';
-        if (j.sin_aplicar && j.sin_aplicar.length) aviso += ' ' + cuenta(j.sin_aplicar.length, 'quedó pendiente', 'quedaron pendientes') + ': ' + (j.sin_aplicar.some(function(x){ return x.motivo === 'contradice'; }) ? (j.sin_aplicar.length === 1 ? 'contradice' : 'contradicen') + ' lo registrado (apruébalos uno a uno con «Aprobar y sumar de todos modos» si ambos valen)' : 'el texto sumado superaría el máximo, acórtalo') + '.';
+        if (j.sin_aplicar && j.sin_aplicar.length) aviso += ' ' + cuenta(j.sin_aplicar.length, 'quedó pendiente', 'quedaron pendientes') + ': ' + (j.sin_aplicar.some(function(x){ return x.motivo === 'contradice'; }) ? (j.sin_aplicar.length === 1 ? 'contradice' : 'contradicen') + ' lo registrado (apruébalos uno a uno con «Aprobar y sumar de todos modos» si ambos valen)' : 'no hay espacio en el punto (máximo ' + MAX_PUNTO + ' caracteres): resume primero el texto del punto en la precarga') + '.';
+        // Nada cambió (todo quedó pendiente): no se recarga la campaña; se reactivan los botones y el motivo se ve junto al borrador.
+        var nada = !(j.escritos || []).length && !(j.complementados || []).length && !(j.duplicados || []).length && (j.sin_aplicar || []).length === decisiones.length && accion === 'aprobar';
+        if (nada){
+          Array.prototype.forEach.call(det.querySelectorAll('[data-bor-acc]'), function(x){ x.disabled = false; });
+          m.textContent = 'No se aplicó.' + aviso;
+          if (!todos){ var caja = det.querySelector('[data-borrador="' + ids[0] + '"]'); if (caja){ var n0 = caja.querySelector('.bor-res') || caja.appendChild(document.createElement('div')); n0.className = 'ev bor-res'; n0.setAttribute('role', 'alert'); n0.style.fontWeight = '600'; n0.textContent = 'No se aplicó.' + aviso; } }
+          return;
+        }
         return abrir(C.campana.id, true).then(function(){ detalle(p.id); var n = $('#preMsg'); if (n) n.textContent = (accion === 'aprobar' ? 'Aprobado: ' + j.escritos.length + ' en la matriz.' : 'Descartado.') + aviso; }, function(){ m.textContent = 'La decisión se guardó, pero el servidor no respondió al actualizar la pantalla. Recarga la página en unos segundos para verla.'; });
       }).catch(function(err){ Array.prototype.forEach.call(det.querySelectorAll('[data-bor-acc]'), function(x){ x.disabled = false; }); m.textContent = err.message; });
     });

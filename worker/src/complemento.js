@@ -3,7 +3,7 @@
 // Es una heurística barata y determinista (sin IA): una alerta es una pista para que el administrador decida, no un veredicto.
 import { normal } from './comun.js';
 
-export const MAX_TEXTO = 1500;
+export const MAX_TEXTO = 3000;   // máximo de un punto de la precarga (igual que MAX_PRECARGA en index.js y MAX_PUNTO en admin.html)
 const NEGACION = new Set(['no', 'nunca', 'ningun', 'ninguna', 'ninguno', 'tampoco', 'jamas']);
 
 const limpio = t => normal(t).replace(/[^a-z0-9 ]+/g, ' ').replace(/\s+/g, ' ').trim();

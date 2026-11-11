@@ -2327,7 +2327,7 @@ async function aplicarPrecarga(env, p, puntos, actor) {
   const m = leerMatriz(p.matriz), ia = leerMatriz(p.matriz_ia), antes = Object.assign({}, m), origenes = {};
   const lista = Array.isArray(puntos) ? puntos.slice(0, 40) : [];
   lista.forEach(x => {
-    const id = txt(x && x.punto, 40), campo = PUNTO_CAMPO[id], texto = txt(x && x.texto, 1500);
+    const id = txt(x && x.punto, 40), campo = PUNTO_CAMPO[id], texto = txt(x && x.texto, MAX_PRECARGA);
     if (!campo) return;
     const libre = puedeAutomatico(p, m, ia, campo);
     // Cada campo guarda por separado el aporte de los documentos y el de la IA: aquí solo se cambia el de los documentos.
@@ -2357,7 +2357,7 @@ async function aplicarPrecarga(env, p, puntos, actor) {
   lista.forEach(x => {
     const id = txt(x && x.punto, 40);
     if (!TODOS_PUNTOS.includes(id)) return;
-    const texto = txt(x.texto, 1500);
+    const texto = txt(x.texto, MAX_PRECARGA);
     if (!texto) { st.push(env.DB.prepare('DELETE FROM precarga WHERE proceso_id=? AND punto=?').bind(p.id, id)); return; }
     const archivos = (Array.isArray(x.archivos) ? x.archivos : []).map(n => txt(n, 150)).filter(Boolean).slice(0, 10);
     st.push(env.DB.prepare(`INSERT INTO precarga (proceso_id, bloque, punto, texto, archivos, creado, actualizado) VALUES (?,?,?,?,?,?,?)
@@ -2370,7 +2370,7 @@ async function aplicarPrecarga(env, p, puntos, actor) {
   return { escritos, bloqueados };
 }
 
-const MAX_PRECARGA = 1500;   // lo que admite un punto de la precarga (igual que en aplicarPrecarga)
+const MAX_PRECARGA = 3000;   // lo que admite un punto de la precarga (igual que MAX_TEXTO en complemento.js y MAX_PUNTO en admin.html)
 async function rutaPrecarga(env, b) {
   const p = await env.DB.prepare('SELECT id, campana_id, matriz, matriz_ia, validacion FROM procesos WHERE id=?').bind(txt(b.proceso_id, 60)).first();
   if (!p) throw new HttpError(404, 'Proceso no encontrado');
