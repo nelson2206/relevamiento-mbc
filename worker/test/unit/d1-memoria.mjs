@@ -16,7 +16,7 @@ export function crearD1() {
     all: async () => ({ results: db.prepare(sql).all(...args).map(clon) }),
     run: async () => { const r = db.prepare(sql).run(...args); return { success: true, meta: { changes: Number(r.changes) } }; }
   });
-  const d1 = { prepare: sql => stmt(sql), batch: async ss => { for (const s of ss) await s.run(); return []; } };
+  const d1 = { prepare: sql => stmt(sql), batch: async ss => { const out = []; for (const s of ss) out.push(await s.run()); return out; } };
   const sinComentarios = t => t.split('\n').map(l => l.replace(/--.*$/, '')).join('\n');
   db.exec(sinComentarios(readFileSync(join(raiz, 'schema.sql'), 'utf8')));
   // schema.sql trae el estado final: las migraciones no se repiten aquí (test/unit/esquema.test.mjs comprueba que no haya desfase).

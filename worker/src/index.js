@@ -33,6 +33,8 @@
  *   POST /r/confidencial         {k, proceso_id, texto}   (la IA propone las opciones de la pregunta de información confidencial desde lo que la persona dijo; no guarda)
  *   POST /r/imagen?...&pregunta=bconf&finalidad=confidencial   cuerpo: imagen/PDF/DOCX -> {datos, completo, faltan}   (igual: propone, no guarda)
  *   POST /r/campo                {k, proceso_id, punto}   (la persona confirma que la descripción precargada sigue vigente; no se edita)
+ *   GET  /a/embudo/export?campana_id=&conjunto=eventos|personas|todos&formato=json|csv&desde=&hasta=&limite=&despues=   embudo de puntos de contacto (solo lectura; sin textos, PIN ni correos)
+ *   POST /a/embudo/backfill      {campana_id}   reconstruye eventos desde los datos anteriores (reconstruido=1; repetirla no duplica)
  *   GET  /a/campana/historial?id=&proceso_id=&campo=&origen=&actor=&desde=&hasta=&limite=&pagina=   historial de cambios de la matriz
  *   POST /r/transcribir?k=       cuerpo: audio WAV (bytes) -> {texto}
  *   POST /r/imagen?k=&proceso_id=&pregunta=   cuerpo: imagen JPEG/PNG/WEBP (bytes) -> {texto}   (la IA la lee; no se guarda)
@@ -116,6 +118,7 @@ import { ambitoDe, enSecs, claveArea, registrarAccion } from './ambito.js';
 import { limpiarDatos, evaluar, resumenTexto, UBICACIONES, ESQUEMA_IA, PROMPT_IA, desdeSalidaIA, camposMatriz } from './confidencial.js';
 import { PUNTO_CAMPO, ACTOR_IA, ACTOR_CONSOLA, actorEncuestado, sentenciasHistorial, conBorrados, ultimosEventos, puedeAutomatico, valoresDeProceso, validarCampoDeEncuesta, rutaHistorialMatriz } from './matriz-sync.js';
 import { HttpError, ahora, uid, txt, normal, mismaArea, log, mascara, igualSeguro, tokenNuevo, pinValido, salNueva, hashPin, verificarPin } from './comun.js';
+import { registrarEventos, visitanteValido, eventosEnlaceCompartido, eventoDelegados, eventosPersonasAgregadas, eventoEnlaceAbierto, eventosIngreso, eventoPrimeraRespuesta, backfillEmbudo, exportarEmbudo } from './embudo.js';
 import { hashClaveSup, listaSupervisores, gestionarSupervisores, rutaPersonaPerfil, rutaUsuario, rutaClavesPerfiles, aplicarPerfil, asignarSeccionesYProcesos } from './usuarios.js';
 
 // Modelo de IA y esfuerzo por tarea: se cambian en wrangler.toml [vars] sin tocar el código (por defecto, Claude Sonnet 5.5).
@@ -634,7 +637,7 @@ async function rutaSoltar(env, b) {
 }
 
 // Pregunta estructurada: se guarda lo marcado (aunque esté a medias) y el punto solo queda cubierto cuando la respuesta está completa.
-async function respuestaEstructurada(env, e, p, bloque, b) {
+async function respuestaEstructurada(env, e, p, bloque, b, ctx) {
   if (!b.datos || typeof b.datos !== 'object') throw new HttpError(400, 'Falta la respuesta');
   const datos = limpiarDatos(b.datos), ev = evaluar(datos), punto = bloque.puntos[0][0];
   const prev = await env.DB.prepare('SELECT checklist FROM respuestas WHERE encuestado_id=? AND proceso_id=? AND pregunta=?').bind(e.id, p.id, bloque.id).first();
@@ -644,14 +647,15 @@ async function respuestaEstructurada(env, e, p, bloque, b) {
     ON CONFLICT(encuestado_id, proceso_id, pregunta) DO UPDATE SET checklist=excluded.checklist, datos=excluded.datos, actualizado=excluded.actualizado`)
     .bind(e.id, p.id, bloque.id, JSON.stringify(c), JSON.stringify(datos), ahora()).run();
   await marcarEnCurso(env, e);
+  if (datos.confidencial) registrarEventos(env, ctx, [eventoPrimeraRespuesta(e, p.id, bloque.id)]);
   return { ok: true, completo: ev.completo, faltan: ev.faltan, datos, checklist: c };
 }
 
-async function rutaRespuesta(env, b) {
+async function rutaRespuesta(env, b, ctx) {
   const e = await encuestadoPorToken(env, b.k);
   const p = await procesoPermitido(env, e, b.proceso_id);
   if (!PREGUNTAS.includes(b.pregunta)) throw new HttpError(400, 'Pregunta inválida');
-  if (esEstructurada(b.pregunta)) return respuestaEstructurada(env, e, p, BLOQUES.find(x => x.id === b.pregunta), b);
+  if (esEstructurada(b.pregunta)) return respuestaEstructurada(env, e, p, BLOQUES.find(x => x.id === b.pregunta), b, ctx);
   const sistemas = Array.isArray(b.sistemas) ? b.sistemas.map(s => txt(s, 120)).filter(Boolean).slice(0, 60) : [];
   await env.DB.prepare(`INSERT INTO respuestas (encuestado_id, proceso_id, pregunta, texto, sistemas, actualizado) VALUES (?,?,?,?,?,?)
     ON CONFLICT(encuestado_id, proceso_id, pregunta) DO UPDATE SET texto=excluded.texto, sistemas=excluded.sistemas, actualizado=excluded.actualizado`)
@@ -670,6 +674,7 @@ async function rutaRespuesta(env, b) {
     await env.DB.prepare('UPDATE respuestas SET checklist=? WHERE encuestado_id=? AND proceso_id=? AND pregunta=?').bind(JSON.stringify(c), e.id, p.id, b.pregunta).run();
   }
   await marcarEnCurso(env, e);
+  if (txt(b.texto, MAX_TEXTO) || sistemas.length) registrarEventos(env, ctx, [eventoPrimeraRespuesta(e, p.id, b.pregunta)]);   // embudo: solo la primera con contenido
   return { ok: true };
 }
 
@@ -751,7 +756,7 @@ async function areasDeCampana(env, campId) {
   return Object.keys(m).sort(orden).map(g => ({ gerencia: g, secciones: Array.from(m[g]).sort(orden) }));
 }
 
-async function rutaAbierta(env, url) {
+async function rutaAbierta(env, url, ctx) {
   const camp = await campanaAbierta(env, url.searchParams.get('c'));
   const g = txt(url.searchParams.get('g'), 150), sec = txt(url.searchParams.get('s'), 150);
   log('abierta', { campana: camp.id, g: !!g, s: !!sec });
@@ -762,6 +767,8 @@ async function rutaAbierta(env, url) {
     const area = areas.find(a => mismaArea(a.gerencia, g));
     const nombreSec = area && area.secciones.find(x => mismaArea(x, sec));
     if (!nombreSec) throw new HttpError(404, 'Este enlace ya no es válido. Pide uno nuevo al equipo consultor.');
+    const visitante = visitanteValido(url.searchParams.get('v'));   // embudo: solo si llega el visitante; se registra aparte y sin demora
+    if (visitante) registrarEventos(env, ctx, [eventoEnlaceAbierto(camp.id, area.gerencia, nombreSec, visitante)]);
     const v = estadoVentana(await ventanaDe(env, camp.id, area.gerencia, nombreSec));
     const bloqueada = v.estado === 'antes';
     let resp = [];
@@ -828,13 +835,14 @@ async function exigirPin(env, e, pin, ip) {
 const tocarAcceso = (env, e) => env.DB.prepare('UPDATE encuestados SET ultimo_acceso=? WHERE id=?').bind(ahora(), e.id).run();
 
 // Enlace de sección: la persona elige su nombre en la lista y entra a su registro con su PIN.
-async function rutaIdentificar(env, b) {
+async function rutaIdentificar(env, b, ctx) {
   const camp = await campanaAbierta(env, b.c);
   const e = await env.DB.prepare('SELECT * FROM encuestados WHERE id=? AND campana_id=?').bind(txt(b.id, 60), camp.id).first();
   if (!e) throw new HttpError(404, 'No encontramos a esa persona. Actualiza la página y elige de nuevo.');
   await exigirVentanaAbierta(env, camp.id, e.gerencia, e.seccion);
   const pin = await exigirPin(env, e, b.pin, b._ip);
   await tocarAcceso(env, e);
+  registrarEventos(env, ctx, eventosIngreso(e, b.v, pin, 'precargada'));
   log('identificar', { campana: camp.id, pin });
   return { ok: true, k: e.token, nombre: e.nombre };
 }
@@ -871,7 +879,7 @@ async function rutaBuscar(env, url) {
     resultados: r.slice(0, 15).map(x => Object.assign(publico(x.p), { elegido: elegidos.has(x.p.id), persona: x.persona || '' })) };
 }
 
-async function rutaRegistro(env, b) {
+async function rutaRegistro(env, b, ctx) {
   const camp = await campanaAbierta(env, b.c);
   const nombre = txt(b.nombre, 150);
   const gerencia = txt(b.gerencia, 150), seccion = txt(b.seccion, 150);
@@ -899,6 +907,7 @@ async function rutaRegistro(env, b) {
   const yaElegidos = new Set(elegidos.map(p => p.id));
   const suyos = conNombre.results.filter(p => !yaElegidos.has(p.id) && p.personas.split('\n').some(l => mismoNombre(l, nombre))).map(p => p.id).slice(0, 60);
   if (suyos.length) await asignarProcesos(env, e, suyos, 'inventario');
+  registrarEventos(env, ctx, eventosIngreso({ id, campana_id: camp.id, gerencia, seccion }, b.v, 'creado', 'registro_abierto'));
   log('registro', { campana: camp.id, procesos: elegidos.length, inventario: suyos.length, dominio: !!camp.dominio });
   return { ok: true, k: token, nombre };
 }
@@ -1501,6 +1510,8 @@ async function rutaBorrarCampana(env, b) {
     env.DB.prepare('DELETE FROM ventanas WHERE campana_id=?').bind(camp.id),
     env.DB.prepare('DELETE FROM delegaciones WHERE campana_id=?').bind(camp.id),
     env.DB.prepare('DELETE FROM acciones WHERE campana_id=?').bind(camp.id),
+    env.DB.prepare('DELETE FROM eventos WHERE campana_id=?').bind(camp.id),
+    env.DB.prepare('DELETE FROM avance_diario WHERE campana_id=?').bind(camp.id),
     env.DB.prepare('DELETE FROM supervisores WHERE campana_id=?').bind(camp.id),
     env.DB.prepare('DELETE FROM estructura WHERE campana_id=?').bind(camp.id),
     env.DB.prepare('DELETE FROM flujo_pasos WHERE campana_id=?').bind(camp.id),
@@ -2432,7 +2443,7 @@ async function analizarDocumentoIA(env, ctx, archivo, catalogo, gerencia, seccio
 }
 
 // La persona marca un punto como "lo mencioné" (cubierto) o "no aplica"; estado vacío deshace su marca.
-async function rutaPunto(env, b) {
+async function rutaPunto(env, b, ctx) {
   const e = await encuestadoPorToken(env, b.k);
   const p = await procesoPermitido(env, e, b.proceso_id);
   const bloque = BLOQUES.find(x => x.id === b.pregunta);
@@ -2454,13 +2465,14 @@ async function rutaPunto(env, b) {
   }   // sin huella, la próxima revisión vuelve a mirar el punto
   await guardarChecklist(env, e, p, bloque.id, c);
   await marcarEnCurso(env, e);
+  if (b.estado === 'cubierto') registrarEventos(env, ctx, [eventoPrimeraRespuesta(e, p.id, bloque.id)]);
   return { ok: true, checklist: c };
 }
 
 // La persona confirma que la información previa de un punto sigue vigente. NO marca el check del punto: el check solo lo activa
 // lo que la persona responde. Sobre una precarga del equipo, la confirmación queda en su checklist (_vigentes) y no toca la matriz;
 // sobre un texto de la matriz, valida el campo (historial). Si algo cambió, la persona lo cuenta en su respuesta y la IA lo actualiza.
-async function rutaCampo(env, b) {
+async function rutaCampo(env, b, ctx) {
   const e = await encuestadoPorToken(env, b.k);
   const p = await procesoPermitido(env, e, b.proceso_id);
   if (b.texto !== undefined) throw new HttpError(400, 'Esta descripción no se edita: cuenta lo que cambió en tu respuesta y se actualiza sola.');
@@ -2473,6 +2485,7 @@ async function rutaCampo(env, b) {
     c._vigentes = Object.assign({}, c._vigentes, { [punto]: ahora() });
     await guardarChecklist(env, e, p, bloqueId, c);
     await marcarEnCurso(env, e);
+    registrarEventos(env, ctx, [eventoPrimeraRespuesta(e, p.id, bloqueId)]);
     return { ok: true, vigente: true, checklist: c };
   }
   if (!PUNTO_CAMPO[punto]) throw new HttpError(400, 'Este punto no tiene información previa que confirmar');
@@ -2771,7 +2784,7 @@ async function rutaClienteCampana(env, actor, recarga) {
 // Administrador del cliente: agregar responsables a una sección que YA existe, asignar («delegar») procesos, pedir enlaces y activar el enlace abierto.
 // Supervisor: lo mismo, pero solo dentro de su alcance, sin el enlace abierto y sin gestionar supervisores. Nadie ve respuestas ni toca matriz,
 // validación, fechas o accesos. Toda delegación y toda acción relevante queda registrada con quién la hizo.
-async function rutaClientePersonas(env, actor, b) {
+async function rutaClientePersonas(env, actor, b, ctx) {
   const camp = actor.camp, amb = await ambitoDe(env, actor);
   const lista = (Array.isArray(b.personas) ? b.personas : []).slice(0, 50);
   if (!lista.length) throw new HttpError(400, 'Indica al menos una persona');
@@ -2793,16 +2806,18 @@ async function rutaClientePersonas(env, actor, b) {
       const hechos = await asignarProcesos(env, { id: n.id, campana_id: camp.id }, ids, 'consultor');
       asignados += hechos.length;
       await registrarDelegaciones(env, camp, actor, n.id, hechos.map(p => p.id));
+      if (hechos.length) registrarEventos(env, ctx, [eventoDelegados(camp.id, actor, n, hechos.length)]);
     }
   }
+  registrarEventos(env, ctx, eventosPersonasAgregadas(camp.id, actor, r.nuevos));
   if (r.creados) await registrarAccion(env, camp.id, actor, 'personas_agregadas', { personas: r.creados, asignados });
   log('cliente_personas', { campana: camp.id, rol: actor.rol, creados: r.creados, asignados });
   return { ok: true, creados: r.creados, existentes: r.existentes, asignados, nuevos: r.nuevos.map(n => n.id) };
 }
 
-async function rutaClienteAsignar(env, actor, b) {
+async function rutaClienteAsignar(env, actor, b, ctx) {
   const camp = actor.camp, amb = await ambitoDe(env, actor), vis = await personasVisibles(env, camp, amb);
-  const e = await env.DB.prepare('SELECT id, nombre FROM encuestados WHERE id=? AND campana_id=?').bind(txt(b.encuestado_id, 60), camp.id).first();
+  const e = await env.DB.prepare('SELECT id, nombre, gerencia, seccion FROM encuestados WHERE id=? AND campana_id=?').bind(txt(b.encuestado_id, 60), camp.id).first();
   if (!e || (vis && !vis.has(e.id))) throw new HttpError(404, 'Persona no encontrada');
   const lista = a => [...new Set((Array.isArray(a) ? a : []).map(x => txt(x, 60)).filter(Boolean))].slice(0, 300);
   const agregar = lista(b.agregar), desasignar = lista(b.desasignar);
@@ -2821,23 +2836,25 @@ async function rutaClienteAsignar(env, actor, b) {
     const st = quitadas.map(pid => env.DB.prepare("UPDATE delegaciones SET activa=0, quitada=?, quitada_por=? WHERE encuestado_id=? AND proceso_id=? AND activa=1").bind(t, actor.nombre, e.id, pid));
     for (let i = 0; i < st.length; i += 90) await env.DB.batch(st.slice(i, i + 90));
   }
+  if (nuevos.length) registrarEventos(env, ctx, [eventoDelegados(camp.id, actor, e, nuevos.length)]);
   if (nuevos.length) await registrarAccion(env, camp.id, actor, 'delegar', { persona: e.nombre, persona_id: e.id, procesos: nuevos.length });
   if (quitadas.length) await registrarAccion(env, camp.id, actor, 'quitar_delegacion', { persona: e.nombre, persona_id: e.id, procesos: quitadas.length });
   log('cliente_asignar', { campana: camp.id, rol: actor.rol, agregados: r.agregados, desasignados: r.desasignados });
   return { ok: true, agregados: r.agregados, desasignados: r.desasignados, nuevos, quitadas };
 }
 
-async function rutaClienteEnlaces(env, actor, b) {
+async function rutaClienteEnlaces(env, actor, b, ctx) {
   const camp = actor.camp, vis = await personasVisibles(env, camp, await ambitoDe(env, actor));
   const ids = [...new Set((Array.isArray(b.encuestado_ids) ? b.encuestado_ids : []).map(x => txt(x, 60)).filter(Boolean))].slice(0, 300);
-  const enlaces = [];
+  const enlaces = [], destinos = [];
   for (let i = 0; i < ids.length; i += 30) {
     const tanda = ids.slice(i, i + 30);
-    (await env.DB.prepare(`SELECT id, nombre, correo FROM encuestados WHERE campana_id=? AND id IN (${tanda.map(() => '?').join(',')})`).bind(camp.id, ...tanda).all())
-      .results.forEach(r => { if (!vis || vis.has(r.id)) enlaces.push({ id: r.id, nombre: r.nombre, correo: r.correo || '' }); });   // sin token: se entra por el enlace de la sección con nombre y PIN
+    (await env.DB.prepare(`SELECT id, nombre, correo, gerencia, seccion FROM encuestados WHERE campana_id=? AND id IN (${tanda.map(() => '?').join(',')})`).bind(camp.id, ...tanda).all())
+      .results.forEach(r => { if (!vis || vis.has(r.id)) { enlaces.push({ id: r.id, nombre: r.nombre, correo: r.correo || '' }); destinos.push(r); } });   // sin token: se entra por el enlace de la sección con nombre y PIN
   }
   const para = b.para === 'correo' ? 'correo' : 'enlace';
   if (enlaces.length) await registrarAccion(env, camp.id, actor, para === 'correo' ? 'correo_generado' : 'enlace_copiado', { personas: enlaces.length });
+  registrarEventos(env, ctx, eventosEnlaceCompartido(camp.id, actor, destinos, para));   // embudo: un evento por persona destinataria
   log('cliente_enlaces', { campana: camp.id, rol: actor.rol, enlaces: enlaces.length });
   return { ok: true, enlaces };
 }
@@ -2908,23 +2925,23 @@ export default {
       if (!h['Access-Control-Allow-Origin']) throw new HttpError(403, 'Origen no permitido');
 
       if (ruta === 'GET /r/sesion') return json(await rutaSesion(env, url), 200, h);
-      if (ruta === 'GET /r/abierta') return json(await rutaAbierta(env, url), 200, h);
+      if (ruta === 'GET /r/abierta') return json(await rutaAbierta(env, url, ctx), 200, h);
       if (ruta === 'GET /r/buscar') return json(await rutaBuscar(env, url), 200, h);
       if (ruta === 'POST /r/transcribir') return json(await rutaTranscribir(env, req, url), 200, h);
       if (ruta === 'POST /r/imagen') return json(await rutaImagen(env, req, url, ctx), 200, h);
       if (url.pathname.startsWith('/r/') && req.method === 'POST') {
         const b = await cuerpo(req);
         b._ip = req.headers.get('cf-connecting-ip') || '';   // lo fija el servidor: el cliente no puede falsearlo
-        if (url.pathname === '/r/registro') return json(await rutaRegistro(env, b), 200, h);
-        if (url.pathname === '/r/identificar') return json(await rutaIdentificar(env, b), 200, h);
+        if (url.pathname === '/r/registro') return json(await rutaRegistro(env, b, ctx), 200, h);
+        if (url.pathname === '/r/identificar') return json(await rutaIdentificar(env, b, ctx), 200, h);
         if (url.pathname === '/r/elegir') return json(await rutaElegir(env, b), 200, h);
         if (url.pathname === '/r/soltar') return json(await rutaSoltar(env, b), 200, h);
         if (url.pathname === '/r/revision') return json(await rutaRevision(env, b), 200, h);
         if (url.pathname === '/r/proceso') return json(await rutaProcesoNuevo(env, b), 200, h);
-        if (url.pathname === '/r/respuesta') return json(await rutaRespuesta(env, b), 200, h);
+        if (url.pathname === '/r/respuesta') return json(await rutaRespuesta(env, b, ctx), 200, h);
         if (url.pathname === '/r/verificar') return json(await rutaVerificar(env, b, ctx), 200, h);
-        if (url.pathname === '/r/punto') return json(await rutaPunto(env, b), 200, h);
-        if (url.pathname === '/r/campo') return json(await rutaCampo(env, b), 200, h);
+        if (url.pathname === '/r/punto') return json(await rutaPunto(env, b, ctx), 200, h);
+        if (url.pathname === '/r/campo') return json(await rutaCampo(env, b, ctx), 200, h);
         if (url.pathname === '/r/confidencial') return json(await rutaConfidencial(env, b, ctx), 200, h);
         if (url.pathname === '/r/enviar') return json(await rutaEnviar(env, b), 200, h);
       }
@@ -2943,9 +2960,9 @@ export default {
         if (url.pathname === '/c/flujo/confirmar') return json(await rutaFlujoConfirmar(env, actor, b, BLOQUES), 200, h);
         if (url.pathname === '/c/flujo/retroceder') return json(await rutaFlujoRetroceder(env, actor, BLOQUES), 200, h);
         if (url.pathname === '/c/flujo/proceso') return json(await rutaFlujoProceso(env, actor, b, BLOQUES), 200, h);
-        if (url.pathname === '/c/personas') return json(await rutaClientePersonas(env, actor, b), 200, h);
-        if (url.pathname === '/c/asignar') return json(await rutaClienteAsignar(env, actor, b), 200, h);
-        if (url.pathname === '/c/enlaces') return json(await rutaClienteEnlaces(env, actor, b), 200, h);
+        if (url.pathname === '/c/personas') return json(await rutaClientePersonas(env, actor, b, ctx), 200, h);
+        if (url.pathname === '/c/asignar') return json(await rutaClienteAsignar(env, actor, b, ctx), 200, h);
+        if (url.pathname === '/c/enlaces') return json(await rutaClienteEnlaces(env, actor, b, ctx), 200, h);
         if (url.pathname === '/c/enlace-abierto') return json(await rutaClienteEnlaceAbierto(env, actor), 200, h);
         if (url.pathname === '/c/supervisores') { soloAdminCliente(actor); return json(await gestionarSupervisores(env, actor.camp, actor, b), 200, h); }
       }
@@ -2958,6 +2975,7 @@ export default {
         if (ruta === 'GET /a/campana/flujo') return json(await rutaFlujoAdminCampana(env, url), 200, h);
         if (ruta === 'GET /a/campana/trazabilidad') return json(await rutaTrazabilidadAdmin(env, url), 200, h);
         if (ruta === 'GET /a/campana/historial') return json(await rutaHistorialMatriz(env, url), 200, h);
+        if (ruta === 'GET /a/embudo/export') return await exportarEmbudo(env, url, BLOQUES, h);
         if (ruta === 'GET /a/documentos') return json(await rutaDocumentos(env, url), 200, h);
         if (ruta === 'GET /a/documentos/archivo') return await rutaDocumentoArchivo(env, url, h);
         if (ruta === 'GET /a/documentos/historial') return json(await rutaDocumentoHistorial(env, url), 200, h);
@@ -3005,6 +3023,7 @@ export default {
           if (url.pathname === '/a/campana/renovar-accesos') return json(await rutaRenovarAccesos(env, b), 200, h);
           if (url.pathname === '/a/respuesta/borrar') return json(await rutaRespuestaBorrar(env, b), 200, h);
           if (url.pathname === '/a/estructurar') return json(await rutaEstructurar(env, b, ctx), 200, h);
+          if (url.pathname === '/a/embudo/backfill') return json(await backfillEmbudo(env, b.campana_id), 200, h);
           if (url.pathname === '/a/borrar-campana') return json(await rutaBorrarCampana(env, b), 200, h);
         }
       }
