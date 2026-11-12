@@ -7,7 +7,8 @@
 // IP ni user-agent. El único identificador del navegador es un UUID aleatorio que ya viaja en las llamadas existentes.
 import { HttpError, ahora, uid, txt, normal, mismaArea, log } from './comun.js';
 import { cubreSeccion, alcanceDe, claveArea } from './ambito.js';
-import { cargarBase, avanceAreas, estadoArea, tieneContenido, guardarFoto, diaLima, LIMA } from './embudo-areas.js';
+import { cargarBase, avanceAreas, estadoArea, tieneContenido, guardarFoto, diaLima, LIMA, pctAvance } from './embudo-areas.js';
+import { preguntaRespondida } from './cobertura.js';
 
 // ---------------------------------------------------------------- catálogo cerrado
 // paso: paso del embudo (1-7) · idem: se registra una sola vez (clave única) · medido: lo registra el código (P = paquete en que se instrumenta).
@@ -374,11 +375,15 @@ async function conjuntoPersonas(env, camp, bloques, cuentas, base) {
     // Funnel de trazabilidad: los procesos de la persona son los que confirmó o eligió más los que creó ella (N). Iniciado = 1 pregunta con contenido,
     // avanzado = 2 o más, terminado = completo según cobertura.js (lo ya completo cuenta también como iniciado y avanzado).
     const esNuevo = p => p.fuente === 'nuevo' && p.creado_por === e.id;
-    const revDe = new Set((revPor.get(e.id) || []).map(r => r.proceso_id));
-    const mios = suyos.filter(p => esNuevo(p) || revDe.has(p.id) || elegidos.has(p.id));
+    // Misma regla de «quién tiene el proceso» que cobertura.js: revisión vigente o con cambio, o respuestas suyas; además los que creó o le asignaron.
+    // Un proceso que ella marcó «ya no se hace», o que quedó no vigente para todos, no cuenta: no se puede terminar y Gerencia tampoco lo cuenta en el denominador.
+    const revVigente = new Set(), revNoExiste = new Set();
+    (revPor.get(e.id) || []).forEach(r => { if (r.estado === 'vigente' || r.estado === 'cambio') revVigente.add(r.proceso_id); else if (r.estado === 'no_existe') revNoExiste.add(r.proceso_id); });
+    const conRespuesta = new Set(respDe.filter(tieneContenido).map(r => r.proceso_id));
+    const mios = suyos.filter(p => esNuevo(p) || (!revNoExiste.has(p.id) && cobertura(p.id).estado !== 'no_vigente' && (revVigente.has(p.id) || conRespuesta.has(p.id) || elegidos.has(p.id))));
     let nIni = 0, nAv = 0, nTer = 0;
     mios.forEach(p => {
-      const preguntas = new Set(respDe.filter(r => r.proceso_id === p.id && tieneContenido(r)).map(r => r.pregunta)).size;
+      const preguntas = new Set(respDe.filter(r => r.proceso_id === p.id && preguntaRespondida(r)).map(r => r.pregunta)).size;
       const listo = cobertura.persona(p.id, e.id).completo;
       if (listo) nTer++;
       if (preguntas >= 1 || listo) nIni++;
@@ -425,9 +430,10 @@ export const DIAS_INACTIVA = 7;
 export const ETAPAS_FUNNEL = ['Registro de usuario', 'Con procesos seleccionados', 'Proceso iniciado', 'Proceso avanzado', 'Procesos terminados', 'Encuesta terminada'];
 const dia = iso => (iso ? fechaLima(iso).slice(0, 10) : '');
 const fh = iso => (iso ? fechaLima(iso).slice(0, 16) : '');   // AAAA-MM-DD HH:MM en hora de Lima
-const diasDesde = iso => (iso ? Math.max(0, Math.floor((Date.parse(ahora()) - Date.parse(iso)) / 86400000)) : '');
+// Días CALENDARIO en hora de Lima entre dos instantes (no bloques de 24 horas): la actividad de ayer a las 23:00 vista hoy a la 01:00 es de 1 día.
+export const diasCalendario = (iso, ahoraIso) => Math.max(0, Math.round((Date.parse(diaLima(new Date(ahoraIso))) - Date.parse(diaLima(new Date(iso)))) / 86400000));
+const diasDesde = iso => (iso ? diasCalendario(iso, ahora()) : '');
 const porcentaje = (a, b) => (b ? Math.round((a / b) * 100) : 0);
-const pct1 = (a, b) => (b ? Math.round((a / b) * 1000) / 10 : 0);
 const pctOVacio = (a, b) => (b ? Math.round((a / b) * 1000) / 10 : '');   // base 0: sin porcentaje (no es 0 %, no aplica)
 const entre = (desde, hasta) => (desde && hasta ? (Date.parse(hasta) - Date.parse(desde)) / 86400000 : null);
 // Mediana en días con un decimal; los pares sin ambas fechas o con la segunda antes que la primera (cotas del backfill) no cuentan.
@@ -524,12 +530,15 @@ function filaArea(area, g, cuentasArea) {
   const e = g.etapas, base = e[0], den = area.vigentes - area.no_vigentes;
   const ger = cuentasArea.length, n = fn => cuentasArea.filter(fn).length;
   const gen = n(x => x.f_acceso_generado), env = n(x => x.f_acceso_enviado), abrio = n(x => x.f_primera_entrada), comp = n(x => x.compartio);
-  const ultima = maxFecha(g.ultima, ...cuentasArea.map(x => x.f_ultima_entrada));
-  const oficial = pct1(area.respondidos, den), asumido = porcentaje(g.terminados, g.procesos);
+  const ultima = g.ultima;   // solo la actividad de las personas (usuarios); los ingresos de gerentes y supervisores van aparte
+  const ultimaGerente = maxFecha('', ...cuentasArea.map(x => x.f_ultima_entrada));
+  const oficial = pctAvance(area.terminados, den), asumido = porcentaje(g.terminados, g.procesos);
   return {
     gerencia: area.gerencia, seccion: area.seccion || '',
     procesos_alcance: area.vigentes, procesos_no_vigentes: area.no_vigentes, procesos_vigentes: den, procesos_respondidos: area.respondidos, procesos_en_curso: area.en_curso,
     procesos_sin_cobertura: area.sin_cobertura, procesos_validados: area.validados,
+    // v2.0: conteos de procesos por etapa (acumulativos) y encuestas terminadas.
+    procesos_nuevos: area.nuevos, procesos_iniciados: area.iniciados, procesos_avanzados: area.avanzados, procesos_terminados: area.terminados, encuestas_terminadas: area.encuestas_terminadas,
     avance_pct: oficial, avance_asumido_pct: asumido,
     estado: estadoArea({ ...area, personas_registradas: base }),
     personas: g.personas, personas_registradas: base,
@@ -543,10 +552,10 @@ function filaArea(area, g, cuentasArea) {
     p4_personas_abrieron: g.abrieron, p5_personas_con_acceso: g.acceso, p6_personas_empezaron: g.empezaron, p7_procesos_respondidos: area.respondidos,
     pct_p1_acceso_generado: pctOVacio(gen, ger), pct_p1_acceso_enviado: pctOVacio(env, ger), pct_p2_gerente_abrio: pctOVacio(abrio, ger), pct_p3_gerente_compartio: pctOVacio(comp, ger),
     pct_p3_personas_alcanzadas: pctOVacio(g.alcanzadas, g.personas), pct_p4_personas_abrieron: pctOVacio(g.abrieron, g.personas), pct_p5_personas_con_acceso: pctOVacio(g.acceso, g.personas),
-    pct_p6_personas_empezaron: pctOVacio(g.empezaron, g.personas), pct_p7_avance_oficial: den ? oficial : '',
+    pct_p6_personas_empezaron: pctOVacio(g.empezaron, g.personas), pct_p7_avance_oficial: oficial,
     mediana_dias_p1_p2: mediana(cuentasArea.map(x => x.d_recibe_abre)), mediana_dias_p2_p3: mediana(cuentasArea.map(x => x.d_abre_comparte)),
     mediana_dias_p3_p4: mediana(g.d34), mediana_dias_p4_p5: mediana(g.d45), mediana_dias_p5_p6: mediana(g.d56),
-    ultima_actividad: dia(ultima), dias_sin_actividad: diasDesde(ultima)
+    ultima_actividad: dia(ultima), dias_sin_actividad: diasDesde(ultima), ultima_entrada_gerente: dia(ultimaGerente)
   };
 }
 
@@ -558,7 +567,9 @@ async function construirTablas(env, camp, bloques) {
   const personas = await conjuntoPersonas(env, camp, bloques, cuentas, base);
   const gerentes = await tablaGerentes(env, camp, cuentas, base, areas);
   const activos = gerentes.filter(x => x.cuenta.activo);
-  const inactiva = r => r.estado !== 'enviado' && Number(diasDesde(r.f_ultima_actividad || r.f_agregado)) >= DIAS_INACTIVA;
+  // ACABADO: terminó todos sus procesos (la misma etapa «terminado» del funnel de personas). Ya no tiene nada que hacer: no cuenta como inactiva aunque lleve días sin entrar.
+  const acabada = r => etapasDe(r)[4];
+  const inactiva = r => !acabada(r) && r.estado !== 'enviado' && Number(diasDesde(r.f_ultima_actividad || r.f_agregado)) >= DIAS_INACTIVA;
 
   // Cada persona se ubica en el nombre canónico de su gerencia y sección (comparación tolerante), no en el texto con que se cargó.
   const porSec = new Map(), porGer = new Map();
@@ -569,7 +580,7 @@ async function construirTablas(env, camp, bloques) {
     if (!porSec.has(ks)) porSec.set(ks, grupoNuevo());
     if (!porGer.has(kg)) porGer.set(kg, grupoNuevo());
     sumarPersona(porSec.get(ks), r, i); sumarPersona(porGer.get(kg), r, i);
-    r.inactivo = i;
+    r.inactivo = i; r.acabado = acabada(r);
   });
   const cubreSec = (x, g, s) => x.todo || x.gs.has(normal(g)) || x.ss.has(claveArea(g, s));
   const cubreGer = (x, g) => x.todo || x.gs.has(normal(g)) || x.ssGer.has(normal(g));
@@ -578,7 +589,9 @@ async function construirTablas(env, camp, bloques) {
   const secciones = areas.secciones.map(a => filaArea(a, porSec.get(normal(a.gerencia) + '|' + normal(a.seccion)) || vacio, activos.filter(x => cubreSec(x, a.gerencia, a.seccion))));
   const suma = areas.gerencias.reduce((t, a) => { Object.keys(a).forEach(k => { if (typeof a[k] === 'number') t[k] = (t[k] || 0) + a[k]; }); return t; }, { gerencia: 'Total', seccion: '' });
   const total = filaArea(suma, mezclar([...porGer.values()]), activos);
-  return { cuentas, base, areas, personas, gerentes, gerencias, secciones, total };
+  // Procesos o personas sin sección: no figuran en `secciones` (la foto usa seccion='' para el total de la gerencia), pero el reporte los muestra como «(sin sección)» para que Σ secciones = gerencia.
+  const sinSeccion = areas.sinSeccion.map(a => ({ ...filaArea(a, porSec.get(normal(a.gerencia) + '|') || vacio, activos.filter(x => cubreSec(x, a.gerencia, a.seccion))), seccion: '(sin sección)' }));
+  return { cuentas, base, areas, personas, gerentes, gerencias, secciones, sinSeccion, total };
 }
 
 // Serie diaria guardada por el cron (y la foto inicial del backfill). El avance oficial se calcula igual que en vivo.
@@ -591,21 +604,22 @@ async function conjuntoAvanceDiario(env, camp, q) {
     const den = x.procesos_vigentes - x.procesos_no_vigentes;
     return { campana_id: x.campana_id, dia: x.dia, gerencia: x.gerencia, seccion: x.seccion, nivel: x.seccion ? 'seccion' : 'gerencia', procesos_alcance: x.procesos_vigentes,
       procesos_no_vigentes: x.procesos_no_vigentes, procesos_vigentes: den, procesos_sin_cobertura: x.procesos_sin_cobertura, procesos_en_curso: x.procesos_en_curso,
-      procesos_respondidos: x.procesos_respondidos, procesos_validados: x.procesos_validados, avance_pct: pct1(x.procesos_respondidos, den),
+      procesos_respondidos: x.procesos_respondidos, procesos_validados: x.procesos_validados, avance_pct: pctAvance(x.procesos_respondidos, den),
       puntos_cubiertos: x.puntos_cubiertos, puntos_total: x.puntos_total, personas: x.personas, personas_con_acceso: x.personas_con_acceso,
       personas_con_respuesta: x.personas_con_respuesta, foto: x.reconstruido ? 'inicial (reconstruida)' : 'medida', generado: x.generado };
   });
 }
 
 const gerentesFilas = t => t.gerentes.map(x => { const { cuenta, gs, ss, ssGer, todo, compartio, d_recibe_abre, d_abre_comparte, ...fila } = x; return fila; });
-const personasFilas = t => t.personas.map(r => { const { inactivo, ...fila } = r; return fila; });
+const personasFilas = t => t.personas.map(r => { const { inactivo, acabado, ...fila } = r; return fila; });
 
 export const COL_GERENCIAS = ['gerencia', 'seccion', 'procesos_alcance', 'procesos_no_vigentes', 'procesos_vigentes', 'procesos_respondidos', 'procesos_en_curso', 'procesos_sin_cobertura', 'procesos_validados',
   'avance_pct', 'avance_asumido_pct', 'estado', 'personas', 'personas_registradas', 'gerentes', 'gerentes_nombres',
   'p1_acceso_generado', 'p1_acceso_enviado', 'p2_gerente_abrio', 'p3_gerente_compartio', 'p3_personas_alcanzadas', 'p4_personas_abrieron', 'p5_personas_con_acceso', 'p6_personas_empezaron', 'p7_procesos_respondidos',
   'pct_p1_acceso_generado', 'pct_p1_acceso_enviado', 'pct_p2_gerente_abrio', 'pct_p3_gerente_compartio', 'pct_p3_personas_alcanzadas', 'pct_p4_personas_abrieron', 'pct_p5_personas_con_acceso', 'pct_p6_personas_empezaron', 'pct_p7_avance_oficial',
   'mediana_dias_p1_p2', 'mediana_dias_p2_p3', 'mediana_dias_p3_p4', 'mediana_dias_p4_p5', 'mediana_dias_p5_p6',
-  'registrados', 'con_procesos', 'iniciados', 'avanzados', 'terminados', 'encuesta_terminada', 'inactivos', 'ultima_actividad', 'dias_sin_actividad'];
+  'registrados', 'con_procesos', 'iniciados', 'avanzados', 'terminados', 'encuesta_terminada', 'inactivos', 'ultima_actividad', 'dias_sin_actividad',
+  'procesos_nuevos', 'procesos_iniciados', 'procesos_avanzados', 'procesos_terminados', 'encuestas_terminadas', 'ultima_entrada_gerente'];
 export const COL_GERENTES = ['campana_id', 'supervisor_id', 'persona_id', 'gerente_nombre', 'perfil', 'activo', 'gerencia', 'alcance', 'procesos_vigentes', 'procesos_respondidos', 'avance_pct',
   'f_acceso_generado', 'f_acceso_generado_origen', 'f_acceso_enviado', 'f_acceso_enviado_origen', 'canal_envio', 'f_primera_entrada', 'f_primera_entrada_origen', 'f_ultima_entrada', 'n_entradas', 'dias_sin_entrar',
   'personas_compartidas', 'personas_agregadas', 'personas_delegadas', 'f_primer_compartir'];
@@ -645,23 +659,29 @@ export async function exportarEmbudo(env, url, bloques, h) {
   return new Response(aCsv(columnas, conj.filas), { status: 200, headers: Object.assign(cab, h || {}, { 'Access-Control-Expose-Headers': 'x-siguiente, content-disposition' }) });
 }
 
-// ---------------------------------------------------------------- funnel de trazabilidad (botón de Matriz y validación y su Excel)
-// Tablas simples, sin gráficos. Reglas en docs/EMBUDO-trazabilidad-total.md y docs/EMBUDO-funnel-trazabilidad.md. Todo sale de los datos ya medidos; no guarda nada.
+// ---------------------------------------------------------------- reporte de trazabilidad oficial v2.0 (botón de Matriz y validación y su Excel)
+// Tablas simples, sin gráficos. Reglas en docs/EMBUDO-trazabilidad-total.md. Todo sale de los datos ya medidos; no guarda nada.
+// Dos miradas que no se mezclan: Resumen y Gerencia cuentan PROCESOS (terminado = «respondido» de cobertura.js, la regla del panel y la consola;
+// iniciados y avanzados acumulativos); Secciones y Usuarios cuentan USUARIOS resolviendo procesos. «Procesos vigentes» incluye los nuevos
+// (igual que el panel y la consola) y «Procesos nuevos» es el subconjunto creado por las personas.
+// El embudo de 7 puntos, las medianas y los gerentes siguen disponibles en /a/embudo/export, pero ya no salen en este reporte.
 export async function calcularFunnel(env, camp, bloques) {
   const t = await construirTablas(env, camp, bloques);
-  const resumen = t.gerencias.map(g => ({ gerencia: g.gerencia, procesos_vigentes: g.procesos_vigentes, procesos_respondidos: g.procesos_respondidos, avance_pct: g.avance_pct, avance_asumido_pct: g.avance_asumido_pct,
-    procesos_validados: g.procesos_validados, estado: g.estado, personas_registradas: g.personas_registradas, gerentes_nombres: g.gerentes_nombres, ultima_actividad: g.ultima_actividad, dias_sin_actividad: g.dias_sin_actividad }));
-  const usuarios = t.personas.map(r => ({ gerencia: r.gerencia, seccion: r.seccion, usuario: r.persona_nombre, creado: dia(r.f_agregado), ultima_actividad: dia(r.f_ultima_actividad),
-    confirmados: r.n_confirmados, nuevos: r.n_nuevos, total: r.n_procesos, iniciados: r.n_iniciados, avanzados: r.n_avanzados, terminados: r.n_terminados,
-    pct_iniciados: porcentaje(r.n_iniciados, r.n_procesos), pct_avanzados: porcentaje(r.n_avanzados, r.n_procesos), pct_terminados: porcentaje(r.n_terminados, r.n_procesos),
-    encuesta_terminada: r.estado === 'enviado' ? 'SÍ' : 'NO', inactivo: r.inactivo ? 'SÍ' : 'NO',
-    f_abrio: fh(r.f_abrio), f_acceso_creado: fh(r.f_acceso_creado), f_primera_respuesta: fh(r.f_primera_respuesta), f_encuesta_terminada: fh(r.f_encuesta_terminada),
-    origen_abrio: r.f_abrio_origen, origen_acceso_creado: r.f_acceso_creado_origen, origen_primera_respuesta: r.f_primera_respuesta_origen, origen_encuesta_terminada: r.f_encuesta_terminada_origen }))
+  const cierre = g => ({ gerencia: g.gerencia, procesos_vigentes: g.procesos_vigentes, procesos_nuevos: g.procesos_nuevos, procesos_iniciados: g.procesos_iniciados, procesos_avanzados: g.procesos_avanzados,
+    procesos_terminados: g.procesos_terminados, procesos_validados: g.procesos_validados, avance_pct: g.avance_pct, estado: g.estado, ultima_actividad: g.ultima_actividad, dias_sin_actividad: g.dias_sin_actividad });
+  // Resumen = vista ejecutiva (subconjunto de Gerencia, mismo cálculo) con fila Total al final.
+  const resumen = t.gerencias.concat([t.total]).map(g => ({ ...cierre(g), gerencia: g.gerencia, personas_registradas: g.personas_registradas }));
+  // Vista de usuarios: cuántas personas hay y hasta dónde llegaron (iniciado = al menos un proceso iniciado; avanzado = al menos uno avanzado; terminado = todos sus procesos terminados).
+  const secciones = t.secciones.concat(t.sinSeccion).map(s => ({ gerencia: s.gerencia, seccion: s.seccion, estado: s.estado, procesos_vigentes: s.procesos_vigentes, procesos_nuevos: s.procesos_nuevos, avance_pct: s.avance_pct,
+    usuarios_cargados: s.personas, usuarios_registrados: s.registrados, con_procesos: s.con_procesos, usuarios_iniciados: s.iniciados, usuarios_avanzados: s.avanzados, usuarios_terminados: s.terminados,
+    encuestas_terminadas: s.encuesta_terminada, inactivos: s.inactivos, ultima_actividad: s.ultima_actividad, dias_sin_actividad: s.dias_sin_actividad }))
+    .sort((a, b) => a.gerencia.localeCompare(b.gerencia, 'es') || a.seccion.localeCompare(b.seccion, 'es'));
+  const usuarios = t.personas.map(r => ({ gerencia: r.gerencia, seccion: r.seccion, usuario: r.persona_nombre, registrado: r.registrada ? 'SÍ' : 'NO', fecha_alta: dia(r.f_agregado), ultima_actividad: dia(r.f_ultima_actividad),
+    seleccionados: r.n_confirmados, nuevos: r.n_nuevos, total: r.n_procesos, iniciados: r.n_iniciados, avanzados: r.n_avanzados, terminados: r.n_terminados,
+    pct_avance_usuario: pctAvance(r.n_terminados, r.n_procesos),   // terminados ÷ total de procesos (seleccionados + nuevos): nunca pasa de 100 %; sin procesos, vacío
+    encuesta_terminada: r.estado === 'enviado' ? 'SÍ' : 'NO', inactivo: r.acabado ? 'ACABADO' : (r.inactivo ? 'SÍ' : 'NO'), f_encuesta_terminada: fh(r.f_encuesta_terminada) }))
     .sort((a, b) => a.gerencia.localeCompare(b.gerencia, 'es') || a.seccion.localeCompare(b.seccion, 'es') || a.usuario.localeCompare(b.usuario, 'es'));
-  const gerentes = gerentesFilas(t).map(x => ({ ...x, f_acceso_generado: fh(x.f_acceso_generado), f_acceso_enviado: fh(x.f_acceso_enviado), f_primera_entrada: fh(x.f_primera_entrada),
-    f_ultima_entrada: fh(x.f_ultima_entrada), f_primer_compartir: fh(x.f_primer_compartir) }))
-    .sort((a, b) => a.gerencia.localeCompare(b.gerencia, 'es') || a.gerente_nombre.localeCompare(b.gerente_nombre, 'es'));
-  const evolucion = await conjuntoAvanceDiario(env, camp, {});
-  return { ok: true, generado: ahora(), campana: { id: camp.id, nombre: camp.nombre }, dias_inactiva: DIAS_INACTIVA, etapas: ETAPAS_FUNNEL, resumen,
-    gerencias: t.gerencias.concat([t.total]), secciones: t.secciones, gerentes, usuarios, evolucion };
+  // Todo es «al momento de generar»: ese instante (hora de Lima) es el corte de las cifras, de los días sin actividad y de la inactividad.
+  return { ok: true, generado: ahora(), corte: fh(ahora()), campana: { id: camp.id, nombre: camp.nombre }, dias_inactiva: DIAS_INACTIVA, resumen,
+    gerencias: t.gerencias.concat([t.total]).map(g => ({ ...cierre(g), gerencia: g.gerencia })), secciones, usuarios };
 }

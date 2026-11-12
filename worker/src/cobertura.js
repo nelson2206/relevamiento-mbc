@@ -4,7 +4,7 @@
 //
 // Respondido: alguien completó el checklist de los 3 bloques, o entre todas las personas y los documentos del equipo
 // cubren todos los puntos. En curso: alguien lo tomó o empezó a responder. No vigente: solo hay marcas de «ya no se hace».
-// Sin cobertura: nadie lo tomó.
+// Sin cobertura: nadie lo tomó. `preguntas` = preguntas distintas con respuesta (base de «iniciado» ≥1 y «avanzado» ≥2 en la trazabilidad).
 
 const PREG_ANTES = ['q1', 'q2', 'q3', 'q4', 'q5', 'q6'];   // formato anterior (6 preguntas)
 
@@ -13,19 +13,26 @@ function leerJson(s, porDefecto) {
 }
 const puntoListo = (ck, id) => { const x = ck && ck[id]; return !!x && (x.estado === 'cubierto' || x.estado === 'no_aplica'); };
 const tieneContenido = r => !!(String(r.texto || '').trim() || (r.sistemas && r.sistemas !== '[]'));
+// «Pregunta respondida» (proceso iniciado o avanzado, en el área y en la persona): texto, sistemas, respuesta estructurada de confidencialidad o un punto «cubierto».
+// NO cuenta la sola confirmación de que la descripción precargada sigue vigente (`_vigentes`): confirmar no es responder.
+// No cambia el estado de ningún proceso (`contenido` es lo que decide «en curso»).
+export const preguntaRespondida = r => !!(String(r.texto || '').trim() || (r.sistemas && r.sistemas !== '[]') || /"confidencial":"(si|no)"/.test(r.datos || '') || /"estado":"cubierto"/.test(r.checklist || ''));
+// «Con respuesta» en sentido amplio: lo anterior o una confirmación de la descripción vigente (participación de la persona, no avance del proceso).
+export const tieneRespuesta = r => !!(preguntaRespondida(r) || /"_vigentes"/.test(r.checklist || ''));
 
 // bloques: BLOQUES del Worker · revisiones: {encuestado_id, proceso_id, estado}
 // respuestas: {encuestado_id, proceso_id, pregunta, texto, sistemas, checklist} · precarga: {proceso_id, punto}
 export function crearCobertura({ bloques, revisiones, respuestas, precarga }) {
   const puntos = bloques.flatMap(b => b.puntos.map(p => p[0]));
   const total = puntos.length, validos = new Set(puntos);
-  const rev = {}, todas = {}, conTexto = {}, pre = {};
+  const rev = {}, todas = {}, conTexto = {}, pre = {}, preguntas = {};
   revisiones.forEach(r => { (rev[r.proceso_id] = rev[r.proceso_id] || []).push(r); });
   respuestas.forEach(r => {
     const fila = { pregunta: r.pregunta, ck: leerJson(r.checklist, {}), contenido: tieneContenido(r) };
     const t = todas[r.proceso_id] = todas[r.proceso_id] || {};
     (t[r.encuestado_id] = t[r.encuestado_id] || []).push(fila);
     if (fila.contenido) (conTexto[r.proceso_id] = conTexto[r.proceso_id] || {})[r.encuestado_id] = 1;
+    if (preguntaRespondida(r)) (preguntas[r.proceso_id] = preguntas[r.proceso_id] || new Set()).add(r.pregunta);   // preguntas distintas con respuesta, entre todas las personas
   });
   precarga.forEach(x => { (pre[x.proceso_id] = pre[x.proceso_id] || {})[x.punto] = 1; });
 
@@ -61,7 +68,7 @@ export function crearCobertura({ bloques, revisiones, respuestas, precarga }) {
     if (!completos && candidatos.size && total > 0 && puntosUnidos(pid) === total) completos = 1;
     const noExiste = revs.filter(r => r.estado === 'no_existe').length;
     const estado = completos ? 'respondido' : personas.size ? 'en_curso' : noExiste ? 'no_vigente' : 'sin_cobertura';
-    return { estado, personas: personas.size, completos, puntos: Math.min(puntosUnidos(pid), total), total };
+    return { estado, personas: personas.size, completos, puntos: Math.min(puntosUnidos(pid), total), total, preguntas: (preguntas[pid] || new Set()).size };
   };
   cobertura.persona = avancePersona;
   return cobertura;
