@@ -1649,6 +1649,7 @@
           ACT_ORDEN.map(function(k){ return '<option value="' + k + '"' + (k === FM.act ? ' selected' : '') + '>' + ACT_TXT[k] + '</option>'; }).join('') + '</select></div>' +
         '<div><button class="btn btn-ghost" id="mMasBtn" type="button" aria-expanded="' + FM.mas + '" aria-controls="mMas">Más filtros</button></div>' +
         '<div><button class="btn btn-navy" id="mExportar" type="button">Exportar matriz (Excel)</button></div>' +
+        '<div><button class="btn btn-ghost" id="mTrazabilidad" type="button" title="Excel con la trazabilidad del llenado: resumen, embudo por gerencia, secciones, gerentes, usuarios y evolución">Exportar trazabilidad (Excel)</button></div>' +
       '</div><div id="mMas" class="mas' + (FM.mas ? '' : ' hidden') + '">' + panelMas() + '</div>' +
       '<div id="mFlujo" class="row" style="margin:6px 0"></div><div id="mResumen" class="cob"></div><div id="mLista"></div>';
     var repintar = function(){ pintarMatrizLista(); };
@@ -1661,6 +1662,7 @@
       this.setAttribute('aria-expanded', String(FM.mas)); $('#mMas').classList.toggle('hidden', !FM.mas);
     });
     $('#mExportar').addEventListener('click', exportarMatriz);
+    $('#mTrazabilidad').addEventListener('click', function(){ exportarFunnel(this); });
     pintarMatrizLista();
   }
 
@@ -3434,6 +3436,8 @@
           '<p>Entra aquí: <a href="' + esc(url) + '">' + esc(url) + '</a><br>Tu clave: <b style="font-family:monospace">' + esc(j.clave) + '</b></p>' +
           '<p>La clave es personal: no la compartas. Si la pierdes, avísanos y te damos una nueva.</p><p>Saludos,<br>Equipo de seguimiento del relevamiento</p>';
         bajarEml('Acceso ' + en.nombre, construirEml(en.correo, en.nombre, 'Tu acceso al seguimiento del relevamiento de procesos', html));
+        // Trazabilidad: queda anotado (fecha y canal Outlook) que MBC preparo el correo de acceso. Si falla, no afecta la descarga.
+        api('/a/embudo/marcar-enviado', {campana_id: C.campana.id, encuestado_ids: [en.id]}).catch(function(){});
       });
     }
     if (!$('#dlg').open) $('#dlg').showModal();
@@ -4104,6 +4108,80 @@
     var wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(HISTORIAL.length ? HISTORIAL.map(filaHistorial) : [{'(sin datos)': ''}]), 'Historial');
     XLSX.writeFile(wb, nombreArchivo('Historial de la matriz - ' + C.campana.nombre));
   });
+
+  // ------------------------------------------------------------ trazabilidad del llenado (consola: tablas simples + Excel, sin gráficos)
+  // Sin pantalla propia: un botón de «Matriz y validación» baja el Excel. Respeta el filtro de gerencia de la matriz.
+  function exportarFunnel(boton){
+    var texto = boton.textContent; boton.disabled = true; boton.textContent = 'Preparando…';
+    api('/a/embudo/funnel?campana_id=' + encodeURIComponent(C.campana.id)).then(function(f){ libroFunnel(f, FM.ger); })
+      .catch(function(err){ alert('No se pudo generar la trazabilidad: ' + err.message); })
+      .then(function(){ boton.disabled = false; boton.textContent = texto; });
+  }
+  // Gerencia y sección se comparan sin tildes, mayúsculas ni espacios repetidos (igual que el servidor, que además devuelve el nombre canónico).
+  function claveAreaF(s){ return sinTildes(s).replace(/\s+/g, ' ').trim(); }
+  function filtrarFunnel(f, ger){
+    var k = claveAreaF(ger), ok = function(x){ return !ger || claveAreaF(x.gerencia) === k; };
+    // «Total» solo va cuando no hay una gerencia elegida.
+    return {resumen: f.resumen.filter(ok), gerencias: f.gerencias.filter(ok), secciones: f.secciones.filter(ok),
+      gerentes: (f.gerentes || []).filter(ok), usuarios: f.usuarios.filter(ok), evolucion: (f.evolucion || []).filter(ok)};
+  }
+  var SD = function(v){ return v === '' || v == null ? '' : v; };
+  // Embudo de una fila (gerencia o sección): avance oficial, los 7 puntos de contacto en cantidades, sus %, los tiempos medianos y el funnel de personas.
+  function filaFunnel(x, claves){
+    var o = {}; claves.forEach(function(c){ o[c[0]] = x[c[1]]; });
+    o['Estado'] = x.estado; o['Procesos vigentes'] = x.procesos_vigentes; o['Procesos respondidos'] = x.procesos_respondidos; o['Avance oficial %'] = x.avance_pct; o['Avance de lo asumido por las personas %'] = x.avance_asumido_pct;
+    o['Gerentes'] = x.gerentes; o['1 Acceso generado'] = x.p1_acceso_generado; o['1 Acceso enviado'] = x.p1_acceso_enviado; o['2 Gerente abrió'] = x.p2_gerente_abrio; o['3 Gerente compartió'] = x.p3_gerente_compartio;
+    o['3 Personas alcanzadas'] = x.p3_personas_alcanzadas; o['Personas cargadas'] = x.personas; o['4 Personas abrieron'] = x.p4_personas_abrieron; o['5 Personas con acceso'] = x.p5_personas_con_acceso;
+    o['6 Personas empezaron'] = x.p6_personas_empezaron; o['7 Procesos respondidos'] = x.p7_procesos_respondidos;
+    o['% 1 Acceso generado'] = SD(x.pct_p1_acceso_generado); o['% 1 Acceso enviado'] = SD(x.pct_p1_acceso_enviado); o['% 2 Gerente abrió'] = SD(x.pct_p2_gerente_abrio); o['% 3 Gerente compartió'] = SD(x.pct_p3_gerente_compartio);
+    o['% 3 Personas alcanzadas'] = SD(x.pct_p3_personas_alcanzadas); o['% 4 Personas abrieron'] = SD(x.pct_p4_personas_abrieron); o['% 5 Personas con acceso'] = SD(x.pct_p5_personas_con_acceso);
+    o['% 6 Personas empezaron'] = SD(x.pct_p6_personas_empezaron); o['% 7 Avance oficial'] = SD(x.pct_p7_avance_oficial);
+    o['Mediana días 1→2'] = x.mediana_dias_p1_p2; o['Mediana días 2→3'] = x.mediana_dias_p2_p3; o['Mediana días 3→4'] = x.mediana_dias_p3_p4; o['Mediana días 4→5'] = x.mediana_dias_p4_p5; o['Mediana días 5→6'] = x.mediana_dias_p5_p6;
+    o['Registrados'] = x.registrados; o['Con procesos seleccionados'] = x.con_procesos; o['Iniciados'] = x.iniciados; o['Avanzados'] = x.avanzados; o['Terminados'] = x.terminados; o['Encuesta terminada'] = x.encuesta_terminada; o['Inactivos'] = x.inactivos;
+    o['Última actividad'] = x.ultima_actividad; o['Días sin actividad'] = x.dias_sin_actividad;
+    return o;
+  }
+  function libroFunnel(f, ger){
+    var d = filtrarFunnel(f, ger), vacio = [{'(sin datos)': ''}];
+    var hoja = function(filas, ancho){ var ws = XLSX.utils.json_to_sheet(filas.length ? filas : vacio); ws['!cols'] = ancho.map(function(w){ return {wch: w}; }); if (filas.length) ws['!autofilter'] = {ref: ws['!ref']}; return ws; };
+    var anchoFunnel = [18, 10, 11, 12, 22, 9, 12, 12, 12, 12, 13, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 16, 12];
+    var wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, hoja(d.resumen.map(function(g){ return {Gerencia: g.gerencia, 'Procesos vigentes': g.procesos_vigentes, 'Procesos respondidos': g.procesos_respondidos, 'Avance oficial %': g.avance_pct,
+      'Avance de lo asumido por las personas %': g.avance_asumido_pct, 'Procesos validados': g.procesos_validados, Estado: g.estado, 'Personas registradas': g.personas_registradas, 'Gerente(s)': g.gerentes_nombres,
+      'Última actividad': g.ultima_actividad, 'Días sin actividad': g.dias_sin_actividad}; }), [26, 16, 18, 16, 22, 16, 20, 18, 36, 16, 18]), 'Resumen');
+    XLSX.utils.book_append_sheet(wb, hoja(d.gerencias.map(function(g){ return filaFunnel(g, [['Gerencia', 'gerencia']]); }), [26].concat(anchoFunnel)), 'Embudo por gerencia');
+    XLSX.utils.book_append_sheet(wb, hoja(d.secciones.map(function(s){ return filaFunnel(s, [['Gerencia', 'gerencia'], ['Sección', 'seccion']]); }), [26, 26].concat(anchoFunnel)), 'Secciones');
+    XLSX.utils.book_append_sheet(wb, hoja(d.gerentes.map(function(g){ return {Gerencia: g.gerencia, Gerente: g.gerente_nombre, Perfil: g.perfil, Activo: g.activo, Alcance: g.alcance, 'Procesos vigentes': g.procesos_vigentes,
+      'Procesos respondidos': g.procesos_respondidos, 'Avance oficial %': g.avance_pct, 'Acceso generado': g.f_acceso_generado, 'Origen generado': g.f_acceso_generado_origen, 'Acceso enviado': g.f_acceso_enviado,
+      'Canal de envío': g.canal_envio, 'Primera entrada': g.f_primera_entrada, 'Origen primera entrada': g.f_primera_entrada_origen, 'Última entrada': g.f_ultima_entrada, 'N.º de entradas': g.n_entradas,
+      'Días sin entrar': g.dias_sin_entrar, 'Personas a las que compartió': g.personas_compartidas, 'Personas que agregó': g.personas_agregadas, 'Personas con procesos delegados': g.personas_delegadas,
+      'Primer paso hacia su equipo': g.f_primer_compartir}; }), [26, 26, 12, 8, 36, 12, 14, 12, 18, 14, 18, 12, 18, 14, 18, 10, 12, 16, 14, 18, 20]), 'Gerentes');
+    XLSX.utils.book_append_sheet(wb, hoja(d.usuarios.map(function(u){ return {Gerencia: u.gerencia, 'Sección': u.seccion, Usuario: u.usuario, 'Fecha de creación': u.creado, 'Última actividad': u.ultima_actividad,
+      'Procesos confirmados': u.confirmados, 'Procesos nuevos': u.nuevos, 'Total de procesos': u.total, Iniciados: u.iniciados, Avanzados: u.avanzados, Terminados: u.terminados,
+      '% Iniciados': u.pct_iniciados, '% Avanzados': u.pct_avanzados, '% Terminados': u.pct_terminados, 'Encuesta terminada': u.encuesta_terminada, Inactivo: u.inactivo,
+      'F. abrió el enlace': u.f_abrio, 'F. creó su acceso': u.f_acceso_creado, 'F. primera respuesta': u.f_primera_respuesta, 'F. encuesta terminada': u.f_encuesta_terminada,
+      'Origen: abrió': u.origen_abrio, 'Origen: acceso': u.origen_acceso_creado, 'Origen: primera respuesta': u.origen_primera_respuesta, 'Origen: encuesta terminada': u.origen_encuesta_terminada}; }),
+      [26, 26, 26, 16, 16, 19, 16, 17, 10, 11, 11, 13, 13, 13, 18, 10, 18, 18, 20, 20, 14, 14, 20, 22]), 'Usuarios');
+    XLSX.utils.book_append_sheet(wb, hoja(d.evolucion.map(function(x){ return {Día: x.dia, Gerencia: x.gerencia, 'Sección': x.seccion || '(total de la gerencia)', 'Procesos vigentes': x.procesos_vigentes, 'Procesos no vigentes': x.procesos_no_vigentes,
+      'Sin cobertura': x.procesos_sin_cobertura, 'En curso': x.procesos_en_curso, Respondidos: x.procesos_respondidos, Validados: x.procesos_validados, 'Avance oficial %': x.avance_pct,
+      'Puntos cubiertos': x.puntos_cubiertos, 'Puntos totales': x.puntos_total, Personas: x.personas, 'Con acceso': x.personas_con_acceso, 'Con respuesta': x.personas_con_respuesta, Foto: x.foto}; }), [12, 26, 26, 16, 18, 14, 10, 12, 11, 16, 15, 14, 10, 12, 14, 22]), 'Evolución');
+    XLSX.utils.book_append_sheet(wb, hoja([
+      {Concepto: 'Resumen', Regla: 'Una fila por gerencia de la campaña (también las que no tienen personas, que salen en 0 y «Sin iniciar»). El universo sale de los procesos vigentes y de la estructura, no de las personas.'},
+      {Concepto: 'Procesos vigentes', Regla: 'Procesos en alcance de la gerencia o sección, sin los que nadie hace ya («no vigentes», que no cuentan en el denominador).'},
+      {Concepto: 'Avance oficial %', Regla: 'Procesos respondidos ÷ procesos vigentes, con la misma regla de «respondido» del panel y la consola (cobertura.js). Es el avance que se reporta.'},
+      {Concepto: 'Avance de lo asumido por las personas %', Regla: 'Procesos terminados ÷ procesos que las personas registradas tomaron o eligieron. Puede ser 100 % con muy pocos procesos tomados: no es el avance de la gerencia.'},
+      {Concepto: 'Estado', Regla: 'Sin iniciar (0 personas registradas y 0 procesos en curso); En levantamiento; Lista para validar (avance oficial 100 %); Validada (todos los procesos vigentes validados por MBC).'},
+      {Concepto: 'Embudo por gerencia y Secciones', Regla: 'Los 7 puntos de contacto en cantidades y luego en %: 1 acceso generado y enviado, 2 el gerente abrió, 3 el gerente compartió (y personas alcanzadas), 4 la persona abrió el enlace, 5 creó su acceso, 6 empezó a responder, 7 avance oficial.'},
+      {Concepto: 'Base de los %', Regla: 'Puntos 1 a 3: gerentes y supervisores activos que cubren el área. Puntos 4 a 6 y personas alcanzadas: personas cargadas en el área. Punto 7: procesos vigentes. Sin base no hay % (celda vacía).'},
+      {Concepto: 'Mediana de días', Regla: 'Mediana del tiempo entre pasos (1→2 recibe y abre; 2→3 abre y comparte; 3→4 compartido y abre la persona; 4→5; 5→6). Solo cuentan quienes tienen ambas fechas; las fechas reconstruidas son aproximadas.'},
+      {Concepto: 'Registrados … Inactivos', Regla: 'Funnel de personas: Registrados (creó su acceso), con procesos seleccionados, iniciados, avanzados, terminados, encuesta terminada e inactivos (7 días o más sin actividad). Cada % sobre los registrados.'},
+      {Concepto: 'Gerentes', Regla: 'Una fila por gerente o supervisor: cuándo se generó su clave, cuándo se marcó enviada (acción de MBC al preparar el correo en Outlook), primera y última entrada, número de entradas (las recargas no cuentan) y a cuántas personas compartió, agregó o delegó.'},
+      {Concepto: 'Usuarios', Regla: 'Una fila por persona con la fecha de cada paso (abrió, creó acceso, primera respuesta, encuesta terminada) y su origen.'},
+      {Concepto: 'Medido / reconstruido', Regla: 'Medido: el sistema lo registró en el momento. Reconstruido: se dedujo de datos anteriores (fecha aproximada, a veces una cota). Inferido: la persona abrió el enlace aunque no quedó registro de esa apertura.'},
+      {Concepto: 'Evolución', Regla: 'Foto diaria del avance, tomada desde las 23:00 de Lima. La fila sin sección es el total de la gerencia: no se suma con sus secciones. La foto «inicial» se tomó al activar el seguimiento.'}
+    ], [34, 140]), 'Definiciones');
+    XLSX.writeFile(wb, nombreArchivo('Trazabilidad del llenado - ' + C.campana.nombre + (ger ? ' - ' + ger : '')));
+  }
 
   function pintarAdminCl(){
     var el = $('#clAdmin');

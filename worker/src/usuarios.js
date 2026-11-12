@@ -3,6 +3,7 @@
 import { HttpError, ahora, uid, txt, normal, mismaArea, igualSeguro, tokenNuevo } from './comun.js';
 import { claveArea, registrarAccion, alcanceDe } from './ambito.js';
 import { leerEstructura, asegurarEstructura } from './estructura.js';
+import { registrarEventos, eventoGerenteGenerado } from './embudo.js';   // embudo paso 1: cuándo se generó la clave del gerente
 
 // ---------------------------------------------------------------- panel del cliente: administrador del cliente y Supervisores
 export const sha256Hex = async x => [...new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(x)))].map(n => n.toString(16).padStart(2, '0')).join('');
@@ -46,7 +47,7 @@ export async function alcanceValido(env, camp, a) {
   return { todo: false, gerencias: gers, secciones: secs.slice(0, 200), procesos: procs.slice(0, 2000) };
 }
 
-export async function gestionarSupervisores(env, camp, actor, b) {
+export async function gestionarSupervisores(env, camp, actor, b, ctx) {
   const accion = String(b.accion || '');
   if (!['crear', 'editar', 'activar', 'desactivar', 'clave'].includes(accion)) throw new HttpError(400, 'Acción inválida');
   const nombre = txt(b.nombre, 150), correo = txt(b.correo, 150).toLowerCase();
@@ -60,6 +61,7 @@ export async function gestionarSupervisores(env, camp, actor, b) {
     await env.DB.prepare('INSERT INTO supervisores (id, campana_id, nombre, correo, clave_hash, activo, alcance, creado) VALUES (?,?,?,?,?,1,?,?)')
       .bind(id, camp.id, nombre, correo, await hashClaveSup(clave), JSON.stringify(alcance), ahora()).run();
     await registrarAccion(env, camp.id, actor, 'supervisor_creado', { supervisor: nombre, supervisor_id: id });
+    registrarEventos(env, ctx, [eventoGerenteGenerado(camp.id, { id, perfil: 'gerente', encuestado_id: '' }, null, 'alta', 'cliente')]);
     return { ok: true, id, clave, supervisores: await listaSupervisores(env, camp.id) };
   }
   const sup = await env.DB.prepare('SELECT * FROM supervisores WHERE id=? AND campana_id=?').bind(txt(b.id, 60), camp.id).first();
@@ -79,6 +81,7 @@ export async function gestionarSupervisores(env, camp, actor, b) {
     await validarClaveNueva(env, camp, clave, sup.id);
     await env.DB.prepare('UPDATE supervisores SET clave_hash=? WHERE id=?').bind(await hashClaveSup(clave), sup.id).run();
     await registrarAccion(env, camp.id, actor, 'supervisor_clave_nueva', { supervisor: sup.nombre, supervisor_id: sup.id });
+    registrarEventos(env, ctx, [eventoGerenteGenerado(camp.id, sup, null, 'regenerada', 'cliente')]);
   }
   return { ok: true, id: sup.id, clave, supervisores: await listaSupervisores(env, camp.id) };
 }
@@ -156,17 +159,19 @@ export async function aplicarPerfil(env, camp, enc, perfil, op) {
       .bind(id, camp.id, enc.nombre, enc.correo || '', await hashClaveSup(clave), JSON.stringify(alcance), ahora(), perfil, enc.id).run();
   }
   await registrarAccion(env, camp.id, ACTOR_MBC, 'perfil_asignado', { persona: enc.nombre, perfil, supervisor_id: id });
+  // embudo paso 1: solo cuando de verdad se generó una clave (cuenta nueva o clave renovada); cambiar el alcance no entrega nada.
+  if (clave) registrarEventos(env, op.ctx, [eventoGerenteGenerado(camp.id, { id, perfil, encuestado_id: enc.id }, enc, op.motivo || (sup ? 'regenerada' : 'alta'), 'admin')]);
   return { perfil, supervisor_id: id, clave };
 }
 
-export async function rutaPersonaPerfil(env, b) {
+export async function rutaPersonaPerfil(env, b, ctx) {
   const camp = await env.DB.prepare('SELECT * FROM campanas WHERE id=?').bind(txt(b.campana_id, 60)).first();
   if (!camp) throw new HttpError(404, 'Campaña no encontrada');
   const perfil = String(b.perfil || '');
   if (!PERFILES.includes(perfil)) throw new HttpError(400, 'Perfil inválido');
   const enc = await env.DB.prepare('SELECT id, nombre, correo, gerencia, seccion FROM encuestados WHERE id=? AND campana_id=?').bind(txt(b.encuestado_id, 60), camp.id).first();
   if (!enc) throw new HttpError(404, 'Persona no encontrada');
-  const r = await aplicarPerfil(env, camp, enc, perfil, { regenerar: !!b.regenerar });
+  const r = await aplicarPerfil(env, camp, enc, perfil, { regenerar: !!b.regenerar, ctx });
   return Object.assign({ ok: true }, r, { supervisores: await listaSupervisores(env, camp.id) });
 }
 
@@ -191,7 +196,7 @@ export async function asignarSeccionesYProcesos(env, campId, encId, secciones, p
 // ---------------------------------------------------------------- crear o editar un usuario desde la consola
 // Datos personales, perfil, y las secciones y procesos que recibe (todos los procesos de cada sección a la vez). Un Supervisor o Gerente
 // puede crearse sin procesos: su alcance sale de los nombres de su sección o gerencia.
-export async function rutaUsuario(env, b) {
+export async function rutaUsuario(env, b, ctx) {
   const camp = await env.DB.prepare('SELECT * FROM campanas WHERE id=?').bind(txt(b.campana_id, 60)).first();
   if (!camp) throw new HttpError(404, 'Campaña no encontrada');
   const perfil = String(b.perfil || 'responsable');
@@ -225,7 +230,7 @@ export async function rutaUsuario(env, b) {
   for (const x of [{ g: gerencia, s: seccion }, ...secciones]) await asegurarEstructura(env, camp.id, x.g, x.s);
   const asignados = await asignarSeccionesYProcesos(env, camp.id, id, secciones, procesos);
   const enc = { id, nombre, correo, gerencia, seccion };
-  const r = await aplicarPerfil(env, camp, enc, perfil, { secciones, procesos, regenerar: !!b.regenerar, recalcular: true, previoPrincipal });
+  const r = await aplicarPerfil(env, camp, enc, perfil, { secciones, procesos, regenerar: !!b.regenerar, recalcular: true, previoPrincipal, ctx });
   await registrarAccion(env, camp.id, ACTOR_MBC, creada ? 'usuario_creado' : 'usuario_editado', { persona: nombre, perfil, secciones: secciones.length, asignados });
   return Object.assign({ ok: true, id, creada, asignados }, r, { supervisores: await listaSupervisores(env, camp.id) });
 }
@@ -233,11 +238,11 @@ export async function rutaUsuario(env, b) {
 // ---------------------------------------------------------------- claves para la descarga de enlaces personales
 // La clave de un Supervisor o Gerente no se puede leer después de creada (solo se guarda su huella): para entregarla de nuevo se genera una nueva
 // y la anterior deja de servir. Devuelve una por cada persona de la lista que tenga ese perfil activo.
-export async function rutaClavesPerfiles(env, b) {
+export async function rutaClavesPerfiles(env, b, ctx) {
   const camp = await env.DB.prepare('SELECT * FROM campanas WHERE id=?').bind(txt(b.campana_id, 60)).first();
   if (!camp) throw new HttpError(404, 'Campaña no encontrada');
   const ids = [...new Set((Array.isArray(b.encuestado_ids) ? b.encuestado_ids : []).map(x => txt(x, 60)).filter(Boolean))].slice(0, 300);
-  const claves = [];
+  const claves = [], eventos = [];
   for (const eid of ids) {
     const sup = await env.DB.prepare("SELECT * FROM supervisores WHERE campana_id=? AND encuestado_id=? AND activo=1 AND perfil IN ('supervisor','gerente')").bind(camp.id, eid).first();
     if (!sup) continue;
@@ -245,7 +250,9 @@ export async function rutaClavesPerfiles(env, b) {
     await validarClaveNueva(env, camp, clave, sup.id);
     await env.DB.prepare('UPDATE supervisores SET clave_hash=? WHERE id=?').bind(await hashClaveSup(clave), sup.id).run();
     claves.push({ encuestado_id: eid, nombre: sup.nombre, perfil: sup.perfil, clave });
+    eventos.push(eventoGerenteGenerado(camp.id, sup, { id: eid }, 'descarga', 'admin'));
   }
+  if (eventos.length) registrarEventos(env, ctx, eventos);
   if (claves.length) await registrarAccion(env, camp.id, ACTOR_MBC, 'claves_regeneradas', { personas: claves.length, motivo: 'descarga de enlaces personales' });
   return { ok: true, claves };
 }
