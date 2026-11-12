@@ -3,7 +3,7 @@
 // panel del cliente: estado 'respondido' de crearCobertura (cobertura.js); los 'no_vigente' no cuentan en el denominador (como resumenCliente en admin.html).
 // También guarda la foto diaria (tabla avance_diario) que corre el cron. Reglas: docs/EMBUDO-trazabilidad-total.md.
 import { ahora, normal, log } from './comun.js';
-import { crearCobertura } from './cobertura.js';
+import { crearCobertura, tieneRespuesta } from './cobertura.js';
 import { puntosValidados } from './matriz-sync.js';
 import { leerEstructura } from './estructura.js';
 
@@ -13,7 +13,8 @@ export const horaLima = (d = new Date()) => new Date(d.getTime() - LIMA).getUTCH
 export const HORA_FOTO = 23;   // el cron toma la foto del día desde las 23:00 de Lima
 
 // «Con respuesta»: texto, sistemas marcados, respuesta estructurada con datos o un punto marcado/confirmado por la persona (misma idea que primera_respuesta).
-export const tieneContenido = r => !!(r.texto || (r.sistemas && r.sistemas !== '[]') || /"confidencial":"(si|no)"/.test(r.datos || '') || /"estado":"cubierto"|"_vigentes"/.test(r.checklist || ''));
+// La definición vive en cobertura.js para que el área y la persona cuenten «pregunta respondida» igual.
+export const tieneContenido = tieneRespuesta;
 
 // Todo lo que se lee de la campaña, una sola vez, para el funnel, el Excel y la foto diaria. Nunca trae el texto de las respuestas (solo si lo hay).
 export async function cargarBase(env, camp, bloques) {
@@ -32,11 +33,12 @@ export async function cargarBase(env, camp, bloques) {
   return { enc, procs, revs, resp, pre, asig, estructura, cobertura };
 }
 
-const pct1 = (a, b) => (b ? Math.round((a / b) * 1000) / 10 : 0);
+// Avance oficial v2.0: procesos terminados ÷ procesos vigentes. Sin vigentes no hay porcentaje: celda vacía (no 0 %, no error de división).
+export const pctAvance = (terminados, den) => (den > 0 ? Math.round((terminados / den) * 1000) / 10 : '');
 
 export function estadoArea(a) {
   const den = a.vigentes - a.no_vigentes;
-  if (den > 0 && a.validados === den) return 'Validada';
+  if (den > 0 && a.validados === den && a.respondidos === den) return 'Validada';   // validado por MBC Y terminado: un proceso validado sin terminar no cierra la gerencia
   if (den > 0 && a.respondidos === den) return 'Lista para validar';
   if (!a.personas_registradas && !a.en_curso && !a.respondidos) return 'Sin iniciar';
   return 'En levantamiento';
@@ -48,7 +50,7 @@ export function estadoArea(a) {
 export function avanceAreas(base) {
   const gers = new Map(), secs = new Map();   // clave normalizada -> fila
   const nueva = (g, s) => ({ gerencia: g, seccion: s, vigentes: 0, no_vigentes: 0, sin_cobertura: 0, en_curso: 0, respondidos: 0, validados: 0, puntos_cubiertos: 0, puntos_total: 0,
-    personas: 0, personas_registradas: 0, personas_con_respuesta: 0 });
+    personas: 0, personas_registradas: 0, personas_con_respuesta: 0, nuevos: 0, iniciados: 0, avanzados: 0, terminados: 0, encuestas_terminadas: 0 });
   const canon = (g, s) => {
     const kg = normal(g), ks = normal(s);
     if (!gers.has(kg)) gers.set(kg, { nombre: String(g == null ? '' : g).trim(), secciones: new Map() });
@@ -58,7 +60,7 @@ export function avanceAreas(base) {
   };
   (base.estructura || []).forEach(f => canon(f.gerencia, f.seccion));
   const vigentes = base.procs.filter(p => !p.fuera_alcance);
-  vigentes.forEach(p => canon(p.gerencia, p.seccion));
+  base.procs.forEach(p => canon(p.gerencia, p.seccion));   // también las áreas cuyos procesos están fuera de alcance: toda gerencia y sección de la campaña se informa
   base.enc.forEach(e => canon(e.gerencia, e.seccion));
 
   const estados = new Map();   // proceso -> estado de cobertura.js (para quien necesite el avance de un alcance propio)
@@ -69,6 +71,12 @@ export function avanceAreas(base) {
     if (cb.estado === 'no_vigente') { a.no_vigentes++; return; }
     if (cb.estado === 'respondido') a.respondidos++; else if (cb.estado === 'en_curso') a.en_curso++; else a.sin_cobertura++;
     if (p.validacion === 'validado') a.validados++;
+    // Procesos v2.0 (acumulativos): terminado = «respondido» de cobertura.js, la misma regla del panel y la consola; un terminado cuenta también como avanzado e iniciado.
+    const nPreg = cb.preguntas, ter = cb.estado === 'respondido';   // iniciado: 1 o más preguntas; avanzado: 2 o más; no importa cuántas personas respondieron
+    if (p.fuente === 'nuevo') a.nuevos++;
+    if (ter) a.terminados++;
+    if (ter || nPreg >= 1) a.iniciados++;
+    if (ter || nPreg >= 2) a.avanzados++;
     a.puntos_cubiertos += cb.puntos; a.puntos_total += cb.total;
   });
   const conResp = new Set();
@@ -76,23 +84,24 @@ export function avanceAreas(base) {
   base.enc.forEach(e => {
     const a = canon(e.gerencia, e.seccion);
     a.personas++; if (e.con_pin) a.personas_registradas++; if (conResp.has(e.id)) a.personas_con_respuesta++;
+    if (e.estado === 'enviado') a.encuestas_terminadas++;
   });
 
   const sumar = (t, a) => { Object.keys(a).forEach(k => { if (typeof a[k] === 'number') t[k] += a[k]; }); return t; };
-  const secciones = [], gerencias = [];
-  // Un área que solo figura en la estructura (sin procesos vigentes ni personas) es un resto del organigrama: no se informa.
-  const conContenido = a => a.vigentes > 0 || a.personas > 0;
+  const secciones = [], gerencias = [], sinSeccion = [];   // sinSeccion: procesos o personas sin sección (solo para el reporte; la foto usa seccion='' para el total de la gerencia)
+  // Toda gerencia y sección de la campaña se informa (estructura, procesos o personas), también las que no tienen procesos vigentes ni personas: salen en 0 y «Sin iniciar».
+  // Única salvedad: la sección vacía no es una sección real; solo aparece como «(sin sección)» si tiene procesos vigentes o personas.
+  const informable = a => a.seccion !== '' || a.vigentes > 0 || a.personas > 0;
   [...gers.values()].sort((x, y) => x.nombre.localeCompare(y.nombre, 'es')).forEach(ge => {
-    const lista = [...ge.secciones.values()].filter(conContenido).sort((x, y) => x.seccion.localeCompare(y.seccion, 'es'));
-    if (!lista.length) return;
+    const lista = [...ge.secciones.values()].filter(informable).sort((x, y) => x.seccion.localeCompare(y.seccion, 'es'));
     const g = lista.reduce(sumar, nueva(ge.nombre, ''));
     g.secciones = lista.filter(s => s.seccion).length;
     gerencias.push(g);
-    lista.forEach(s => { if (s.seccion) secciones.push(s); });
+    lista.forEach(s => { if (s.seccion) secciones.push(s); else sinSeccion.push(s); });
   });
-  gerencias.forEach(g => { g.estado = estadoArea(g); g.avance_pct = pct1(g.respondidos, g.vigentes - g.no_vigentes); });
-  secciones.forEach(s => { s.estado = estadoArea(s); s.avance_pct = pct1(s.respondidos, s.vigentes - s.no_vigentes); });
-  return { gerencias, secciones, estados, canon: (g, s) => { const a = canon(g, s); return { gerencia: a.gerencia, seccion: a.seccion }; } };
+  gerencias.forEach(g => { g.estado = estadoArea(g); g.avance_pct = pctAvance(g.terminados, g.vigentes - g.no_vigentes); });
+  secciones.concat(sinSeccion).forEach(s => { s.estado = estadoArea(s); s.avance_pct = pctAvance(s.terminados, s.vigentes - s.no_vigentes); });
+  return { gerencias, secciones, sinSeccion, estados, canon: (g, s) => { const a = canon(g, s); return { gerencia: a.gerencia, seccion: a.seccion }; } };
 }
 
 // ---------------------------------------------------------------- foto diaria (tabla avance_diario)

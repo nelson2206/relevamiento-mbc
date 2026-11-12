@@ -1,7 +1,7 @@
 // Pruebas unitarias de cobertura.js: cuándo un proceso cuenta como respondido.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { crearCobertura } from '../../src/cobertura.js';
+import { crearCobertura, tieneRespuesta, preguntaRespondida } from '../../src/cobertura.js';
 
 // Tres bloques de ejemplo con 4 puntos en total (a, b | c | d)
 const BLOQUES = [{ id: 'b1', puntos: [['a'], ['b']] }, { id: 'b2', puntos: [['c']] }, { id: 'b3', puntos: [['d']] }];
@@ -140,4 +140,34 @@ test('cobertura.persona: no mezcla personas ni procesos', () => {
   const c = cob({ respuestas: [resp('e1', 'p1', 'b1', ck('a', 'b'))] });
   assert.equal(c.persona('p2', 'e1').listos, 0);
   assert.equal(c.persona('p1', 'e2').listos, 0);
+});
+
+test('preguntas: cuenta preguntas distintas con respuesta entre todas las personas (base de «iniciado» y «avanzado»), sin cambiar el estado', () => {
+  assert.equal(cob()('p1').preguntas, 0);
+  const una = cob({ respuestas: [resp('e1', 'p1', 'b1', '{}', 'algo')] })('p1');
+  assert.equal(una.preguntas, 1); assert.equal(una.estado, 'en_curso');
+  // La misma pregunta respondida por dos personas cuenta una vez; otra pregunta de otra persona suma.
+  const dos = cob({ respuestas: [resp('e1', 'p1', 'b1', '{}', 'algo'), resp('e2', 'p1', 'b1', '{}', 'otro'), resp('e2', 'p1', 'b2', ck('c'))] })('p1');
+  assert.equal(dos.preguntas, 2);
+  // Un punto marcado en el checklist (sin texto) también es una pregunta respondida; una fila vacía no.
+  assert.equal(cob({ respuestas: [resp('e1', 'p1', 'b1', ck('a'))] })('p1').preguntas, 1);
+  assert.equal(cob({ respuestas: [resp('e1', 'p1', 'b1', '{}')] })('p1').preguntas, 0);
+  assert.equal(cob({ respuestas: [resp('e1', 'p2', 'b1', '{}', 'algo')] })('p1').preguntas, 0, 'no mezcla procesos');
+});
+
+test('«iniciado» no cuenta la sola confirmación de la descripción vigente (_vigentes)', () => {
+  const confirma = JSON.stringify({ _vigentes: { b1: true } });
+  const solo = cob({ respuestas: [resp('e1', 'p1', 'b1', confirma)] })('p1');
+  assert.equal(solo.preguntas, 0, 'confirmar no es responder');
+  assert.equal(preguntaRespondida({ checklist: confirma }), false);
+  assert.equal(tieneRespuesta({ checklist: confirma }), true, 'sí es participación de la persona');
+  assert.equal(cob({ respuestas: [resp('e1', 'p1', 'b1', confirma), resp('e1', 'p1', 'b2', ck('c'))] })('p1').preguntas, 1);
+});
+
+test('tieneRespuesta: texto, sistemas, confidencial sí/no y checklist cubierto', () => {
+  assert.equal(tieneRespuesta({ texto: ' ', sistemas: '[]', checklist: '{}' }), false);
+  assert.equal(tieneRespuesta({ texto: 'x' }), true);
+  assert.equal(tieneRespuesta({ sistemas: '["SAP"]' }), true);
+  assert.equal(tieneRespuesta({ datos: '{"confidencial":"si"}' }), true);
+  assert.equal(tieneRespuesta({ checklist: ck('a') }), true);
 });
