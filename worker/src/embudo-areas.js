@@ -80,8 +80,11 @@ export function avanceAreas(base) {
 
   const sumar = (t, a) => { Object.keys(a).forEach(k => { if (typeof a[k] === 'number') t[k] += a[k]; }); return t; };
   const secciones = [], gerencias = [];
+  // Un área que solo figura en la estructura (sin procesos vigentes ni personas) es un resto del organigrama: no se informa.
+  const conContenido = a => a.vigentes > 0 || a.personas > 0;
   [...gers.values()].sort((x, y) => x.nombre.localeCompare(y.nombre, 'es')).forEach(ge => {
-    const lista = [...ge.secciones.values()].sort((x, y) => x.seccion.localeCompare(y.seccion, 'es'));
+    const lista = [...ge.secciones.values()].filter(conContenido).sort((x, y) => x.seccion.localeCompare(y.seccion, 'es'));
+    if (!lista.length) return;
     const g = lista.reduce(sumar, nueva(ge.nombre, ''));
     g.secciones = lista.filter(s => s.seccion).length;
     gerencias.push(g);

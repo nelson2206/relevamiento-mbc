@@ -22,11 +22,11 @@ test('A. todas las gerencias y secciones salen de los procesos y la estructura, 
   proceso(e.db, 'q0', 'Compras', 'Pagos'); proceso(e.db, 'q1', 'Compras', 'Pagos'); proceso(e.db, 'q2', 'Compras', 'Pagos', 'fuera');   // el fuera de alcance no cuenta
   e.db.prepare("INSERT INTO estructura (campana_id, clave, area, gerencia, seccion, orden) VALUES ('c1','finanzas|tesoreria','','Finanzas','Tesorería',0)").run();
   const f = await calcularFunnel(e.env, camp, BLOQUES);
-  assert.deepEqual(f.resumen.map(x => x.gerencia), ['Compras', 'Finanzas', G], 'una fila por gerencia, con y sin personas');
-  const compras = f.resumen[0], finanzas = f.resumen[1];
+  assert.deepEqual(f.resumen.map(x => x.gerencia), ['Compras', G], 'una fila por gerencia con procesos o personas, aunque no tenga personas');
+  const compras = f.resumen[0];
   assert.equal(compras.procesos_vigentes, 2); assert.equal(compras.personas_registradas, 0); assert.equal(compras.avance_pct, 0); assert.equal(compras.estado, 'Sin iniciar');
-  assert.equal(finanzas.procesos_vigentes, 0); assert.equal(finanzas.estado, 'Sin iniciar', 'una gerencia que solo está en la estructura también aparece');
-  assert.deepEqual(f.secciones.map(x => x.seccion).sort(), ['Pagos', S, 'Tesorería'].sort());
+  assert.ok(!f.resumen.some(x => x.gerencia === 'Finanzas'), 'un área que solo está en la estructura (sin procesos ni personas) no se informa');
+  assert.deepEqual(f.secciones.map(x => x.seccion).sort(), ['Pagos', S].sort());
   assert.equal(fila(f, 'Total').procesos_vigentes, 5);   // 3 de Legal + 2 de Compras
   assert.equal(fila(f, 'Compras').p1_acceso_generado, 0);
   assert.equal(fila(f, 'Compras').pct_p4_personas_abrieron, '', 'sin personas no hay porcentaje (no es 0 %)');
