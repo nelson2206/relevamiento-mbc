@@ -33,9 +33,10 @@
  *   POST /r/confidencial         {k, proceso_id, texto}   (la IA propone las opciones de la pregunta de información confidencial desde lo que la persona dijo; no guarda)
  *   POST /r/imagen?...&pregunta=bconf&finalidad=confidencial   cuerpo: imagen/PDF/DOCX -> {datos, completo, faltan}   (igual: propone, no guarda)
  *   POST /r/campo                {k, proceso_id, punto}   (la persona confirma que la descripción precargada sigue vigente; no se edita)
- *   GET  /a/embudo/export?campana_id=&conjunto=eventos|personas|todos&formato=json|csv&desde=&hasta=&limite=&despues=   embudo de puntos de contacto (solo lectura; sin textos, PIN ni correos)
- *   GET  /a/embudo/funnel?campana_id=   tablas del funnel de trazabilidad (gerencias, funnel, secciones, usuarios)
- *   POST /a/embudo/backfill      {campana_id}   reconstruye eventos desde los datos anteriores (reconstruido=1; repetirla no duplica)
+ *   GET  /a/embudo/export?campana_id=&conjunto=eventos|personas|gerentes|gerencias|secciones|avance_diario|todos&formato=json|csv&desde=&hasta=&limite=&despues=   embudo de puntos de contacto (solo lectura; sin textos, PIN ni correos)
+ *   GET  /a/embudo/funnel?campana_id=   tablas de la trazabilidad (resumen, embudo por gerencia, secciones, gerentes, usuarios, evolucion)
+ *   POST /a/embudo/backfill      {campana_id}   reconstruye eventos desde los datos anteriores (reconstruido=1; repetirla no duplica) y toma la foto inicial del avance
+ *   POST /a/embudo/marcar-enviado {campana_id, encuestado_ids[]}   el administrador MBC marca que preparó el correo (.eml) de acceso de un Gerente/Supervisor (canal outlook)
  *   GET  /a/campana/historial?id=&proceso_id=&campo=&origen=&actor=&desde=&hasta=&limite=&pagina=   historial de cambios de la matriz
  *   POST /r/transcribir?k=       cuerpo: audio WAV (bytes) -> {texto}
  *   POST /r/imagen?k=&proceso_id=&pregunta=   cuerpo: imagen JPEG/PNG/WEBP (bytes) -> {texto}   (la IA la lee; no se guarda)
@@ -119,7 +120,8 @@ import { ambitoDe, enSecs, claveArea, registrarAccion } from './ambito.js';
 import { limpiarDatos, evaluar, resumenTexto, UBICACIONES, ESQUEMA_IA, PROMPT_IA, desdeSalidaIA, camposMatriz } from './confidencial.js';
 import { PUNTO_CAMPO, ACTOR_IA, ACTOR_CONSOLA, actorEncuestado, sentenciasHistorial, conBorrados, ultimosEventos, puedeAutomatico, valoresDeProceso, validarCampoDeEncuesta, rutaHistorialMatriz } from './matriz-sync.js';
 import { HttpError, ahora, uid, txt, normal, mismaArea, log, mascara, igualSeguro, tokenNuevo, pinValido, salNueva, hashPin, verificarPin } from './comun.js';
-import { registrarEventos, visitanteValido, eventosEnlaceCompartido, eventoDelegados, eventosPersonasAgregadas, eventoEnlaceAbierto, eventosIngreso, eventoPrimeraRespuesta, backfillEmbudo, exportarEmbudo, eventoEncuestaTerminada, calcularFunnel } from './embudo.js';
+import { registrarEventos, visitanteValido, eventosEnlaceCompartido, eventoDelegados, eventosPersonasAgregadas, eventoEnlaceAbierto, eventosIngreso, eventoPrimeraRespuesta, backfillEmbudo, exportarEmbudo, eventoEncuestaTerminada, calcularFunnel, eventosGerenteIngreso, rutaMarcarEnviado } from './embudo.js';
+import { fotoDiaria } from './embudo-areas.js';
 import { hashClaveSup, listaSupervisores, gestionarSupervisores, rutaPersonaPerfil, rutaUsuario, rutaClavesPerfiles, aplicarPerfil, asignarSeccionesYProcesos } from './usuarios.js';
 
 // Modelo de IA y esfuerzo por tarea: se cambian en wrangler.toml [vars] sin tocar el código (por defecto, Claude Sonnet 5.5).
@@ -993,7 +995,7 @@ async function rutaEnlace(env, b) {
   return { ok: true, codigo_publico: codigo, abierta, dominio };
 }
 
-async function rutaImportar(env, b) {
+async function rutaImportar(env, b, ctx) {
   const camp = await env.DB.prepare('SELECT id FROM campanas WHERE id=?').bind(b.campana_id).first();
   if (!camp) throw new HttpError(404, 'Campaña no encontrada');
   // Solo filas que sean objetos: un null, un número o un texto suelto en la lista se ignoran en vez de provocar un error 500.
@@ -1145,7 +1147,7 @@ async function rutaImportar(env, b) {
       try {
         asignados += await asignarSeccionesYProcesos(env, camp.id, p.id, p.extras, []);
         if (p.perfil) {
-          const r = await aplicarPerfil(env, campCompleta, p, p.perfil, { secciones: p.extras.length ? p.extras : undefined });
+          const r = await aplicarPerfil(env, campCompleta, p, p.perfil, { secciones: p.extras.length ? p.extras : undefined, ctx, motivo: 'importacion' });
           if (r.clave) claves.push({ encuestado_id: p.id, nombre: p.nombre, correo: p.correo, perfil: p.perfil, clave: r.clave });
         }
       } catch (e) { avisosPerfil.push(p.nombre + ': ' + (e instanceof HttpError ? e.message : 'no se pudo dar el perfil')); }
@@ -2740,7 +2742,7 @@ async function registrarDelegaciones(env, camp, actor, encId, pids) {
 // Volcado para el panel del cliente: avance, personas y procesos. NUNCA incluye lo que respondieron las personas (ni transcripciones),
 // el análisis de la IA, la matriz, el texto de la precarga, los correos ni los enlaces personales. Los textos se reemplazan por una marca
 // («•») para que el panel sepa si hay respuesta sin ver su contenido. Un Supervisor recibe solo lo que cae en su alcance.
-async function rutaClienteCampana(env, actor, recarga) {
+async function rutaClienteCampana(env, actor, recarga, ctx) {
   const camp = actor.camp;
   const q = sql => env.DB.prepare(sql).bind(camp.id).all().then(r => r.results);
   let [encuestados, procesos, revisiones, respuestas, asignaciones, precarga, ventanas] = await Promise.all([
@@ -2771,7 +2773,10 @@ async function rutaClienteCampana(env, actor, recarga) {
       texto: String(r.texto || '').trim() ? '•' : '', sistemas: (r.sistemas && r.sistemas !== '[]') ? ['•'] : [], checklist: sano };
   });
   if (!recarga) {   // volver a pedir el volcado tras agregar o asignar no es un ingreso nuevo
-    if (actor.rol === 'supervisor') await env.DB.prepare('UPDATE supervisores SET ultimo=? WHERE id=?').bind(ahora(), actor.sup.id).run();
+    if (actor.rol === 'supervisor') {
+      await env.DB.prepare('UPDATE supervisores SET ultimo=? WHERE id=?').bind(ahora(), actor.sup.id).run();
+      registrarEventos(env, ctx, eventosGerenteIngreso(camp.id, actor));   // embudo paso 2: abrió (una vez) y entró (cada ingreso; las recargas no cuentan)
+    }
     else await env.DB.prepare('UPDATE campanas SET cliente_ultimo=? WHERE id=?').bind(ahora(), camp.id).run();
     log('cliente_ingreso', { campana: camp.id, rol: actor.rol });
   }
@@ -2917,6 +2922,7 @@ export default {
     await tarea(() => vencerExtracciones(env));
     await tarea(() => completarPendientes(env, ctx));
     await tarea(() => extraerPendientes(env, ctx, { extraerPrecarga: extraerDeDocumento }));
+    await tarea(() => fotoDiaria(env, BLOQUES));   // foto diaria del avance (desde las 23:00 de Lima, una vez al día)
     if (fallo) throw fallo;
   },
 
@@ -2958,7 +2964,7 @@ export default {
       // Panel del cliente (solo lectura, solo su campaña): su propio código; nunca da acceso a /a/.
       if (url.pathname.startsWith('/c/') && req.method === 'GET') {
         const actor = await actorCliente(env, req);
-        if (url.pathname === '/c/campana') return json(await rutaClienteCampana(env, actor, url.searchParams.get('recarga') === '1'), 200, h);
+        if (url.pathname === '/c/campana') return json(await rutaClienteCampana(env, actor, url.searchParams.get('recarga') === '1', ctx), 200, h);
         if (url.pathname === '/c/flujo') return json(await rutaFlujo(env, actor, BLOQUES), 200, h);
         if (url.pathname === '/c/flujo/catalogo') return json(await rutaFlujoCatalogo(env, actor, url, BLOQUES), 200, h);
         if (url.pathname === '/c/trazabilidad') { soloAdminCliente(actor); return json(await trazabilidad(env, actor.camp.id), 200, h); }
@@ -2973,7 +2979,7 @@ export default {
         if (url.pathname === '/c/asignar') return json(await rutaClienteAsignar(env, actor, b, ctx), 200, h);
         if (url.pathname === '/c/enlaces') return json(await rutaClienteEnlaces(env, actor, b, ctx), 200, h);
         if (url.pathname === '/c/enlace-abierto') return json(await rutaClienteEnlaceAbierto(env, actor), 200, h);
-        if (url.pathname === '/c/supervisores') { soloAdminCliente(actor); return json(await gestionarSupervisores(env, actor.camp, actor, b), 200, h); }
+        if (url.pathname === '/c/supervisores') { soloAdminCliente(actor); return json(await gestionarSupervisores(env, actor.camp, actor, b, ctx), 200, h); }
       }
 
       if (url.pathname.startsWith('/a/')) {
@@ -3010,16 +3016,16 @@ export default {
           if (url.pathname === '/a/campana/umbral') return json(await rutaUmbral(env, b), 200, h);
           if (url.pathname === '/a/precarga') return json(await rutaPrecarga(env, b), 200, h);
           if (url.pathname === '/a/encuestado') return json(await rutaEncuestadoAlta(env, b), 200, h);
-          if (url.pathname === '/a/persona/perfil') return json(await rutaPersonaPerfil(env, b), 200, h);
-          if (url.pathname === '/a/usuario') return json(await rutaUsuario(env, b), 200, h);
-          if (url.pathname === '/a/personas/claves') return json(await rutaClavesPerfiles(env, b), 200, h);
+          if (url.pathname === '/a/persona/perfil') return json(await rutaPersonaPerfil(env, b, ctx), 200, h);
+          if (url.pathname === '/a/usuario') return json(await rutaUsuario(env, b, ctx), 200, h);
+          if (url.pathname === '/a/personas/claves') return json(await rutaClavesPerfiles(env, b, ctx), 200, h);
           if (url.pathname === '/a/ventana') return json(await rutaVentana(env, b), 200, h);
           if (url.pathname === '/a/campana/invitacion') return json(await rutaInvitacion(env, b), 200, h);
           if (url.pathname === '/a/campana/cliente') return json(await rutaClienteAcceso(env, b), 200, h);
           if (url.pathname === '/a/asignar') return json(await rutaAsignar(env, b), 200, h);
           if (url.pathname === '/a/asignar-por-inventario') return json(await rutaAsignarInventario(env, b), 200, h);
           if (url.pathname === '/a/enlace') return json(await rutaEnlace(env, b), 200, h);
-          if (url.pathname === '/a/importar') return json(await rutaImportar(env, b), 200, h);
+          if (url.pathname === '/a/importar') return json(await rutaImportar(env, b, ctx), 200, h);
           if (url.pathname === '/a/proceso') return json(await rutaProcesoAdmin(env, b), 200, h);
           if (url.pathname === '/a/proceso/borrar') return json(await rutaProcesoBorrar(env, b), 200, h);
           if (url.pathname === '/a/proceso/mover') return json(await rutaProcesoMover(env, b), 200, h);
@@ -3033,7 +3039,8 @@ export default {
           if (url.pathname === '/a/campana/renovar-accesos') return json(await rutaRenovarAccesos(env, b), 200, h);
           if (url.pathname === '/a/respuesta/borrar') return json(await rutaRespuestaBorrar(env, b), 200, h);
           if (url.pathname === '/a/estructurar') return json(await rutaEstructurar(env, b, ctx), 200, h);
-          if (url.pathname === '/a/embudo/backfill') return json(await backfillEmbudo(env, b.campana_id), 200, h);
+          if (url.pathname === '/a/embudo/backfill') return json(await backfillEmbudo(env, b.campana_id, BLOQUES), 200, h);
+          if (url.pathname === '/a/embudo/marcar-enviado') return json(await rutaMarcarEnviado(env, b, ctx), 200, h);
           if (url.pathname === '/a/borrar-campana') return json(await rutaBorrarCampana(env, b), 200, h);
         }
       }

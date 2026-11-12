@@ -37,9 +37,11 @@ test('las 6 etapas avanzan por persona; los visitantes que nunca se registraron 
   // Porcentajes: todos sobre los registrados. El avance real es de procesos (1 terminado de 2).
   const t = fila(f, 'Total');
   assert.equal(t.pct_con_procesos, 100); assert.equal(t.pct_iniciados, 100); assert.equal(t.pct_avanzados, 100);
-  assert.equal(t.pct_terminados, 0); assert.equal(t.pct_encuesta_terminada, 0); assert.equal(t.avance_pct, 50);
+  assert.equal(t.pct_terminados, 0); assert.equal(t.pct_encuesta_terminada, 0);
+  assert.equal(t.avance_asumido_pct, 50, 'lo asumido por las personas: 1 de los 2 procesos que Beto tomó');
+  assert.equal(t.avance_pct, 33.3, 'avance oficial: 1 de los 3 procesos vigentes de la gerencia');
   assert.deepEqual(f.gerencias.map(x => x.gerencia), [G, 'Total'], 'una fila por gerencia y el total al final');
-  assert.equal(f.secciones[0].avance_pct, 50);
+  assert.equal(f.secciones[0].avance_pct, 33.3); assert.equal(f.secciones[0].avance_asumido_pct, 50);
 });
 
 test('Encuesta terminada guarda la fecha una sola vez y es independiente de «Procesos terminados»', async () => {
@@ -54,17 +56,21 @@ test('Encuesta terminada guarda la fecha una sola vez y es independiente de «Pr
   assert.equal(bk.insertados.encuesta_terminada, 0, 'el evento medido ya existe: el backfill no lo duplica');
 });
 
-test('gerencia: avance = procesos terminados / procesos de las personas; estado y última actividad', async () => {
+test('gerencia: avance oficial = procesos respondidos / procesos vigentes; el de lo asumido va aparte; estado y última actividad', async () => {
   const e = await escenario();
   const f = await calcularFunnel(e.env, camp, BLOQUES);
   assert.equal(f.resumen.length, 1);
-  assert.equal(f.resumen[0].avance_pct, 50);      // 1 de 2
+  assert.equal(f.resumen[0].avance_pct, 33.3);          // oficial: 1 de 3 procesos vigentes
+  assert.equal(f.resumen[0].avance_asumido_pct, 50);    // lo asumido por las personas: 1 de 2
   assert.equal(f.resumen[0].estado, 'En levantamiento');
   assert.match(f.resumen[0].ultima_actividad, /^\d{4}-\d{2}-\d{2}$/);
   e.db.prepare("DELETE FROM respuestas WHERE encuestado_id='e-beto' AND proceso_id='p1'").run();
   resp(e.db, 'e-beto', 'p1', 'b1', ck('a', 'b'), 'x'); resp(e.db, 'e-beto', 'p1', 'b2', ck('c')); resp(e.db, 'e-beto', 'p1', 'b3', ck('d'));
   const g2 = (await calcularFunnel(e.env, camp, BLOQUES)).resumen[0];
-  assert.equal(g2.avance_pct, 100); assert.equal(g2.estado, 'Lista para validar');
+  assert.equal(g2.avance_asumido_pct, 100); assert.equal(g2.avance_pct, 66.7); assert.equal(g2.estado, 'En levantamiento', 'falta p2: el avance oficial no llega a 100 %');
+  resp(e.db, 'e-beto', 'p2', 'b1', ck('a', 'b'), 'x'); resp(e.db, 'e-beto', 'p2', 'b2', ck('c')); resp(e.db, 'e-beto', 'p2', 'b3', ck('d'));
+  const g3 = (await calcularFunnel(e.env, camp, BLOQUES)).resumen[0];
+  assert.equal(g3.avance_pct, 100); assert.equal(g3.estado, 'Lista para validar');
   e.db.prepare("UPDATE procesos SET validacion='validado'").run();
   assert.equal((await calcularFunnel(e.env, camp, BLOQUES)).resumen[0].estado, 'Validada');
 });
