@@ -33,7 +33,7 @@ async function cargarCampana(env, campId, bloques) {
     q('SELECT id, codigo, gerencia, seccion, macroproceso, proceso, subproceso, descripcion, fuente, fuera_alcance, quitado_por, validacion, validado_en FROM procesos WHERE campana_id=?'),
     q('SELECT r.encuestado_id, r.proceso_id, r.estado FROM revisiones r JOIN encuestados e ON e.id=r.encuestado_id WHERE e.campana_id=?'),
     // El texto no se necesita, solo saber si hay: se evita traer lo que dijeron las personas.
-    q("SELECT r.encuestado_id, r.proceso_id, r.pregunta, CASE WHEN length(trim(r.texto))>0 THEN 'x' ELSE '' END AS texto, r.sistemas, r.checklist FROM respuestas r JOIN encuestados e ON e.id=r.encuestado_id WHERE e.campana_id=?"),
+    q("SELECT r.encuestado_id, r.proceso_id, r.pregunta, CASE WHEN length(trim(r.texto))>0 THEN 'x' ELSE '' END AS texto, r.sistemas, r.checklist, r.datos FROM respuestas r JOIN encuestados e ON e.id=r.encuestado_id WHERE e.campana_id=?"),
     q('SELECT pc.proceso_id, pc.punto FROM precarga pc JOIN procesos p ON p.id=pc.proceso_id WHERE p.campana_id=?'),
     q('SELECT a.encuestado_id, a.proceso_id, a.origen FROM asignaciones a JOIN encuestados e ON e.id=a.encuestado_id WHERE e.campana_id=?'),
     q('SELECT supervisor_id, paso, confirmado_en FROM flujo_pasos WHERE campana_id=?'),
@@ -44,9 +44,9 @@ async function cargarCampana(env, campId, bloques) {
   const delegados = {};   // proceso -> personas que lo tienen a cargo (asignadas o que lo tomaron)
   asignaciones.forEach(a => { if (a.origen !== 'excluido') (delegados[a.proceso_id] = delegados[a.proceso_id] || new Set()).add(a.encuestado_id); });
   revisiones.forEach(r => { if (r.estado === 'vigente' || r.estado === 'cambio') (delegados[r.proceso_id] = delegados[r.proceso_id] || new Set()).add(r.encuestado_id); });
-  // Una descripción que la persona confirmó vigente cuenta como cubierta, igual que la que cargó el equipo.
+  // Un campo de la matriz que la persona validó desde la encuesta cuenta como cubierto; la precarga del equipo solo si la persona la confirmó (cobertura.js).
   const validados = await puntosValidados(env, campId);
-  return { procs, pasos, aprobaciones, delegados, encuestados, cuentas, cobertura: crearCobertura({ bloques, revisiones, respuestas, precarga: precarga.concat(validados) }) };
+  return { procs, pasos, aprobaciones, delegados, encuestados, cuentas, cobertura: crearCobertura({ bloques, revisiones, respuestas, validados }) };
 }
 
 // Estado del flujo de un Supervisor: pasos vigentes, paso actual, compuertas y procesos de su alcance.
