@@ -118,7 +118,7 @@ import { ESQUEMA_CLASIFICAR, mensajeErrorIA, rutaDocumentoSubir, rutaDocumentos,
 import { complementar, partesDe, componer } from './complemento.js';
 import { ambitoDe, enSecs, claveArea, registrarAccion } from './ambito.js';
 import { limpiarDatos, evaluar, resumenTexto, UBICACIONES, ESQUEMA_IA, PROMPT_IA, desdeSalidaIA, camposMatriz } from './confidencial.js';
-import { PUNTO_CAMPO, ACTOR_IA, ACTOR_CONSOLA, actorEncuestado, sentenciasHistorial, conBorrados, ultimosEventos, puedeAutomatico, valoresDeProceso, validarCampoDeEncuesta, rutaHistorialMatriz } from './matriz-sync.js';
+import { PUNTO_CAMPO, ACTOR_IA, ACTOR_CONSOLA, actorEncuestado, sentenciasHistorial, conBorrados, ultimosEventos, puedeAutomatico, valoresDeProceso, validarCampoDeEncuesta, rutaHistorialMatriz, puntosValidados } from './matriz-sync.js';
 import { HttpError, ahora, uid, txt, normal, mismaArea, log, mascara, igualSeguro, tokenNuevo, pinValido, salNueva, hashPin, verificarPin } from './comun.js';
 import { registrarEventos, visitanteValido, eventosEnlaceCompartido, eventoDelegados, eventosPersonasAgregadas, eventoEnlaceAbierto, eventosIngreso, eventoPrimeraRespuesta, backfillEmbudo, exportarEmbudo, eventoEncuestaTerminada, calcularFunnel, eventosGerenteIngreso, rutaMarcarEnviado } from './embudo.js';
 import { fotoDiaria } from './embudo-areas.js';
@@ -1178,9 +1178,10 @@ async function rutaCampana(env, url) {
   respuestas.forEach(x => { x.sistemas = JSON.parse(x.sistemas || '[]'); x.checklist = leerMatriz(x.checklist); x.datos = leerMatriz(x.datos); });
   procesos.forEach(x => { x.matriz = leerMatriz(x.matriz); x.matriz_ia = leerMatriz(x.matriz_ia); });
   const borr = await borradoresDeCampana(env, id);
+  const validados = await puntosValidados(env, id);   // campos que una persona validó desde la encuesta: la consola los cuenta como cubiertos (cobertura.js)
   const sups = (await env.DB.prepare("SELECT id, encuestado_id, perfil, activo FROM supervisores WHERE campana_id=? AND encuestado_id<>''").bind(id).all()).results;
   encuestados.forEach(e => { const sp = sups.find(x => x.encuestado_id === e.id && x.activo); e.perfil = sp ? sp.perfil : 'responsable'; e.sup_id = sp ? sp.id : ''; });
-  return { ok: true, campana: camp, encuestados, procesos, revisiones, respuestas, asignaciones, sistemas, estructurado, precarga, precarga_borrador: borr.precarga_borrador, extracciones: borr.extracciones, punto_campo: PUNTO_CAMPO, ventanas, estructura: await leerEstructura(env, id), supervisores: await listaSupervisores(env, id), bloques: BLOQUES, estandares_base: ESTANDARES_BASE };
+  return { ok: true, campana: camp, encuestados, procesos, revisiones, respuestas, asignaciones, sistemas, estructurado, precarga, validados, precarga_borrador: borr.precarga_borrador, extracciones: borr.extracciones, punto_campo: PUNTO_CAMPO, ventanas, estructura: await leerEstructura(env, id), supervisores: await listaSupervisores(env, id), bloques: BLOQUES, estandares_base: ESTANDARES_BASE };
 }
 
 // Alta o edición de un proceso desde el mapa de la consola.

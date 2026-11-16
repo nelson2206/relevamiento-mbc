@@ -45,9 +45,34 @@ test('cobertura combinada: dos personas cubren puntos distintos y entre las dos 
   assert.equal(c('p1').completos, 1);
 });
 
-test('los puntos que cargó el equipo (precarga) cuentan', () => {
+test('la precarga del equipo no cuenta si la persona no la confirmó', () => {
   const c = cob({ precarga: [{ proceso_id: 'p1', punto: 'a' }, { proceso_id: 'p1', punto: 'b' }, { proceso_id: 'p1', punto: 'c' }], respuestas: [resp('e1', 'p1', 'b3', ck('d'))] });
+  assert.equal(c('p1').estado, 'en_curso');
+  assert.equal(c('p1').puntos, 1);
+});
+
+test('la precarga que la persona confirmó vigente (_vigentes) sí cuenta', () => {
+  const conf = JSON.stringify({ _vigentes: { a: '2026-11-16T10:00:00Z', b: '2026-11-16T10:00:00Z' } });
+  const c = cob({ respuestas: [resp('e1', 'p1', 'b1', conf), resp('e1', 'p1', 'b2', ck('c')), resp('e1', 'p1', 'b3', ck('d'))] });
   assert.equal(c('p1').estado, 'respondido');
+});
+
+test('en curso: solo confirmar vigente una precarga ya es validar información', () => {
+  const conf = JSON.stringify({ _vigentes: { a: '2026-11-16T10:00:00Z' } });
+  assert.equal(cob({ respuestas: [resp('e1', 'p1', 'b1', conf)] })('p1').estado, 'en_curso');
+  assert.equal(cob({ respuestas: [resp('e1', 'p1', 'b1', JSON.stringify({ _vigentes: {} }))] })('p1').estado, 'sin_cobertura', 'un _vigentes vacío no cuenta');
+});
+
+test('los campos de la matriz que una persona validó cuentan como cubiertos y ponen el proceso en curso', () => {
+  const val = ['a', 'b'].map(punto => ({ proceso_id: 'p1', punto }));
+  assert.equal(cob({ validados: val })('p1').estado, 'en_curso');
+  const c = cob({ validados: val, respuestas: [resp('e1', 'p1', 'b2', ck('c')), resp('e1', 'p1', 'b3', ck('d'))] });
+  assert.equal(c('p1').estado, 'respondido');
+});
+
+test('tomar el proceso («lo hago») y tener toda la precarga del equipo NO lo hace respondido ni en curso', () => {
+  const c = cob({ revisiones: [{ encuestado_id: 'e1', proceso_id: 'p1', estado: 'vigente' }], precarga: ['a', 'b', 'c', 'd'].map(punto => ({ proceso_id: 'p1', punto })) });
+  assert.equal(c('p1').estado, 'sin_cobertura');
 });
 
 test('la precarga sola, sin ninguna persona, no hace respondido un proceso', () => {
@@ -61,10 +86,15 @@ test('un punto que no existe en los bloques se ignora (no suma de más)', () => 
   assert.equal(c('p1').total, 4);
 });
 
-test('en curso: alguien tomó el proceso (revisión vigente o con cambio)', () => {
+test('marcar el proceso en su lista (revisión vigente o con cambio) sin completar nada NO lo pone en curso', () => {
   for (const estado of ['vigente', 'cambio']) {
-    assert.equal(cob({ revisiones: [{ encuestado_id: 'e1', proceso_id: 'p1', estado }] })('p1').estado, 'en_curso', estado);
+    assert.equal(cob({ revisiones: [{ encuestado_id: 'e1', proceso_id: 'p1', estado }] })('p1').estado, 'sin_cobertura', estado);
   }
+});
+
+test('en curso: respondió la pregunta de confidencialidad o marcó un punto cubierto', () => {
+  assert.equal(cob({ respuestas: [{ ...resp('e1', 'p1', 'b3', '{}'), datos: '{"confidencial":"no"}' }] })('p1').estado, 'en_curso');
+  assert.equal(cob({ respuestas: [resp('e1', 'p1', 'b1', ck('a'))] })('p1').estado, 'en_curso');
 });
 
 test('en curso: respondió algo de texto aunque no haya checklist', () => {
@@ -84,9 +114,14 @@ test('«no participo» no cuenta como tomarlo', () => {
   assert.equal(cob({ revisiones: [{ encuestado_id: 'e1', proceso_id: 'p1', estado: 'no_participo' }] })('p1').estado, 'sin_cobertura');
 });
 
-test('si uno dice «no existe» y otro lo toma, está en curso (no «no vigente»)', () => {
-  const c = cob({ revisiones: [{ encuestado_id: 'e1', proceso_id: 'p1', estado: 'no_existe' }, { encuestado_id: 'e2', proceso_id: 'p1', estado: 'vigente' }] });
+test('si uno dice «no existe» y otro empieza a responder, está en curso (no «no vigente»)', () => {
+  const c = cob({ revisiones: [{ encuestado_id: 'e1', proceso_id: 'p1', estado: 'no_existe' }, { encuestado_id: 'e2', proceso_id: 'p1', estado: 'vigente' }], respuestas: [resp('e2', 'p1', 'b1', '{}', 'algo')] });
   assert.equal(c('p1').estado, 'en_curso');
+});
+
+test('si uno dice «no existe» y otro solo lo marca en su lista: sin cobertura (no sale del denominador)', () => {
+  const c = cob({ revisiones: [{ encuestado_id: 'e1', proceso_id: 'p1', estado: 'no_existe' }, { encuestado_id: 'e2', proceso_id: 'p1', estado: 'vigente' }] });
+  assert.equal(c('p1').estado, 'sin_cobertura');
 });
 
 test('formato anterior: las 6 preguntas q1..q6 con contenido completan el proceso', () => {
@@ -125,10 +160,12 @@ test('cobertura.persona: completo solo cuando cubrió todos los puntos', () => {
   assert.equal(c.persona('p1', 'e1').listos, 4);
 });
 
-test('cobertura.persona: una persona sin nada tiene 0 puntos y no está completa; los puntos del equipo (precarga) cuentan', () => {
+test('cobertura.persona: una persona sin nada tiene 0 puntos; la precarga sin confirmar no suma, la confirmada y la validada sí', () => {
   assert.deepEqual(cob().persona('p1', 'nadie'), { listos: 0, total: 4, completo: false });
   const conPre = cob({ precarga: [{ proceso_id: 'p1', punto: 'a' }, { proceso_id: 'p1', punto: 'b' }] });
-  assert.equal(conPre.persona('p1', 'e1').listos, 2);
+  assert.equal(conPre.persona('p1', 'e1').listos, 0);
+  const conf = cob({ respuestas: [resp('e1', 'p1', 'b1', JSON.stringify({ _vigentes: { a: 'x' } }))], validados: [{ proceso_id: 'p1', punto: 'c' }] });
+  assert.equal(conf.persona('p1', 'e1').listos, 2);
 });
 
 test('cobertura.persona: el formato anterior (q1..q6) cuenta como completo', () => {

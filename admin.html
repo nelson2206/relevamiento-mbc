@@ -762,13 +762,17 @@
 
   // Índices por proceso: quién lo tomó, quién respondió y qué dijo cada uno.
   function indexar(){
-    IX = {rev:{}, resp:{}, todas:{}, est:{}, enc:{}, pre:{}};
+    IX = {rev:{}, resp:{}, todas:{}, est:{}, enc:{}, pre:{}, part:{}, val:{}};
     C.encuestados.forEach(function(e){ IX.enc[e.id] = e; });
     C.revisiones.forEach(function(r){ (IX.rev[r.proceso_id] = IX.rev[r.proceso_id] || []).push(r); });
+    // Campos de la matriz que una persona validó desde la encuesta: cuentan como cubiertos (igual que cobertura.js en el servidor).
+    (C.validados || []).forEach(function(x){ (IX.val[x.proceso_id] = IX.val[x.proceso_id] || {})[x.punto] = 1; });
     C.respuestas.forEach(function(r){
       // Todas las filas (también las que solo tienen marcas del checklist) cuentan para saber si un proceso está completo.
       var t = IX.todas[r.proceso_id] = IX.todas[r.proceso_id] || {};
       (t[r.encuestado_id] = t[r.encuestado_id] || []).push(r);
+      // Participó: completó al menos un campo o confirmó vigente una información previa. Es lo que pone el proceso «en curso».
+      if (participoEn(r)) (IX.part[r.proceso_id] = IX.part[r.proceso_id] || {})[r.encuestado_id] = 1;
       if (!((r.texto || '').trim() || r.sistemas.length)) return;
       var m = IX.resp[r.proceso_id] = IX.resp[r.proceso_id] || {};
       (m[r.encuestado_id] = m[r.encuestado_id] || []).push(r);
@@ -791,13 +795,21 @@
   // Quien respondió las 6 preguntas del formato anterior cuenta como completo.
   function totalPuntos(){ return (C.bloques || []).reduce(function(a, b){ return a + b.puntos.length; }, 0); }
   function puntoListo(ck, id){ var x = ck && ck[id]; return !!x && (x.estado === 'cubierto' || x.estado === 'no_aplica'); }
+  // La persona confirmó vigente la precarga de ese punto. La precarga del equipo sola ya no cuenta como avance (regla de cobertura.js).
+  function confirmoPunto(ck, id){ return !!(ck && ck._vigentes && ck._vigentes[id]); }
+  function respondioPregunta(r){
+    var ck = r.checklist || {};
+    return !!((r.texto || '').trim() || (r.sistemas || []).length || /^(si|no)$/.test(String((r.datos || {}).confidencial || '')) ||
+      Object.keys(ck).some(function(k){ return ck[k] && ck[k].estado === 'cubierto'; }));
+  }
+  function participoEn(r){ var ck = r.checklist || {}; return respondioPregunta(r) || !!(ck._vigentes && Object.keys(ck._vigentes).length); }
   function avancePersona(pid, eid){
     var filas = (IX.todas[pid] || {})[eid] || [], por = {};
     filas.forEach(function(r){ por[r.pregunta] = r; });
     var legado = PREG_ANTES.every(function(q){ var r = por[q]; return r && ((r.texto || '').trim() || r.sistemas.length); });
     var listos = 0, total = totalPuntos();
-    var adm = IX.pre[pid] || {};
-    (C.bloques || []).forEach(function(b){ var ck = (por[b.id] || {}).checklist || {}; b.puntos.forEach(function(pt){ if (adm[pt[0]] || puntoListo(ck, pt[0])) listos++; }); });
+    var val = IX.val[pid] || {};
+    (C.bloques || []).forEach(function(b){ var ck = (por[b.id] || {}).checklist || {}; b.puntos.forEach(function(pt){ if (val[pt[0]] || puntoListo(ck, pt[0]) || confirmoPunto(ck, pt[0])) listos++; }); });
     return {listos: listos, total: total, legado: legado, completo: legado || (total > 0 && listos === total)};
   }
   function textoAvance(a){ return a.completo ? (a.legado && a.listos < a.total ? 'Completo (formato anterior)' : 'Completo') : a.listos + ' de ' + a.total + ' puntos'; }
@@ -808,41 +820,40 @@
     b.puntos.forEach(function(pt){
       var x = ck[pt[0]], marca = x && x.fuente === 'persona' ? ' (lo marcó la persona)' : '';
       if (x && x.estado === 'no_aplica') na.push(pt[1] + marca);
-      else if (!puntoListo(ck, pt[0]) && !(IX.pre[r.proceso_id] || {})[pt[0]]) falta.push(pt[1]);
+      else if (!puntoListo(ck, pt[0]) && !confirmoPunto(ck, pt[0]) && !(IX.val[r.proceso_id] || {})[pt[0]]) falta.push(pt[1]);
     });
     return [falta.length ? 'Falta: ' + falta.join('; ') : 'Checklist completo', na.length ? 'No aplica: ' + na.join('; ') : ''].filter(Boolean).join(' · ');
   }
 
-  // Puntos del checklist cubiertos entre todas las personas que respondieron el proceso y el equipo (documentos): sin repetir.
+  // Puntos del checklist cubiertos entre todas las personas, sin repetir: marcados por ellas, precarga que confirmaron o campos que validaron.
+  // La precarga del equipo sin confirmar no suma.
   function puntosUnidos(pid){
-    var cub = {}, adm = IX.pre[pid] || {};
-    Object.keys(adm).forEach(function(k){ cub[k] = 1; });
+    var cub = {}, val = IX.val[pid] || {};
     var validos = {}; (C.bloques || []).forEach(function(b){ b.puntos.forEach(function(pt){ validos[pt[0]] = 1; }); });
+    Object.keys(val).forEach(function(k){ if (validos[k]) cub[k] = 1; });
     Object.keys(IX.todas[pid] || {}).forEach(function(eid){
       IX.todas[pid][eid].forEach(function(r){
         var ck = r.checklist || {};
-        Object.keys(ck).forEach(function(k){ if (validos[k] && ck[k] && (ck[k].estado === 'cubierto' || ck[k].estado === 'no_aplica')) cub[k] = 1; });
+        Object.keys(validos).forEach(function(k){ if (puntoListo(ck, k) || confirmoPunto(ck, k)) cub[k] = 1; });
       });
     });
-    return Object.keys(cub).filter(function(k){ return validos[k]; }).length;
+    return Object.keys(cub).length;
   }
-  // Cobertura de un proceso. Respondido: alguien completó el checklist de todas las preguntas. En curso: alguien lo
-  // tomó o empezó a responder. Ya no se hace: solo hay marcas de "ya no se hace". Sin cobertura: nadie lo tomó.
+  // Cobertura de un proceso (misma regla que worker/src/cobertura.js). En curso: alguien completó al menos un campo o validó
+  // una información previa; marcar «lo hago» en su lista no basta. Respondido: alguien dejó listos todos los puntos, o entre
+  // todas las personas los cubren. Ya no se hace: solo hay marcas de "ya no se hace". Sin cobertura: el resto.
   function cobertura(pid){
-    var revs = IX.rev[pid] || [], resp = IX.resp[pid] || {};
-    var personas = {};
-    revs.forEach(function(r){ if (r.estado === 'vigente' || r.estado === 'cambio') personas[r.encuestado_id] = 1; });
-    Object.keys(resp).forEach(function(eid){ personas[eid] = 1; });
-    // También cuentan quienes tomaron el proceso aunque aún no tengan filas de respuesta: si el equipo ya cubrió todos los puntos con documentos, su avance es completo.
-    var candidatos = Object.keys(IX.todas[pid] || {});
-    Object.keys(personas).forEach(function(eid){ if (candidatos.indexOf(eid) < 0) candidatos.push(eid); });
+    var revs = IX.rev[pid] || [];
+    var candidatos = Object.keys(IX.part[pid] || {});
+    var activo = candidatos.length > 0 || Object.keys(IX.val[pid] || {}).length > 0;
     var completos = candidatos.filter(function(eid){ return avancePersona(pid, eid).completo; }).length;
     // Cobertura combinada: si ninguna persona lo completó sola pero entre todas cubren todos los puntos, el proceso cuenta como respondido.
     var combinada = false;
-    if (!completos && candidatos.length && totalPuntos() > 0 && puntosUnidos(pid) === totalPuntos()){ completos = 1; combinada = true; }
+    if (!completos && activo && totalPuntos() > 0 && puntosUnidos(pid) === totalPuntos()){ completos = 1; combinada = true; }
     var noExiste = revs.filter(function(r){ return r.estado === 'no_existe'; }).length;
-    var n = Object.keys(personas).length;
-    var estado = completos ? 'respondido' : n ? 'en_curso' : noExiste ? 'no_vigente' : 'sin_cobertura';
+    var n = candidatos.length;
+    var tomado = revs.some(function(r){ return r.estado === 'vigente' || r.estado === 'cambio'; });   // alguien dice que lo hace: no sale del denominador
+    var estado = completos ? 'respondido' : activo ? 'en_curso' : noExiste && !tomado ? 'no_vigente' : 'sin_cobertura';
     return {estado: estado, personas: n, completos: completos, combinada: combinada, noExiste: noExiste,
       confirmado: revs.filter(function(r){ return r.estado === 'no_participo'; }).length};
   }
@@ -936,7 +947,7 @@
     $('#cobertura').innerHTML = total ? barraCob(cuenta, total) +
       '<div class="leyenda">' + ESTADO_ORDEN.map(function(k){ return '<span><i class="seg-' + k + '"></i>' + ESTADO_TXT[k] + ': <b>' + cuenta[k] + '</b></span>'; }).join('') +
       '<span>Cobertura: <b>' + pct(cuenta.respondido, vivos) + '</b> (' + cuenta.respondido + ' de ' + vivos + ' procesos vigentes respondidos)</span></div>' +
-      '<p class="definicion">Respondido: al menos una persona completó todas las preguntas (todos los puntos del checklist cubiertos o marcados «no aplica»). En curso: alguien lo eligió o empezó a responder. Sin cobertura: nadie lo ha tomado. Ya no se hace: solo hay marcas de que no existe.</p>' : '';
+      '<p class="definicion">Respondido: al menos una persona completó todas las preguntas (todos los puntos del checklist cubiertos o marcados «no aplica»). En curso: el responsable ya completó al menos un campo o validó una información previa (elegir el proceso en su lista no basta). Sin cobertura: nadie ha completado nada todavía. Ya no se hace: solo hay marcas de que no existe.</p>' : '';
 
     var lista = listaMapa();
     var be = $('#btnExpMapa');
@@ -4152,7 +4163,7 @@
       {Concepto: 'Procesos nuevos', Regla: 'De los procesos vigentes, los creados por las personas durante el levantamiento, fuera del inventario base.'},
       {Concepto: 'Procesos iniciados', Regla: 'Procesos con al menos 1 pregunta respondida. Basta con que una persona lo haya cumplido: no cambia si más gente lo respondió. Confirmar que la descripción precargada sigue vigente no cuenta como responder.'},
       {Concepto: 'Procesos avanzados', Regla: 'Procesos con al menos 2 preguntas respondidas.'},
-      {Concepto: 'Procesos terminados', Regla: 'Procesos completos según la regla de «Completo» del panel y la consola (servicio de cobertura): alguien completó el checklist o, entre las personas y los documentos, se cubrieron todos los puntos.'},
+      {Concepto: 'Procesos terminados', Regla: 'Procesos completos según la regla de «Completo» del panel y la consola (servicio de cobertura): alguien completó el checklist o, entre las personas, se cubrieron todos los puntos. La información precargada por el equipo solo cuenta si una persona la confirmó vigente.'},
       {Concepto: 'Conteos acumulativos', Regla: 'Un proceso terminado también cuenta como avanzado y como iniciado; un avanzado también cuenta como iniciado.'},
       {Concepto: 'Procesos validados', Regla: 'Procesos marcados como validados por MBC.'},
       {Concepto: 'Avance oficial %', Regla: 'Procesos terminados ÷ procesos vigentes × 100. Sin procesos vigentes, la celda queda vacía. En la fila Total es el total de terminados ÷ el total de vigentes, no el promedio de porcentajes.'},

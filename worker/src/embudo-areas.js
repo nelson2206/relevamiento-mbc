@@ -29,7 +29,7 @@ export async function cargarBase(env, camp, bloques) {
     leerEstructura(env, camp.id),
     puntosValidados(env, camp.id)
   ]);
-  const cobertura = crearCobertura({ bloques, revisiones: revs, respuestas: resp, precarga: pre.concat(validados) });
+  const cobertura = crearCobertura({ bloques, revisiones: revs, respuestas: resp, validados });
   return { enc, procs, revs, resp, pre, asig, estructura, cobertura };
 }
 
