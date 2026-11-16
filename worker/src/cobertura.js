@@ -3,8 +3,9 @@
 // y no en el navegador. Función pura: recibe filas ya leídas de D1 y no toca la base.
 //
 // Regla «ácida» (2026-11-16): solo cuenta lo que hizo la persona responsable, no lo que preparó el equipo.
-// En curso: alguien completó al menos un campo (texto, sistemas, confidencialidad o un punto cubierto) o validó una
-// información previa (confirmó una precarga o un campo de la matriz). Marcar el proceso como «lo hago» en su lista NO basta.
+// En curso: alguien escribió o marcó algo (texto, sistemas, confidencialidad o un punto cubierto). Validar una información
+// previa (confirmar una precarga o un campo de la matriz) suma el punto, pero por sí sola NO pone el proceso en curso.
+// Marcar el proceso como «lo hago» en su lista tampoco basta.
 // Respondido: una persona dejó listos todos los puntos, o entre todas las personas los cubren. Un punto precargado por el
 // equipo solo cuenta si una persona lo confirmó vigente. No vigente: solo hay marcas de «ya no se hace». Sin cobertura: el resto.
 // `preguntas` = preguntas distintas con respuesta (base de «iniciado» ≥1 y «avanzado» ≥2 en la trazabilidad).
@@ -72,7 +73,8 @@ export function crearCobertura({ bloques, revisiones, respuestas, validados = []
     if (!completos && activo && total > 0 && unidos === total) completos = 1;
     const noExiste = revs.filter(r => r.estado === 'no_existe').length;
     const tomado = revs.some(r => r.estado === 'vigente' || r.estado === 'cambio');   // alguien dice que lo hace: no sale del denominador aunque otro diga «ya no se hace»
-    const estado = completos ? 'respondido' : activo ? 'en_curso' : noExiste && !tomado ? 'no_vigente' : 'sin_cobertura';
+    const escribio = (preguntas[pid] || new Set()).size > 0;   // al menos una pregunta respondida por alguien: validar o confirmar no basta
+    const estado = completos ? 'respondido' : escribio ? 'en_curso' : noExiste && !tomado ? 'no_vigente' : 'sin_cobertura';
     return { estado, personas: personas.size, completos, puntos: Math.min(unidos, total), total, preguntas: (preguntas[pid] || new Set()).size };
   };
   cobertura.persona = avancePersona;

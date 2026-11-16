@@ -839,8 +839,8 @@
     });
     return Object.keys(cub).length;
   }
-  // Cobertura de un proceso (misma regla que worker/src/cobertura.js). En curso: alguien completó al menos un campo o validó
-  // una información previa; marcar «lo hago» en su lista no basta. Respondido: alguien dejó listos todos los puntos, o entre
+  // Cobertura de un proceso (misma regla que worker/src/cobertura.js). En curso: alguien escribió o marcó algo; validar una
+  // información previa suma el punto pero no basta, y marcar «lo hago» en su lista tampoco. Respondido: alguien dejó listos todos los puntos, o entre
   // todas las personas los cubren. Ya no se hace: solo hay marcas de "ya no se hace". Sin cobertura: el resto.
   function cobertura(pid){
     var revs = IX.rev[pid] || [];
@@ -853,7 +853,9 @@
     var noExiste = revs.filter(function(r){ return r.estado === 'no_existe'; }).length;
     var n = candidatos.length;
     var tomado = revs.some(function(r){ return r.estado === 'vigente' || r.estado === 'cambio'; });   // alguien dice que lo hace: no sale del denominador
-    var estado = completos ? 'respondido' : activo ? 'en_curso' : noExiste && !tomado ? 'no_vigente' : 'sin_cobertura';
+    // En curso solo si alguien respondió al menos una pregunta (escribió o marcó algo): validar o confirmar no basta.
+    var escribio = Object.keys(IX.todas[pid] || {}).some(function(eid){ return IX.todas[pid][eid].some(respondioPregunta); });
+    var estado = completos ? 'respondido' : escribio ? 'en_curso' : noExiste && !tomado ? 'no_vigente' : 'sin_cobertura';
     return {estado: estado, personas: n, completos: completos, combinada: combinada, noExiste: noExiste,
       confirmado: revs.filter(function(r){ return r.estado === 'no_participo'; }).length};
   }
@@ -947,7 +949,7 @@
     $('#cobertura').innerHTML = total ? barraCob(cuenta, total) +
       '<div class="leyenda">' + ESTADO_ORDEN.map(function(k){ return '<span><i class="seg-' + k + '"></i>' + ESTADO_TXT[k] + ': <b>' + cuenta[k] + '</b></span>'; }).join('') +
       '<span>Cobertura: <b>' + pct(cuenta.respondido, vivos) + '</b> (' + cuenta.respondido + ' de ' + vivos + ' procesos vigentes respondidos)</span></div>' +
-      '<p class="definicion">Respondido: al menos una persona completó todas las preguntas (todos los puntos del checklist cubiertos o marcados «no aplica»). En curso: el responsable ya completó al menos un campo o validó una información previa (elegir el proceso en su lista no basta). Sin cobertura: nadie ha completado nada todavía. Ya no se hace: solo hay marcas de que no existe.</p>' : '';
+      '<p class="definicion">Respondido: al menos una persona completó todas las preguntas (todos los puntos del checklist cubiertos o marcados «no aplica»). En curso: el responsable ya escribió o marcó algo en el proceso (validar una información previa suma el punto pero no basta, y elegir el proceso en su lista tampoco). Sin cobertura: nadie ha completado nada todavía. Ya no se hace: solo hay marcas de que no existe.</p>' : '';
 
     var lista = listaMapa();
     var be = $('#btnExpMapa');

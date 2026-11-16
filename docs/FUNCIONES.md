@@ -234,7 +234,7 @@ Esta es la misma regla que usa la consola (`cobertura()` en `admin.html`), lleva
 | `cobertura.persona(pid, eid)` | Avance de una persona en un proceso: puntos listos, total y si está completo. |
 | `leerJson` · `puntoListo` · `tieneContenido` | Auxiliares. |
 
-Reglas: un proceso está **respondido** si alguien completó los puntos de todas sus preguntas (17 puntos), o si entre todas las personas cubren todos los puntos; la precarga del equipo solo cuenta si una persona la confirmó vigente, y los campos de la matriz que una persona validó desde la encuesta cuentan como cubiertos. Está **en curso** si alguien completó al menos un campo (texto, sistemas, confidencialidad o un punto cubierto) o validó una información previa; elegir el proceso en su lista («lo hago») no basta (regla vigente desde 2026-11-16). Está **no vigente** si solo hay marcas de «ya no se hace».
+Reglas: un proceso está **respondido** si alguien completó los puntos de todas sus preguntas (17 puntos), o si entre todas las personas cubren todos los puntos; la precarga del equipo solo cuenta si una persona la confirmó vigente, y los campos de la matriz que una persona validó desde la encuesta cuentan como cubiertos. Está **en curso** si alguien escribió o marcó algo (texto, sistemas, confidencialidad o un punto cubierto); validar una información previa suma el punto pero por sí sola no basta, y elegir el proceso en su lista («lo hago») tampoco (regla vigente desde 2026-11-16). Está **no vigente** si solo hay marcas de «ya no se hace».
 
 ### 3.4 `estructura.js` — esqueleto Área > Gerencia > Sección
 
