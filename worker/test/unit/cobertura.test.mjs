@@ -57,15 +57,18 @@ test('la precarga que la persona confirmó vigente (_vigentes) sí cuenta', () =
   assert.equal(c('p1').estado, 'respondido');
 });
 
-test('en curso: solo confirmar vigente una precarga ya es validar información', () => {
+test('confirmar vigente una precarga suma el punto pero, sola, no pone el proceso en curso', () => {
   const conf = JSON.stringify({ _vigentes: { a: '2026-11-16T10:00:00Z' } });
-  assert.equal(cob({ respuestas: [resp('e1', 'p1', 'b1', conf)] })('p1').estado, 'en_curso');
-  assert.equal(cob({ respuestas: [resp('e1', 'p1', 'b1', JSON.stringify({ _vigentes: {} }))] })('p1').estado, 'sin_cobertura', 'un _vigentes vacío no cuenta');
+  const c = cob({ respuestas: [resp('e1', 'p1', 'b1', conf)] });
+  assert.equal(c('p1').estado, 'sin_cobertura');
+  assert.equal(c('p1').puntos, 1);
+  assert.equal(cob({ respuestas: [resp('e1', 'p1', 'b1', conf), resp('e1', 'p1', 'b2', '{}', 'algo')] })('p1').estado, 'en_curso', 'con algo escrito sí');
 });
 
-test('los campos de la matriz que una persona validó cuentan como cubiertos y ponen el proceso en curso', () => {
+test('los campos de la matriz que una persona validó suman el punto pero, solos, no ponen el proceso en curso', () => {
   const val = ['a', 'b'].map(punto => ({ proceso_id: 'p1', punto }));
-  assert.equal(cob({ validados: val })('p1').estado, 'en_curso');
+  assert.equal(cob({ validados: val })('p1').estado, 'sin_cobertura');
+  assert.equal(cob({ validados: val })('p1').puntos, 2);
   const c = cob({ validados: val, respuestas: [resp('e1', 'p1', 'b2', ck('c')), resp('e1', 'p1', 'b3', ck('d'))] });
   assert.equal(c('p1').estado, 'respondido');
 });
