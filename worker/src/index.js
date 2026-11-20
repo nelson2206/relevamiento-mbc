@@ -1085,32 +1085,52 @@ async function rutaImportar(env, b, ctx) {
   // Procesos: con upsert (carga de la matriz), una fila con el id de un proceso de la campaña (columna oculta del Excel)
   // o con un código que ya existe se actualiza en vez de duplicarse.
   // La matriz se combina (json_patch): las columnas que trae el archivo se actualizan y las que no trae se conservan.
+  // El Excel exportado de la matriz no trae la gerencia: una fila que ya existe (por id o código) conserva su gerencia y sección;
+  // solo la fila nueva las necesita. Lo que no se puede cargar se informa en `descartadas` en vez de saltarse en silencio (2026-11-20).
   const porCodigo = {}, porId = {}, actual = {};
+  const descartadas = [], vistos = new Set();
+  let nCampos = 0, nValidadosCambiados = 0;
   if (b.upsert && agregar) {
-    const ya = await env.DB.prepare('SELECT id, codigo, matriz, matriz_ia FROM procesos WHERE campana_id=?').bind(camp.id).all();
+    const ya = await env.DB.prepare('SELECT id, codigo, gerencia, seccion, macroproceso, proceso, subproceso, validacion, matriz, matriz_ia FROM procesos WHERE campana_id=?').bind(camp.id).all();
     ya.results.forEach(x => { porId[x.id] = x.id; actual[x.id] = x; if (normal(x.codigo)) porCodigo[normal(x.codigo)] = x.id; });
   }
   pro.forEach((x, i) => {
     const gRaw = txt(x.gerencia, 150), sRaw = txt(x.seccion, 150);
     const nombre = txt(x.proceso, 200) || txt(x.subproceso, 200);
-    if (!gRaw || !sRaw || !nombre) return;
-    const [gerencia, seccion] = E.vincular(gRaw, sRaw, 'procesos', false);
+    const fila = Number(x.fila) || i + 1;
+    const id = porId[txt(x.id, 60)] || (normal(x.codigo) && porCodigo[normal(x.codigo)]);
+    if (!id && !nombre) { descartadas.push({ fila, motivo: 'Sin proceso ni subproceso' }); return; }
+    if (!id && (!gRaw || !sRaw)) {
+      descartadas.push({ fila, motivo: (nombre || 'Fila') + ': no coincide con ningún proceso de la campaña (ID o código) y no trae gerencia y sección para crearlo' });
+      return;
+    }
+    // Un mismo proceso dos veces en el archivo: solo cuenta la primera fila (la otra se informa).
+    if (id && vistos.has(id)) { descartadas.push({ fila, motivo: (nombre || 'Fila') + ': el mismo proceso (ID o código) ya aparece antes en el archivo' }); return; }
+    if (id) vistos.add(id);
+    const previo = id ? actual[id] : null;
+    const sinArea = !!previo && (!gRaw || !sRaw);   // actualización sin gerencia/sección en el archivo: se conservan las del proceso
+    const [gerencia, seccion] = sinArea ? [previo.gerencia, previo.seccion] : E.vincular(gRaw, sRaw, 'procesos', false);
     const matriz = limpiarMatriz(x.matriz);
-    if (E.activo()) { if (matriz.gerencia) matriz.gerencia = gerencia; if (matriz.seccion) matriz.seccion = seccion; }   // la matriz usa los nombres del esqueleto
+    // El Excel exportado repite la identificación que el proceso tiene en sus columnas (la matriz puede no tenerla): si no la editaron,
+    // no cuenta como cambio ni se escribe en la matriz.
+    if (previo) ['macroproceso', 'proceso', 'subproceso', 'seccion'].forEach(k => { if (k in matriz && matriz[k] === String(previo[k] || '')) delete matriz[k]; });
+    if (E.activo() && !sinArea) { if (matriz.gerencia) matriz.gerencia = gerencia; if (matriz.seccion) matriz.seccion = seccion; }   // la matriz usa los nombres del esqueleto
     const val = VALIDACIONES.includes(x.validacion) ? x.validacion : null;
     // Nombres del inventario anterior (columna PARTICIPANTES): alimentan el buscador por persona.
     const personas = txt(x.personas || matriz.participantes || '', 4000);
-    const id = porId[txt(x.id, 60)] || (normal(x.codigo) && porCodigo[normal(x.codigo)]);
     if (id) {
       // Un campo que el archivo cambia deja de ser de la IA: lo escribió el equipo.
       const mPrev = leerMatriz((actual[id] || {}).matriz), iaPrev = leerMatriz((actual[id] || {}).matriz_ia);
-      Object.keys(matriz).forEach(k => { if (matriz[k] !== String(mPrev[k] || '')) delete iaPrev[k]; });
+      let cambios = 0;
+      Object.keys(matriz).forEach(k => { if (matriz[k] !== String(mPrev[k] || '')) { delete iaPrev[k]; cambios++; } });
+      nCampos += cambios;
+      if (cambios && previo.validacion === 'validado') nValidadosCambiados++;   // la validación se mantiene: se avisa a la consola
       st.push(env.DB.prepare(`UPDATE procesos SET gerencia=?, seccion=?, macroproceso=?, proceso=?, subproceso=?,
           descripcion=CASE WHEN ?<>'' THEN ? ELSE descripcion END, personas=CASE WHEN ?<>'' THEN ? ELSE personas END,
           matriz=CASE WHEN ?<>'{}' THEN json_patch(matriz, ?) ELSE matriz END, matriz_ia=?,
           validacion=COALESCE(?, validacion), validado_por=CASE WHEN ?='validado' THEN ? ELSE validado_por END,
           validado_en=CASE WHEN ?='validado' THEN ? ELSE validado_en END, actualizado_en=? WHERE id=?`)
-        .bind(gerencia, seccion, txt(x.macroproceso, 200), txt(x.proceso, 200), txt(x.subproceso, 200),
+        .bind(gerencia, seccion, txt(x.macroproceso, 200) || previo.macroproceso, txt(x.proceso, 200) || previo.proceso, txt(x.subproceso, 200) || previo.subproceso,
           txt(x.descripcion, 1500), txt(x.descripcion, 1500), personas, personas, JSON.stringify(matriz), JSON.stringify(matriz), JSON.stringify(iaPrev),
           val, val, txt(x.validado_por, 150), val, t, t, id));
       st.push(...sentenciasHistorial(env, { id, campana_id: camp.id }, mPrev, Object.assign({}, mPrev, matriz), ACTOR_CONSOLA, 'importacion'));
@@ -1153,8 +1173,8 @@ async function rutaImportar(env, b, ctx) {
       } catch (e) { avisosPerfil.push(p.nombre + ': ' + (e instanceof HttpError ? e.message : 'no se pudo dar el perfil')); }
     }
   }
-  log('importar', { campana: camp.id, modo: b.modo, upsert: !!b.upsert, nE, nEAct, nP, nPAct, nS, asignados, claves: claves.length, estructura: estructura ? estructura.total : 0, sin_vincular: estructura ? estructura.sin_vincular.length : 0 });
-  return { ok: true, encuestados: nE, encuestados_actualizados: nEAct, procesos: nP, procesos_actualizados: nPAct, sistemas: nS, estructura, asignados, claves, avisos_perfil: avisosPerfil };
+  log('importar', { campana: camp.id, modo: b.modo, upsert: !!b.upsert, nE, nEAct, nP, nPAct, nCampos, descartadas: descartadas.length, nS, asignados, claves: claves.length, estructura: estructura ? estructura.total : 0, sin_vincular: estructura ? estructura.sin_vincular.length : 0 });
+  return { ok: true, encuestados: nE, encuestados_actualizados: nEAct, procesos: nP, procesos_actualizados: nPAct, campos_cambiados: nCampos, validados_modificados: nValidadosCambiados, descartadas, sistemas: nS, estructura, asignados, claves, avisos_perfil: avisosPerfil };
 }
 
 async function rutaCampana(env, url) {
