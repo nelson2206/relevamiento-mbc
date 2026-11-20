@@ -110,7 +110,7 @@ Ninguna clave de Supervisor se guarda en claro: en la base solo queda su huella 
 | `POST /a/campana/invitacion` | `rutaInvitacion` | Texto de invitación. |
 | `POST /a/campana/cliente` | `rutaClienteAcceso` | Generar, renovar, desactivar o definir el acceso del cliente. |
 | `POST /a/enlace` | `rutaEnlace` | Crear o regenerar el código público (enlace abierto). |
-| `POST /a/importar` | `rutaImportar` | Carga de Excel: estructura, personas, procesos con matriz y sistemas. |
+| `POST /a/importar` | `rutaImportar` | Carga de Excel: estructura, personas, procesos con matriz y sistemas. Con `upsert` (matriz completada a mano) actualiza por ID o código sin exigir gerencia, conserva lo que el archivo deja vacío y devuelve `campos_cambiados` y `descartadas` (HU05). |
 | `POST /a/encuestado` | `rutaEncuestadoAlta` | Alta rápida de responsables sin enlace personal. |
 | `POST /a/encuestado/borrar` | `rutaEncuestadoBorrar` | Borra personas (con respuestas, solo con `forzar`). |
 | `POST /a/respuesta/borrar` | `rutaRespuestaBorrar` | Borra respuestas de una persona en uno o varios procesos. |
@@ -405,7 +405,7 @@ Módulo `FlujoAdmin`. Lo consulta `admin.html` al abrir una campaña.
 
 | Comando (desde `worker/`) | Archivo | Qué cubre |
 |---|---|---|
-| `npm run test:unit` | `test/unit/*.test.mjs` | Sin red (SQLite en memoria con `schema.sql`): `cobertura.js`, `comun.js` + `ambito.js`, `estructura.js`, las reglas de `flujo.js`, PIN y acceso, documentos (HU01/HU02), extracción de precarga y borradores, matriz como única fuente (`matriz-sync.test.mjs`) y el desfase entre migraciones y `schema.sql` (`node --test`). |
+| `npm run test:unit` | `test/unit/*.test.mjs` | Sin red (SQLite en memoria con `schema.sql`): `cobertura.js`, `comun.js` + `ambito.js`, `estructura.js`, las reglas de `flujo.js`, PIN y acceso, documentos (HU01/HU02), extracción de precarga y borradores, matriz como única fuente (`matriz-sync.test.mjs`), carga de la matriz completada a mano (`importar-matriz.test.mjs`, HU05) y el desfase entre migraciones y `schema.sql` (`node --test`). |
 | `npm run test:flujo` | `test/flujo.mjs` | Integración del flujo del Supervisor: pasos, advertencias, aprobación y reapertura. Requiere `npm run dev`. |
 | `npm run test:usuarios` | `test/usuarios.mjs` | Integración desde la consola: alta y edición de personas, claves, equipo visible y catálogo. Requiere `npm run dev`. |
 | `npm run test:seguridad` | `test/seguridad.mjs` | Integración: permisos del Gerente y entradas inválidas en la carga con esqueleto. Requiere `npm run dev`. |

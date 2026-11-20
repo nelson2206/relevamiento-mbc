@@ -3534,19 +3534,26 @@
       var idx = {};
       filas[hi].forEach(function(v, j){ var k = normEnc(v); if (k && idx[k] === undefined) idx[k] = j; });
       var celda = function(row, enc){ var j = idx[normEnc(enc)]; return j === undefined ? '' : String(row[j] == null ? '' : row[j]).trim(); };
-      var out = [];
-      filas.slice(hi + 1).forEach(function(row){
+      var out = [], avisos = [];
+      filas.slice(hi + 1).forEach(function(row, n){
         var m = {};
         MATRIZ.forEach(function(c){ var v = celda(row, c[1]) || (c[4] ? celda(row, c[4]) : ''); if (v) m[c[0]] = v; });
         if (!m.subproceso && !m.proceso) return;
+        // Listas cerradas: «si», «SI» o «parcialmente» se llevan a la opción exacta; lo que no coincide se carga igual y se avisa.
+        Object.keys(OPCIONES).forEach(function(k){
+          if (!m[k]) return;
+          var ok = OPCIONES[k].filter(function(o){ return normEnc(o).toLowerCase() === normEnc(m[k]).toLowerCase(); })[0];
+          if (ok) m[k] = ok;
+          else avisos.push('Fila ' + (hi + 2 + n) + ': «' + m[k] + '» no es una opción válida de «' + k.replace(/_/g, ' ') + '» (' + OPCIONES[k].join(', ') + ').');
+        });
         var validado = normEnc(celda(row, 'Validado')) === 'si';
         var estado = normEnc(celda(row, 'Estado de actualización'));
-        out.push({id: celda(row, COL_ID), codigo: celda(row, 'NIV.2'), personas: celda(row, 'PARTICIPANTES'),
+        out.push({fila: hi + 2 + n, id: celda(row, COL_ID), codigo: celda(row, 'NIV.2'), personas: celda(row, 'PARTICIPANTES'),
           gerencia: m.gerencia || '', seccion: m.seccion || '', macroproceso: m.macroproceso || '',
           proceso: m.proceso || '', subproceso: m.subproceso || '', matriz: m,
           validacion: validado ? 'validado' : (estado === 'actualizado' ? 'actualizado' : undefined), validado_por: celda(row, 'Validado por (cargo)')});
       });
-      return {hoja: wb.SheetNames[i], procesos: out};
+      return {hoja: wb.SheetNames[i], procesos: out, avisos: avisos};
     }
     return null;
   }
@@ -3559,12 +3566,19 @@
       if (mx){
         var ids = {}, cods = {};
         C.procesos.forEach(function(p){ ids[p.id] = 1; if (p.codigo) cods[sinTildes(p.codigo)] = 1; });
-        var act = mx.procesos.filter(function(x){ return (x.id && ids[x.id]) || (x.codigo && cods[sinTildes(x.codigo)]); }).length;
+        var reconocida = function(x){ return (x.id && ids[x.id]) || (x.codigo && cods[sinTildes(x.codigo)]); };
+        var act = mx.procesos.filter(reconocida).length;
+        // La matriz exportada no trae la gerencia: una fila que no es de un proceso de la campaña no se puede crear.
+        var sinReco = mx.procesos.filter(function(x){ return !reconocida(x) && !(x.gerencia && x.seccion); });
+        var nuevas = mx.procesos.length - act - sinReco.length;
         CARGA = {encuestados: [], procesos: mx.procesos, sistemas: [], upsert: true};
         $('#modoCarga').value = 'agregar';
         $('#prevCarga').innerHTML = 'Matriz detectada en la hoja «' + esc(mx.hoja) + '»: <b>' + mx.procesos.length + '</b> filas. ' +
-          '<b>' + act + '</b> actualizan procesos existentes (por su ID o código) y <b>' + (mx.procesos.length - act) + '</b> se agregan. ' +
-          'Las respuestas y validaciones que ya están en la herramienta se conservan; una fila con VALIDADO = Sí queda validada.';
+          '<b>' + act + '</b> completan procesos existentes (por su ID o código)' + (nuevas ? ' y <b>' + nuevas + '</b> se agregan' : '') + '. ' +
+          'Las celdas vacías no borran nada: lo que ya está en la herramienta se conserva. Las validaciones también se conservan; una fila con VALIDADO = Sí queda validada.' +
+          (sinReco.length ? '<div class="msg warn" style="margin-top:6px"><b>' + sinReco.length + '</b> filas no se cargarán porque no coinciden con ningún proceso de la campaña (fila' + (sinReco.length > 1 ? 's' : '') + ' de Excel: ' +
+            esc(sinReco.slice(0, 15).map(function(x){ return x.fila; }).join(', ')) + (sinReco.length > 15 ? '…' : '') + '). ¿Se borró la columna oculta «ID herramienta»?</div>' : '') +
+          (mx.avisos.length ? '<div class="msg warn" style="margin-top:6px">' + mx.avisos.slice(0, 10).map(esc).join('<br>') + (mx.avisos.length > 10 ? '<br>… y ' + (mx.avisos.length - 10) + ' más.' : '') + '</div>' : '');
         $('#btnImportar').disabled = false;
         return;
       }
@@ -3592,8 +3606,11 @@
     $('#msgCarga').innerHTML = '<span class="muted">Importando…</span>';
     api('/a/importar', Object.assign({campana_id: C.campana.id, modo: CARGA.upsert ? 'agregar' : $('#modoCarga').value}, CARGA)).then(function(j){
       $('#msgCarga').innerHTML = '<div class="msg ok">Importados: ' + j.encuestados + ' personas nuevas' + (j.encuestados_actualizados ? ' y ' + j.encuestados_actualizados + ' actualizadas (mismo correo, conservan su enlace)' : '') +
-        ', ' + j.procesos + ' procesos nuevos' + (j.procesos_actualizados ? ' y ' + j.procesos_actualizados + ' actualizados' : '') + ', ' + j.sistemas + ' sistemas.' + (j.asignados ? ' ' + j.asignados + ' procesos asignados por secciones adicionales.' : '') + ((j.claves || []).length ? ' ' + j.claves.length + ' cuentas de acceso creadas (sus claves se muestran ahora).' : '') +
-        (j.estructura ? ' Esqueleto: ' + j.estructura.total + ' filas (' + j.estructura.nuevas + ' nuevas).' : '') + '</div>' + resultadoEstructura(j.estructura) + (j.avisos_perfil || []).map(function(a){ return '<div class="msg warn" style="margin-top:6px">' + esc(a) + '</div>'; }).join('');
+        ', ' + j.procesos + ' procesos nuevos' + (j.procesos_actualizados ? ' y ' + j.procesos_actualizados + ' actualizados (' + (j.campos_cambiados || 0) + ' campos de la matriz cambiaron)' : '') + ', ' + j.sistemas + ' sistemas.' + (j.asignados ? ' ' + j.asignados + ' procesos asignados por secciones adicionales.' : '') + ((j.claves || []).length ? ' ' + j.claves.length + ' cuentas de acceso creadas (sus claves se muestran ahora).' : '') +
+        (j.estructura ? ' Esqueleto: ' + j.estructura.total + ' filas (' + j.estructura.nuevas + ' nuevas).' : '') + '</div>' + resultadoEstructura(j.estructura) +
+        (j.validados_modificados ? '<div class="msg warn" style="margin-top:6px"><b>' + j.validados_modificados + '</b> proceso' + (j.validados_modificados > 1 ? 's' : '') + ' ya validado' + (j.validados_modificados > 1 ? 's' : '') + ' cambió su contenido y sigue' + (j.validados_modificados > 1 ? 'n' : '') + ' validado' + (j.validados_modificados > 1 ? 's' : '') + '. Revísalos en la pestaña Matriz y validación.</div>' : '') +
+        ((j.descartadas || []).length ?'<div class="msg warn" style="margin-top:6px"><b>' + j.descartadas.length + '</b> filas no se cargaron:<br>' + j.descartadas.slice(0, 15).map(function(d){ return 'Fila ' + d.fila + ': ' + esc(d.motivo); }).join('<br>') + (j.descartadas.length > 15 ? '<br>… y ' + (j.descartadas.length - 15) + ' más.' : '') + '</div>' : '') +
+        (j.avisos_perfil || []).map(function(a){ return '<div class="msg warn" style="margin-top:6px">' + esc(a) + '</div>'; }).join('');
       CARGA = null; $('#inExcel').value = '';
       abrir(C.campana.id).then(function(){ if (window.UsuariosConsola) window.UsuariosConsola.mostrarClaves(j.claves); });
     }).catch(function(err){ $('#msgCarga').innerHTML = '<div class="msg warn">' + esc(err.message) + '</div>'; b.disabled = false; });
