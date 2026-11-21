@@ -121,12 +121,17 @@ async function fichaDe(env, id, umbral) {
 }
 async function conProcesos(env, docs, umbral) {
   if (!docs.length) return [];
-  const ids = docs.map(d => d.id), marcas = ids.map(() => '?').join(',');
+  // D1 admite como máximo 100 variables por consulta: con más documentos la bandeja daba error 500 (2026-11-20).
+  // Se consulta por tramos de documentos; cada documento cae entero en un tramo, así que su orden por confianza se conserva.
+  const ids = docs.map(d => d.id), TRAMO = 90, tramos = [];
+  for (let i = 0; i < ids.length; i += TRAMO) tramos.push(ids.slice(i, i + TRAMO));
+  const porTramos = sql => Promise.all(tramos.map(t => env.DB.prepare(sql(t.map(() => '?').join(','))).bind(...t).all()))
+    .then(rs => ({ results: rs.flatMap(r => r.results) }));
   const [filas, ext, bor] = await Promise.all([
-    env.DB.prepare(`SELECT dp.documento_id, dp.proceso_id, dp.origen, dp.confianza, dp.confirmado, p.gerencia, p.seccion, p.macroproceso, p.proceso, p.subproceso
-      FROM documento_procesos dp JOIN procesos p ON p.id=dp.proceso_id WHERE dp.vigente=1 AND dp.documento_id IN (${marcas}) ORDER BY dp.confianza DESC`).bind(...ids).all(),
-    env.DB.prepare(`SELECT documento_id, proceso_id, estado, mensaje, puntos, descartados, motivo, actualizado FROM documento_extracciones WHERE documento_id IN (${marcas})`).bind(...ids).all(),
-    env.DB.prepare(`SELECT documento_id, proceso_id, COUNT(*) AS n FROM precarga_borrador WHERE estado='borrador' AND documento_id IN (${marcas}) GROUP BY documento_id, proceso_id`).bind(...ids).all()
+    porTramos(marcas => `SELECT dp.documento_id, dp.proceso_id, dp.origen, dp.confianza, dp.confirmado, p.gerencia, p.seccion, p.macroproceso, p.proceso, p.subproceso
+      FROM documento_procesos dp JOIN procesos p ON p.id=dp.proceso_id WHERE dp.vigente=1 AND dp.documento_id IN (${marcas}) ORDER BY dp.confianza DESC`),
+    porTramos(marcas => `SELECT documento_id, proceso_id, estado, mensaje, puntos, descartados, motivo, actualizado FROM documento_extracciones WHERE documento_id IN (${marcas})`),
+    porTramos(marcas => `SELECT documento_id, proceso_id, COUNT(*) AS n FROM precarga_borrador WHERE estado='borrador' AND documento_id IN (${marcas}) GROUP BY documento_id, proceso_id`)
   ]);
   const extDe = {}, borDe = {};
   ext.results.forEach(x => { extDe[x.documento_id + '|' + x.proceso_id] = x; });
