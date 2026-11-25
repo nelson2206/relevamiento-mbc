@@ -540,6 +540,7 @@ export function sentenciasRastroDeCampana(env, campId) {
     env.DB.prepare('DELETE FROM documento_extraccion_historial WHERE campana_id=?').bind(campId),
     env.DB.prepare('DELETE FROM precarga_borrador WHERE campana_id=?').bind(campId),
     env.DB.prepare('DELETE FROM matriz_historial WHERE campana_id=?').bind(campId),
+    env.DB.prepare('DELETE FROM borrados_forzados WHERE campana_id=?').bind(campId),
     env.DB.prepare('DELETE FROM documentos WHERE campana_id=?').bind(campId)
   ];
 }

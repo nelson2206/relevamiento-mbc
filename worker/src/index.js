@@ -49,7 +49,12 @@
  *   POST /a/importar             {campana_id, modo, upsert?, estructura[] (hoja Gerencias: {area, gerencia, seccion}), encuestados[], procesos[] (con matriz opcional; con upsert se actualiza por id o código), sistemas[]}
  *   GET  /a/campana?id=          volcado completo de la campaña
  *   POST /a/proceso              {campana_id, id?, codigo, gerencia, seccion, macroproceso, proceso, subproceso, descripcion}
- *   POST /a/proceso/borrar       {proceso_id}   (solo si nadie lo respondió)
+ *   POST /a/proceso/borrar       {proceso_id, campana_id?, forzar?, confirmar_nombre?}   (solo si nadie lo respondió; con validación, precarga o matriz solo con forzar + el nombre escrito, y queda en borrados_forzados)
+ *   POST /a/proceso/borrar-grupo {campana_id, gerencia, seccion, macroproceso, proceso?, forzar?, confirmar_nombre?}   (borra un macroproceso o proceso entero; 409 si algún subproceso tiene respuestas, o validación/precarga/matriz sin forzar)
+ *   GET  /a/campana/borrados?id=   registro de los borrados forzados (quién, cuándo, qué se perdió y copia de la matriz y la precarga)
+ *   POST /a/estructura/crear     {campana_id, gerencia, seccion?}   (constructor: gerencia o sección en el esqueleto)
+ *   POST /a/estructura/eliminar  {campana_id, gerencia, seccion?}   (solo si no tiene procesos ni personas)
+ *   POST /a/importar             {..., dry_run?}   (dry_run: calcula los campos que cambiarían sin escribir)
  *   POST /a/proceso/renombrar    {campana_id, nivel: macroproceso|proceso, gerencia, seccion, macroproceso, proceso?, nuevo}
  *   POST /a/fuera-alcance        {campana_id, proceso_ids[], valor}   (1 = fuera de alcance: no se ve en la encuesta ni se estructura)
  *   POST /a/entrevista           {campana_id, proceso_ids[], estado: ''|agendada|realizada, fecha?, entrevistado?}
@@ -111,7 +116,7 @@
  * ============================================================ */
 
 import Anthropic from '@anthropic-ai/sdk';
-import { leerEstructura, prepararEstructura, asegurarEstructura, areasDeEstructura } from './estructura.js';
+import { leerEstructura, prepararEstructura, asegurarEstructura, areasDeEstructura, crearEstructura, eliminarEstructura } from './estructura.js';
 import { rutaFlujo, rutaFlujoCatalogo, rutaFlujoConfirmar, rutaFlujoRetroceder, rutaFlujoProceso, rutaFlujoAdmin, rutaFlujoReabrir, guardarCambio } from './flujo.js';
 import { ESQUEMA_CLASIFICAR, mensajeErrorIA, rutaDocumentoSubir, rutaDocumentos, rutaDocumentoArchivo, rutaDocumentoGerencia, rutaDocumentoAnalizar, rutaDocumentoBorrar, rutaDocumentoProcesos, rutaUmbral,
   rutaDocumentoExtraer, rutaDocumentoHistorial, extraerPendientes, vencerExtracciones, rutaPrecargaBorrador, borradoresDeCampana, sentenciasRastroDeProcesos, sentenciasRastroDeCampana, borrarArchivosDeCampana } from './documentos.js';
@@ -1087,18 +1092,26 @@ async function rutaImportar(env, b, ctx) {
   // La matriz se combina (json_patch): las columnas que trae el archivo se actualizan y las que no trae se conservan.
   // El Excel exportado de la matriz no trae la gerencia: una fila que ya existe (por id o código) conserva su gerencia y sección;
   // solo la fila nueva las necesita. Lo que no se puede cargar se informa en `descartadas` en vez de saltarse en silencio (2026-11-20).
-  const porCodigo = {}, porId = {}, actual = {};
-  const descartadas = [], vistos = new Set();
+  const porCodigo = {}, porId = {}, porRuta = {}, actual = {};
+  const descartadas = [], vistos = new Set(), cambiosDetalle = [];
   let nCampos = 0, nValidadosCambiados = 0;
+  // Sin código, un proceso se reconoce por su ruta completa (gerencia, sección, macroproceso, proceso, subproceso).
+  const rutaDe = (g, s, m, p, sp) => [g, s, m, p, sp].map(v => normal(v)).join('|');
   if (b.upsert && agregar) {
     const ya = await env.DB.prepare('SELECT id, codigo, gerencia, seccion, macroproceso, proceso, subproceso, validacion, matriz, matriz_ia FROM procesos WHERE campana_id=?').bind(camp.id).all();
-    ya.results.forEach(x => { porId[x.id] = x.id; actual[x.id] = x; if (normal(x.codigo)) porCodigo[normal(x.codigo)] = x.id; });
+    ya.results.forEach(x => {
+      porId[x.id] = x.id; actual[x.id] = x;
+      if (normal(x.codigo)) porCodigo[normal(x.codigo)] = x.id;
+      const r = rutaDe(x.gerencia, x.seccion, x.macroproceso, x.proceso, x.subproceso);
+      if (!(r in porRuta)) porRuta[r] = x.id;
+    });
   }
   pro.forEach((x, i) => {
     const gRaw = txt(x.gerencia, 150), sRaw = txt(x.seccion, 150);
     const nombre = txt(x.proceso, 200) || txt(x.subproceso, 200);
     const fila = Number(x.fila) || i + 1;
-    const id = porId[txt(x.id, 60)] || (normal(x.codigo) && porCodigo[normal(x.codigo)]);
+    const id = porId[txt(x.id, 60)] || (normal(x.codigo) && porCodigo[normal(x.codigo)]) ||
+      (gRaw && sRaw && porRuta[rutaDe(gRaw, sRaw, txt(x.macroproceso, 200), txt(x.proceso, 200), txt(x.subproceso, 200))]);
     if (!id && !nombre) { descartadas.push({ fila, motivo: 'Sin proceso ni subproceso' }); return; }
     if (!id && (!gRaw || !sRaw)) {
       descartadas.push({ fila, motivo: (nombre || 'Fila') + ': no coincide con ningún proceso de la campaña (ID o código) y no trae gerencia y sección para crearlo' });
@@ -1122,8 +1135,12 @@ async function rutaImportar(env, b, ctx) {
       // Un campo que el archivo cambia deja de ser de la IA: lo escribió el equipo.
       const mPrev = leerMatriz((actual[id] || {}).matriz), iaPrev = leerMatriz((actual[id] || {}).matriz_ia);
       let cambios = 0;
-      Object.keys(matriz).forEach(k => { if (matriz[k] !== String(mPrev[k] || '')) { delete iaPrev[k]; cambios++; } });
+      const campos = [];
+      Object.keys(matriz).forEach(k => {
+        if (matriz[k] !== String(mPrev[k] || '')) { delete iaPrev[k]; cambios++; campos.push({ campo: k, anterior: String(mPrev[k] || ''), nuevo: matriz[k] }); }
+      });
       nCampos += cambios;
+      if (cambios) cambiosDetalle.push({ fila, proceso_id: id, nombre: nombre || previo.subproceso || previo.proceso, validado: previo.validacion === 'validado', campos });
       if (cambios && previo.validacion === 'validado') nValidadosCambiados++;   // la validación se mantiene: se avisa a la consola
       st.push(env.DB.prepare(`UPDATE procesos SET gerencia=?, seccion=?, macroproceso=?, proceso=?, subproceso=?,
           descripcion=CASE WHEN ?<>'' THEN ? ELSE descripcion END, personas=CASE WHEN ?<>'' THEN ? ELSE personas END,
@@ -1143,6 +1160,14 @@ async function rutaImportar(env, b, ctx) {
         txt(x.descripcion, 1500), i, JSON.stringify(matriz), val || '', val === 'validado' ? txt(x.validado_por, 150) : '', val === 'validado' ? t : null, personas));
     nP++;
   });
+
+  // Vista previa: calcula qué cambiaría la carga sin escribir nada (la consola la usa para pedir confirmación).
+  if (b.dry_run) {
+    const existentes = !agregar ? (await env.DB.prepare('SELECT COUNT(*) AS n FROM procesos WHERE campana_id=?').bind(camp.id).first()).n : 0;
+    return { ok: true, dry_run: true, reemplaza: !agregar, procesos_existentes: existentes, procesos: nP, procesos_actualizados: nPAct, campos_cambiados: nCampos,
+      validados_modificados: nValidadosCambiados, descartadas, cambios: cambiosDetalle.slice(0, 200), cambios_total: cambiosDetalle.length,
+      campos_sobrescritos: cambiosDetalle.reduce((t, c) => t + c.campos.filter(x => x.anterior).length, 0) };
+  }
 
   // Sistemas: sin repetir nombres ya cargados.
   const sisYa = new Set();
@@ -1213,11 +1238,21 @@ async function rutaProcesoAdmin(env, b) {
   if (!f.gerencia || !f.seccion) throw new HttpError(400, 'Gerencia y sección son obligatorias');
   if (!f.proceso && !f.subproceso) throw new HttpError(400, 'Indica el proceso o el subproceso');
   if (b.id) {
-    const p = await env.DB.prepare('SELECT id FROM procesos WHERE id=?').bind(b.id).first();
+    const p = await env.DB.prepare('SELECT * FROM procesos WHERE id=? AND campana_id=?').bind(txt(b.id, 60), txt(b.campana_id, 60)).first();
     if (!p) throw new HttpError(404, 'Proceso no encontrado');
-    await env.DB.prepare(`UPDATE procesos SET codigo=?, gerencia=?, seccion=?, macroproceso=?, proceso=?, subproceso=?, descripcion=? WHERE id=?`)
-      .bind(f.codigo, f.gerencia, f.seccion, f.macroproceso, f.proceso, f.subproceso, f.descripcion, b.id).run();
-    return { ok: true, id: b.id };
+    // Si cambia la ubicación o el nombre, la fila de la matriz se mantiene al día y queda «actualizado» (salvo que esté validada).
+    const mx = leerMatriz(p.matriz);
+    ['gerencia', 'seccion', 'macroproceso', 'proceso', 'subproceso'].forEach(k => { if (f[k] !== String(p[k] || '') && (k in mx || k !== 'gerencia')) mx[k] = f[k]; });
+    const cambio = ['gerencia', 'seccion', 'macroproceso', 'proceso', 'subproceso'].some(k => f[k] !== String(p[k] || ''));
+    const validacion = cambio && p.validacion !== 'validado' ? 'actualizado' : p.validacion;
+    await env.DB.prepare(`UPDATE procesos SET codigo=?, gerencia=?, seccion=?, macroproceso=?, proceso=?, subproceso=?, descripcion=?, matriz=?, validacion=?, actualizado_en=CASE WHEN ? THEN ? ELSE actualizado_en END WHERE id=?`)
+      .bind(f.codigo, f.gerencia, f.seccion, f.macroproceso, f.proceso, f.subproceso, f.descripcion, JSON.stringify(mx), validacion, cambio ? 1 : 0, ahora(), p.id).run();
+    if (cambio) {
+      const hist = sentenciasHistorial(env, p, leerMatriz(p.matriz), mx, ACTOR_CONSOLA, 'consola');
+      if (hist.length) await env.DB.batch(hist);
+      await asegurarEstructura(env, p.campana_id, f.gerencia, f.seccion);
+    }
+    return { ok: true, id: p.id };
   }
   const camp = await env.DB.prepare('SELECT id FROM campanas WHERE id=?').bind(b.campana_id).first();
   if (!camp) throw new HttpError(404, 'Campaña no encontrada');
@@ -1242,7 +1277,7 @@ async function rutaProcesoMover(env, b) {
   if (restaura) movs = b.movimientos;
   else {
     const ids = [...new Set((Array.isArray(b.proceso_ids) ? b.proceso_ids : []).map(x => txt(x, 60)).filter(Boolean))];
-    movs = ids.map(id => ({ id, gerencia: b.gerencia, seccion: b.seccion, macroproceso: b.macroproceso }));
+    movs = ids.map(id => ({ id, gerencia: b.gerencia, seccion: b.seccion, macroproceso: b.macroproceso, proceso: b.proceso }));
   }
   if (!movs.length) throw new HttpError(400, 'No hay procesos para mover');
   if (movs.length > 300) throw new HttpError(400, 'Máximo 300 procesos por movimiento');
@@ -1256,12 +1291,20 @@ async function rutaProcesoMover(env, b) {
     const mx = leerMatriz(p.matriz);
     mx.gerencia = g; mx.seccion = sec;
     if (mac !== p.macroproceso) mx.macroproceso = mac;
+    const pro = m.proceso === undefined || m.proceso === null ? p.proceso : txt(m.proceso, 200);
+    if (pro !== p.proceso) mx.proceso = pro;
+    // Una fila que era un proceso (sin subproceso) y pasa a colgar de otro proceso conserva su nombre como subproceso.
+    // Al deshacer, el movimiento trae el subproceso que tenía.
+    let sub = p.subproceso;
+    if (restaura && m.subproceso !== undefined) sub = txt(m.subproceso, 200);
+    else if (!restaura && pro !== p.proceso && !p.subproceso && p.proceso) sub = p.proceso;
+    if (sub !== p.subproceso) mx.subproceso = sub;
     const validacion = restaura ? txt(m.validacion, 20) : (p.validacion === 'validado' ? 'validado' : 'actualizado');
     const actualizado = restaura && m.actualizado_en !== undefined ? (m.actualizado_en ? txt(m.actualizado_en, 40) : null) : t;
-    st.push(env.DB.prepare('UPDATE procesos SET gerencia=?, seccion=?, macroproceso=?, matriz=?, validacion=?, actualizado_en=? WHERE id=?')
-      .bind(g, sec, mac, JSON.stringify(mx), validacion, actualizado, p.id));
+    st.push(env.DB.prepare('UPDATE procesos SET gerencia=?, seccion=?, macroproceso=?, proceso=?, subproceso=?, matriz=?, validacion=?, actualizado_en=? WHERE id=?')
+      .bind(g, sec, mac, pro, sub, JSON.stringify(mx), validacion, actualizado, p.id));
     st.push(...sentenciasHistorial(env, p, leerMatriz(p.matriz), mx, ACTOR_CONSOLA, 'consola'));
-    procesos.push({ id: p.id, gerencia: g, seccion: sec, macroproceso: mac, matriz: mx, validacion, actualizado_en: actualizado });
+    procesos.push({ id: p.id, gerencia: g, seccion: sec, macroproceso: mac, proceso: pro, subproceso: sub, matriz: mx, validacion, actualizado_en: actualizado });
   }
   for (let i = 0; i < st.length; i += 90) await env.DB.batch(st.slice(i, i + 90));
   for (const p of procesos) await asegurarEstructura(env, camp.id, p.gerencia, p.seccion);
@@ -1343,22 +1386,122 @@ async function rutaEntrevista(env, b) {
   return { ok: true, procesos };
 }
 
+// Constructor del mapa: gerencias y secciones guardadas en el esqueleto de la campaña (antes solo vivían en el navegador).
+async function rutaEstructuraCrear(env, b) {
+  const camp = await env.DB.prepare('SELECT id FROM campanas WHERE id=?').bind(b.campana_id).first();
+  if (!camp) throw new HttpError(404, 'Campaña no encontrada');
+  return { ok: true, estructura: await crearEstructura(env, camp.id, b.gerencia, b.seccion) };
+}
+async function rutaEstructuraEliminar(env, b) {
+  const camp = await env.DB.prepare('SELECT id FROM campanas WHERE id=?').bind(b.campana_id).first();
+  if (!camp) throw new HttpError(404, 'Campaña no encontrada');
+  return { ok: true, estructura: await eliminarEstructura(env, camp.id, b.gerencia, b.seccion) };
+}
+
 // Borrar un proceso del mapa: solo si nadie lo respondió (lo respondido se discute en la validación).
+const sentenciasBorrarProceso = (env, id) => [
+  env.DB.prepare('DELETE FROM asignaciones WHERE proceso_id=?').bind(id),
+  env.DB.prepare('DELETE FROM revisiones WHERE proceso_id=?').bind(id),
+  env.DB.prepare('DELETE FROM respuestas WHERE proceso_id=?').bind(id),
+  env.DB.prepare('DELETE FROM estructurado WHERE proceso_id=?').bind(id),
+  env.DB.prepare('DELETE FROM precarga WHERE proceso_id=?').bind(id),
+  ...sentenciasRastroDeProcesos(env, 'SELECT ?', [id]),
+  env.DB.prepare('DELETE FROM procesos WHERE id=?').bind(id)
+];
+const consultaConRespuestas = `SELECT COUNT(*) AS n FROM respuestas WHERE proceso_id=? AND (trim(texto)<>'' OR sistemas<>'[]')`;
+
+// Trabajo ya hecho que un borrado destruiría aunque nadie haya respondido la encuesta: validación del equipo, información previa
+// de documentos (precarga) y contenido de la matriz (inventario 2021 u otros campos). Los campos de identificación no cuentan.
+const MATRIZ_IDENTIFICA = ['division', 'gerencia', 'seccion', 'niv0', 'macroproceso', 'niv1', 'proceso', 'niv2', 'subproceso', 'participantes'];
+async function contenidoProceso(env, p) {
+  const out = [];
+  if (p.validacion === 'validado') out.push('validado');
+  const pre = await env.DB.prepare("SELECT COUNT(*) AS n FROM precarga WHERE proceso_id=? AND trim(texto)<>''").bind(p.id).first();
+  if (pre.n) out.push('precarga');
+  let m = {}; try { m = JSON.parse(p.matriz || '{}') || {}; } catch (e) { m = {}; }
+  if (Object.keys(limpiarMatriz(m)).some(k => !MATRIZ_IDENTIFICA.includes(k))) out.push('matriz');
+  return out;
+}
+const MOTIVOS_BORRADO = { validado: 'está validado', precarga: 'tiene información previa de documentos (precarga)', matriz: 'tiene contenido en la matriz' };
+const textoMotivos = (n, m) => ` (${n} ${n === 1 ? 'subproceso' : 'subprocesos'}${m.length ? ': ' + m.map(k => MOTIVOS_BORRADO[k]).join(', ') : ''})`;
+
+
+// Borrado forzado: quien lo pide escribe el nombre exacto para confirmar y queda un registro con la copia de lo que se pierde.
+function exigirNombre(b, esperado) {
+  if (normal(txt(b.confirmar_nombre, 200)) !== normal(esperado) || !normal(esperado))
+    throw new HttpError(400, 'Escribe el nombre «' + esperado + '» tal cual para confirmar el borrado.');
+}
+async function sentenciasRegistroForzado(env, campId, filas, contenidos, alcance, nombre) {
+  const t = ahora(), st = [];
+  for (let i = 0; i < filas.length; i++) {
+    if (!contenidos[i].length) continue;
+    const p = filas[i];
+    const pre = (await env.DB.prepare("SELECT punto, texto, archivos FROM precarga WHERE proceso_id=? AND trim(texto)<>''").bind(p.id).all()).results
+      .map(x => ({ punto: x.punto, texto: x.texto, archivos: x.archivos }));
+    st.push(env.DB.prepare(`INSERT INTO borrados_forzados (id, campana_id, proceso_id, gerencia, seccion, macroproceso, proceso, subproceso, alcance, motivos,
+        nombre_confirmado, validacion, matriz, precarga, actor_nombre, creado) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+      .bind(uid(), campId, p.id, p.gerencia || '', p.seccion || '', p.macroproceso || '', p.proceso || '', p.subproceso || '', alcance, contenidos[i].join(','),
+        txt(nombre, 200), p.validacion || '', p.matriz || '{}', JSON.stringify(pre), ACTOR_CONSOLA.nombre, t));
+  }
+  return st;
+}
+// GET /a/campana/borrados?id=  -> borrados forzados de la campaña, los más recientes primero
+async function rutaBorradosForzados(env, url) {
+  const id = url.searchParams.get('id') || '';
+  const r = await env.DB.prepare('SELECT * FROM borrados_forzados WHERE campana_id=? ORDER BY creado DESC LIMIT 200').bind(id).all();
+  return { ok: true, borrados: r.results.map(x => Object.assign(x, { motivos: x.motivos ? x.motivos.split(',') : [] })) };
+}
+
 async function rutaProcesoBorrar(env, b) {
-  const p = await env.DB.prepare('SELECT id FROM procesos WHERE id=?').bind(b.proceso_id).first();
+  // campana_id es opcional por compatibilidad; si llega, el proceso debe ser de esa campaña.
+  const p = await env.DB.prepare("SELECT * FROM procesos WHERE id=? AND (?='' OR campana_id=?)").bind(b.proceso_id, txt(b.campana_id, 60), txt(b.campana_id, 60)).first();
   if (!p) throw new HttpError(404, 'Proceso no encontrado');
-  const n = await env.DB.prepare(`SELECT COUNT(*) AS n FROM respuestas WHERE proceso_id=? AND (trim(texto)<>'' OR sistemas<>'[]')`).bind(p.id).first();
+  const n = await env.DB.prepare(consultaConRespuestas).bind(p.id).first();
   if (n.n) throw new HttpError(409, 'Este proceso ya tiene respuestas y no se puede borrar. Edítalo o resuélvelo en la reunión de validación.');
-  await env.DB.batch([
-    env.DB.prepare('DELETE FROM asignaciones WHERE proceso_id=?').bind(p.id),
-    env.DB.prepare('DELETE FROM revisiones WHERE proceso_id=?').bind(p.id),
-    env.DB.prepare('DELETE FROM respuestas WHERE proceso_id=?').bind(p.id),
-    env.DB.prepare('DELETE FROM estructurado WHERE proceso_id=?').bind(p.id),
-    env.DB.prepare('DELETE FROM precarga WHERE proceso_id=?').bind(p.id),
-    ...sentenciasRastroDeProcesos(env, 'SELECT ?', [p.id]),
-    env.DB.prepare('DELETE FROM procesos WHERE id=?').bind(p.id)
-  ]);
+  const cont = await contenidoProceso(env, p);
+  let registro = [];
+  if (cont.length) {
+    if (!b.forzar) throw new HttpError(409, 'Este proceso ' + cont.map(k => MOTIVOS_BORRADO[k]).join(' y ') + ': no se puede borrar sin perder ese trabajo. Muévelo, márcalo fuera de alcance o bórralo de todos modos escribiendo su nombre.');
+    const nombre = p.subproceso || p.proceso || p.macroproceso;
+    exigirNombre(b, nombre);
+    registro = await sentenciasRegistroForzado(env, p.campana_id, [p], [cont], 'proceso', b.confirmar_nombre);
+    log('borrado_forzado', { campana: p.campana_id, procesos: 1, motivos: cont.join(',') });
+  }
+  await env.DB.batch([...registro, ...sentenciasBorrarProceso(env, p.id)]);
   return { ok: true };
+}
+
+// Borrar un macroproceso (con todos sus procesos y subprocesos) o un proceso de una sección. Son texto compartido por las filas,
+// así que borrarlos es borrar sus filas: se rechaza entero si alguna ya tiene respuestas.
+async function rutaProcesoBorrarGrupo(env, b) {
+  const camp = await env.DB.prepare('SELECT id FROM campanas WHERE id=?').bind(b.campana_id).first();
+  if (!camp) throw new HttpError(404, 'Campaña no encontrada');
+  const g = txt(b.gerencia, 150), sec = txt(b.seccion, 150), mac = txt(b.macroproceso, 200);
+  const conProceso = b.proceso !== undefined && b.proceso !== null;
+  const pro = conProceso ? txt(b.proceso, 200) : '';
+  const filas = (await env.DB.prepare('SELECT * FROM procesos WHERE campana_id=? AND gerencia=? AND seccion=?').bind(camp.id, g, sec).all()).results
+    .filter(p => String(p.macroproceso || '') === mac && (!conProceso || String(p.proceso || '') === pro));
+  if (!filas.length) throw new HttpError(404, 'No hay procesos en ese grupo');
+  if (filas.length > 400) throw new HttpError(400, 'Demasiados procesos para borrarlos juntos');
+  for (const p of filas) {
+    if ((await env.DB.prepare(consultaConRespuestas).bind(p.id).first()).n)
+      throw new HttpError(409, 'Hay procesos con respuestas en este grupo: no se borra nada. Muévelos o resuélvelos en la reunión de validación.');
+  }
+  const contenidos = [];
+  for (const p of filas) contenidos.push(await contenidoProceso(env, p));
+  const conTrabajo = contenidos.filter(c => c.length);
+  let registro = [];
+  if (conTrabajo.length) {
+    const motivos = [...new Set(conTrabajo.flat())];
+    if (!b.forzar) throw new HttpError(409, 'Hay trabajo hecho en este grupo' + textoMotivos(conTrabajo.length, motivos) + ': no se borra nada. Muévelos a otro grupo, márcalos fuera de alcance o bórralos de todos modos escribiendo el nombre.');
+    exigirNombre(b, conProceso ? pro : mac);
+    registro = await sentenciasRegistroForzado(env, camp.id, filas, contenidos, 'grupo', b.confirmar_nombre);
+    log('borrado_forzado', { campana: camp.id, procesos: conTrabajo.length, motivos: motivos.join(',') });
+  }
+  const st = [...registro, ...filas.flatMap(p => sentenciasBorrarProceso(env, p.id))];
+  for (let i = 0; i < st.length; i += 90) await env.DB.batch(st.slice(i, i + 90));
+  log('borrar_grupo', { campana: camp.id, procesos: filas.length });
+  return { ok: true, borrados: filas.map(p => p.id) };
 }
 
 // Fila de la matriz de un proceso: guarda los campos editados y el check de validación.
@@ -3010,6 +3153,7 @@ export default {
         if (ruta === 'GET /a/campana') return json(await rutaCampana(env, url), 200, h);
         if (ruta === 'GET /a/campana/flujo') return json(await rutaFlujoAdminCampana(env, url), 200, h);
         if (ruta === 'GET /a/campana/trazabilidad') return json(await rutaTrazabilidadAdmin(env, url), 200, h);
+        if (ruta === 'GET /a/campana/borrados') return json(await rutaBorradosForzados(env, url), 200, h);
         if (ruta === 'GET /a/campana/historial') return json(await rutaHistorialMatriz(env, url), 200, h);
         if (ruta === 'GET /a/embudo/funnel') return json(await rutaAdminFunnel(env, url), 200, h);
         if (ruta === 'GET /a/embudo/export') return await exportarEmbudo(env, url, BLOQUES, h);
@@ -3050,6 +3194,9 @@ export default {
           if (url.pathname === '/a/proceso') return json(await rutaProcesoAdmin(env, b), 200, h);
           if (url.pathname === '/a/proceso/borrar') return json(await rutaProcesoBorrar(env, b), 200, h);
           if (url.pathname === '/a/proceso/mover') return json(await rutaProcesoMover(env, b), 200, h);
+          if (url.pathname === '/a/proceso/borrar-grupo') return json(await rutaProcesoBorrarGrupo(env, b), 200, h);
+          if (url.pathname === '/a/estructura/crear') return json(await rutaEstructuraCrear(env, b), 200, h);
+          if (url.pathname === '/a/estructura/eliminar') return json(await rutaEstructuraEliminar(env, b), 200, h);
           if (url.pathname === '/a/proceso/renombrar') return json(await rutaProcesoRenombrar(env, b), 200, h);
           if (url.pathname === '/a/entrevista') return json(await rutaEntrevista(env, b), 200, h);
           if (url.pathname === '/a/fuera-alcance') return json(await rutaFueraAlcance(env, b), 200, h);

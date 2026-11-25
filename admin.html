@@ -272,7 +272,13 @@
   .cn-sec-h h4{margin:0;font-size:13px;flex:1 0 100%}
   .cn-mac{margin-top:6px;border-radius:8px;padding:2px;border:1.5px solid transparent}
   .cn-mac-t{font-family:Montserrat,sans-serif;font-weight:600;font-size:11px;color:var(--muted)}
-  .cn-sec.cn-sobre,.cn-mac.cn-sobre{border-color:var(--accent);background:var(--accent-soft)}
+  .cn-sec.cn-sobre,.cn-mac.cn-sobre,.cn-pro.cn-sobre{border-color:var(--accent);background:var(--accent-soft)}
+  .cn-pro{margin-top:4px;border-radius:8px;padding:2px 2px 4px 6px;border:1.5px solid transparent;border-left:3px solid var(--line)}
+  .cn-mac-t,.cn-proc-t{display:flex;flex-wrap:wrap;gap:0 10px;align-items:baseline}
+  .cn-acc{appearance:none;background:none;border:none;padding:0;cursor:pointer;color:var(--accent);font:600 11px Montserrat,sans-serif;text-decoration:underline}
+  .cn-acc.peligro{color:var(--bad,#B3261E)}
+  .cm-lista{margin:6px 0 0;padding-left:18px;font-size:13px} .cm-lista li{margin:2px 0}
+  .cm-campo{font-size:12px} .cm-campo .ant{color:var(--muted);text-decoration:line-through} .cm-campo .nvo{font-weight:700}
   .cn-nodo{background:var(--card);border:1.5px solid var(--field-line);border-left-width:4px;border-radius:8px;padding:7px 9px;margin-top:5px;cursor:grab;font-size:12.5px;user-select:none;-webkit-user-select:none}
   .cn-nodo.st-respondido{border-left-color:var(--ok)} .cn-nodo.st-en_curso{border-left-color:var(--inf)} .cn-nodo.st-no_vigente{opacity:.7}
   .cn-nodo.sel{border-color:var(--navy);box-shadow:0 0 0 2px var(--navy)}
@@ -399,7 +405,7 @@
         <div class="grid2">
           <div>
             <h3 style="font-size:14px">1. Plantilla</h3>
-            <p class="muted">Cuatro hojas: <code>Gerencias</code> (area, gerencia, seccion: el esqueleto del proyecto, con o sin procesos), <code>Encuestados</code> (nombre, correo, gerencia, seccion, rol y, opcional, perfil: responsable, supervisor o gerente; una persona con procesos de varias secciones va en <b>una fila por sección con el mismo correo</b>: la primera es su sección principal y las demás le suman todos los procesos de esa sección), <code>Procesos</code> (codigo, gerencia, seccion, macroproceso, proceso, subproceso, descripcion) y <code>Sistemas</code> (nombre, tipo). La gerencia y la sección de cada persona se ajustan a como están escritas en los procesos; un correo que ya existe actualiza a esa persona en vez de duplicarla.</p>
+            <p class="muted">Cuatro hojas: <code>Gerencias</code> (area, gerencia, seccion: el esqueleto del proyecto, con o sin procesos), <code>Encuestados</code> (nombre, correo, gerencia, seccion, rol y, opcional, perfil: responsable, supervisor o gerente; una persona con procesos de varias secciones va en <b>una fila por sección con el mismo correo</b>: la primera es su sección principal y las demás le suman todos los procesos de esa sección), <code>Procesos</code> (codigo, gerencia, seccion, macroproceso, proceso, subproceso, descripcion y, <b>opcionales</b>, todas las columnas de la matriz de validación: objetivo, actividades, aprobadores, terceros, datos personales, estándares…; una celda vacía no se escribe ni borra nada, y un proceso con el mismo código —o la misma gerencia, sección, macroproceso, proceso y subproceso— se actualiza en vez de duplicarse, con una ventana que muestra antes los campos que se reemplazarían) y <code>Sistemas</code> (nombre, tipo). La gerencia y la sección de cada persona se ajustan a como están escritas en los procesos; un correo que ya existe actualiza a esa persona en vez de duplicarla.</p>
             <p class="muted">También puedes cargar la <b>matriz de procesos</b> (el Excel exportado desde «Matriz y validación», editado): se reconoce sola y actualiza cada fila por su código.</p>
             <button class="btn btn-ghost btn-xs" id="btnPlantilla">Descargar plantilla</button>
             <p class="muted" id="estructuraResumen" style="margin:8px 0 0"></p>
@@ -1042,9 +1048,79 @@
   // macroproceso) lo reasigna: el servidor actualiza el proceso y su fila de la matriz y conserva respuestas y asignaciones.
   var MAPAV = 'cobertura';
   var CN = {sel: {}, ultimo: '', arr: null, extras: [], toast: null};
+
+  // ---- Ventanas de confirmación propias (en lugar de confirm()/prompt() del navegador) ----
+  // modalConfirmar({titulo, html, boton, peligro, soloAviso}) -> Promise<boolean>. `html` lo arma quien llama (con esc()).
+  // modalPedir({titulo, etiqueta, valor, boton, lista, ayuda}) -> Promise<string|null>.
+  function modalBase(){
+    var d = document.getElementById('cmConf');
+    if (!d){
+      d = document.createElement('dialog'); d.id = 'cmConf'; d.setAttribute('aria-labelledby', 'cmConfT');
+      d.style.cssText = 'max-width:560px;width:calc(100% - 32px);border:1px solid var(--line);border-radius:14px;padding:0;background:var(--card);color:var(--ink)';
+      document.body.appendChild(d);
+    }
+    return d;
+  }
+  function modalConfirmar(o){
+    return new Promise(function(res){
+      var d = modalBase();
+      d.innerHTML = '<div style="padding:18px 20px"><h2 id="cmConfT" style="font-size:17px">' + esc(o.titulo) + '</h2>' +
+        '<div style="margin:10px 0 0;max-height:55vh;overflow:auto;font-size:14px">' + o.html + '</div>' +
+        '<div class="row" style="justify-content:flex-end;margin-top:18px">' +
+        (o.soloAviso ? '' : '<button type="button" class="btn btn-ghost" data-r="no">Cancelar</button>') +
+        '<button type="button" class="btn' + (o.peligro ? '' : ' btn-navy') + '" data-r="si">' + esc(o.boton || (o.soloAviso ? 'Entendido' : 'Confirmar')) + '</button></div></div>';
+      var fin = function(v){ d.onclick = null; d.oncancel = null; if (d.open) d.close(); res(v); };
+      d.onclick = function(e){ var b = e.target.closest && e.target.closest('[data-r]'); if (b) fin(b.dataset.r === 'si'); };
+      d.oncancel = function(e){ e.preventDefault(); fin(false); };
+      if (!d.open) d.showModal();
+      var foco = d.querySelector(o.soloAviso || o.peligro ? '[data-r=si]' : '[data-r=no]'); if (foco) foco.focus();
+    });
+  }
+  function modalAviso(titulo, html){ return modalConfirmar({titulo: titulo, html: html, soloAviso: true}); }
+  function modalPedir(o){
+    return new Promise(function(res){
+      var d = modalBase();
+      d.innerHTML = '<form method="dialog" style="padding:18px 20px" id="cmForm"><h2 id="cmConfT" style="font-size:17px">' + esc(o.titulo) + '</h2>' +
+        '<label for="cmIn" style="margin-top:10px">' + esc(o.etiqueta || 'Nombre') + '</label><input type="text" id="cmIn" maxlength="200" autocomplete="off" value="' + esc(o.valor || '') + '"' + (o.lista ? ' list="cmLista"' : '') + '>' +
+        (o.lista ? '<datalist id="cmLista">' + o.lista.map(function(x){ return '<option value="' + esc(x) + '">'; }).join('') + '</datalist>' : '') +
+        (o.ayuda ? '<p class="muted" style="margin:8px 0 0">' + esc(o.ayuda) + '</p>' : '') +
+        '<p class="muted" id="cmErr" role="alert" style="margin:6px 0 0"></p>' +
+        '<div class="row" style="justify-content:flex-end;margin-top:14px"><button type="button" class="btn btn-ghost" data-r="no">Cancelar</button><button type="submit" class="btn btn-navy">' + esc(o.boton || 'Continuar') + '</button></div></form>';
+      var fin = function(v){ d.onclick = null; d.oncancel = null; if (d.open) d.close(); res(v); };
+      d.querySelector('#cmForm').onsubmit = function(e){
+        e.preventDefault();
+        var v = d.querySelector('#cmIn').value.trim();
+        if (!v){ d.querySelector('#cmErr').textContent = 'Escribe un nombre.'; return; }
+        fin(v);
+      };
+      d.onclick = function(e){ if (e.target.closest && e.target.closest('[data-r=no]')) fin(null); };
+      d.oncancel = function(e){ e.preventDefault(); fin(null); };
+      if (!d.open) d.showModal();
+      d.querySelector('#cmIn').focus();
+    });
+  }
+  // Estructura (gerencias y secciones) guardada en el servidor: antes vivía solo en el navegador (localStorage) y se perdía al cambiar de equipo.
   function claveCn(){ return 'relev-cn-' + (C && C.campana ? C.campana.id : ''); }
-  function cargarExtras(){ try { CN.extras = JSON.parse(localStorage.getItem(claveCn()) || '[]') || []; } catch(e){ CN.extras = []; } }
-  function guardarExtras(){ try { localStorage.setItem(claveCn(), JSON.stringify(CN.extras)); } catch(e){} }
+  function migrarExtras(){
+    var viejos = [];
+    try { viejos = JSON.parse(localStorage.getItem(claveCn()) || '[]') || []; } catch(e){}
+    if (!viejos.length || !C || !C.campana) return Promise.resolve();
+    var cid = C.campana.id, cadena = Promise.resolve();
+    viejos.sort(function(a, b){ return (a.s ? 1 : 0) - (b.s ? 1 : 0); }).forEach(function(x){
+      cadena = cadena.then(function(){
+        return api('/a/estructura/crear', {campana_id: cid, gerencia: x.g, seccion: x.s || ''}).then(function(j){ if (C && C.campana.id === cid) C.estructura = j.estructura; }, function(){});
+      });
+    });
+    return cadena.then(function(){ try { localStorage.removeItem('relev-cn-' + cid); } catch(e){} pintarConstructor(); });
+  }
+  function hijosDe(g, sc){
+    var todos = C.procesos.concat(C.fuera || []);
+    var enGer = function(x){ return igualArea(x.gerencia, g) && (!sc || igualArea(x.seccion, sc)); };
+    return {procesos: todos.filter(enGer).length, personas: C.encuestados.filter(enGer).length};
+  }
+  function textoHijos(h){
+    return [h.procesos ? h.procesos + (h.procesos === 1 ? ' proceso' : ' procesos') : '', h.personas ? h.personas + (h.personas === 1 ? ' persona' : ' personas') : ''].filter(Boolean).join(' y ');
+  }
   function procPorId(id){ return C.procesos.concat(C.fuera || []).filter(function(p){ return p.id === id; })[0]; }
   function igualArea(a, b){ return sinTildes(String(a || '')).replace(/\s+/g, ' ').trim() === sinTildes(String(b || '')).replace(/\s+/g, ' ').trim(); }
   function fijarVistaMapa(v){
@@ -1052,14 +1128,24 @@
     $('#vCobertura').classList.toggle('hidden', v !== 'cobertura');
     $('#vConstructor').classList.toggle('hidden', v !== 'constructor');
     Array.prototype.forEach.call(document.querySelectorAll('[data-mapav]'), function(b){ b.setAttribute('aria-pressed', String(b.dataset.mapav === v)); });
-    $('#mapaVistaTxt').textContent = v === 'cobertura' ? 'Quién cubre cada proceso y qué falta.' : 'Arrastra un proceso a otra sección para reasignarlo; se actualizan el mapa, la matriz y la encuesta.';
-    if (v === 'constructor'){ if (C && C.campana) cargarExtras(); pintarConstructor(); }
+    $('#mapaVistaTxt').textContent = v === 'cobertura' ? 'Quién cubre cada proceso y qué falta.' : 'Arrastra un subproceso a otra sección, macroproceso o proceso para reasignarlo; también puedes crear y eliminar gerencias, secciones, macroprocesos y procesos.';
+    if (v === 'constructor'){ pintarConstructor(); migrarExtras(); }
   }
   document.addEventListener('click', function(e){
     var b = e.target.closest('[data-mapav]');
     if (b) fijarVistaMapa(b.dataset.mapav);
   });
 
+  function nodoHtml(p){
+    var cb = cobertura(p.id), nom = nombreProc(p), sub = p.subproceso && p.proceso && p.proceso !== nom ? p.proceso + ' › ' : '';
+    return '<div class="cn-nodo st-' + cb.estado + (CN.sel[p.id] ? ' sel' : '') + '" draggable="true" tabindex="0" role="button" aria-pressed="' + !!CN.sel[p.id] + '" data-p="' + esc(p.id) + '" title="' + esc(sub + nom + ' · ' + ESTADO_TXT[cb.estado]) + '">' +
+      '<span class="cn-grip" aria-hidden="true">⋮⋮</span><span class="cn-n">' + esc(nom) + '</span>' +
+      '<div class="cn-meta">' + (p.codigo ? '<span>' + esc(p.codigo) + '</span>' : '') +
+      '<button type="button" data-cn="mover" data-p="' + esc(p.id) + '" aria-label="Mover ' + esc(nom) + ' a otra sección, macroproceso o proceso">Mover…</button>' +
+      '<button type="button" data-cn="editar" data-p="' + esc(p.id) + '" aria-label="Editar ' + esc(nom) + '">Editar</button>' +
+      '<button type="button" data-cn="fuera" data-p="' + esc(p.id) + '" aria-label="Dejar ' + esc(nom) + ' fuera de alcance">Fuera de alcance</button>' +
+      '<button type="button" data-cn="borrar" data-p="' + esc(p.id) + '" aria-label="Borrar ' + esc(nom) + '">Borrar</button></div></div>';
+  }
   function pintarConstructor(){
     if (MAPAV !== 'constructor' || !C || !C.campana) return;
     var arbol = {};
@@ -1069,7 +1155,7 @@
       var sc = g[p.seccion] = g[p.seccion] || {};
       (sc[p.macroproceso || ''] = sc[p.macroproceso || ''] || []).push(p);
     });
-    // Secciones del esqueleto y de las personas que todavía no tienen procesos mapeados: aparecen para poder asignárselos a mano.
+    // Gerencias y secciones del esqueleto (guardado en el servidor) y de las personas que todavía no tienen procesos mapeados: aparecen para poder asignárselos a mano.
     var buscar = function(obj, nombre){ return Object.keys(obj).filter(function(k){ return sinTildes(k) === sinTildes(nombre); })[0]; };
     var sumarVacia = function(ger, sec){
       if (!ger) return;
@@ -1078,37 +1164,41 @@
     };
     (C.estructura || []).forEach(function(f){ sumarVacia(f.gerencia, f.seccion); });
     C.encuestados.forEach(function(e){ sumarVacia(e.gerencia, e.seccion); });
-    // Gerencias y secciones creadas con «+» que todavía no tienen procesos.
-    CN.extras = CN.extras.filter(function(x){ return !(arbol[x.g] && (!x.s || arbol[x.g][x.s])); });
-    CN.extras.forEach(function(x){ var g = arbol[x.g] = arbol[x.g] || {}; if (x.s) g[x.s] = g[x.s] || {}; });
-    guardarExtras();
-    var vacio = function(g, s){ return CN.extras.some(function(x){ return x.g === g && (s === undefined ? !x.s : x.s === s); }); };
-    var html = '<div class="cn-cols">', prAntC = '';
+    var html = '<div class="cn-cols">';
     Object.keys(arbol).sort(orden).forEach(function(g){
       var secs = Object.keys(arbol[g]).sort(orden), n = C.procesos.filter(function(p){ return p.gerencia === g; }).length;
       html += '<section class="cn-ger" aria-label="Gerencia ' + esc(g) + '"><div class="cn-ger-h"><h3>' + esc(g) + '</h3><span class="muted">' + n + (n === 1 ? ' proceso' : ' procesos') + '</span>' +
         '<button type="button" class="btn-link" data-cn="sec+" data-g="' + esc(g) + '">+ Sección</button>' +
-        (!n && vacio(g) ? '<button type="button" class="btn-link" data-cn="quitar" data-g="' + esc(g) + '" data-s="">Quitar</button>' : '') + '</div>';
+        '<button type="button" class="btn-link" data-cn="ger-" data-g="' + esc(g) + '">Eliminar</button></div>';
       secs.forEach(function(sc){
         var macros = arbol[g][sc], k = 0;
         Object.keys(macros).forEach(function(m){ k += macros[m].length; });
         html += '<div class="cn-sec" data-g="' + esc(g) + '" data-s="' + esc(sc) + '"><div class="cn-sec-h"><h4>' + esc(sc) + '</h4><span class="muted">' + k + (k === 1 ? ' proceso' : ' procesos') + '</span>' +
+          '<button type="button" class="btn-link" data-cn="mac+" data-g="' + esc(g) + '" data-s="' + esc(sc) + '">+ Macroproceso</button>' +
           '<button type="button" class="btn-link" data-cn="proc+" data-g="' + esc(g) + '" data-s="' + esc(sc) + '">+ Proceso</button>' +
-          (!k && vacio(g, sc) ? '<button type="button" class="btn-link" data-cn="quitar" data-g="' + esc(g) + '" data-s="' + esc(sc) + '">Quitar</button>' : '') + '</div>';
+          '<button type="button" class="btn-link" data-cn="sec-" data-g="' + esc(g) + '" data-s="' + esc(sc) + '">Eliminar</button></div>';
         if (!k) html += '<p class="cn-vacio">Sin procesos: suelta uno aquí.</p>';
         Object.keys(macros).sort(orden).forEach(function(m){
-          html += '<div class="cn-mac" data-g="' + esc(g) + '" data-s="' + esc(sc) + '" data-m="' + esc(m) + '"><div class="cn-mac-t">' + esc(m || 'Sin macroproceso') + '</div>';
+          var da = ' data-g="' + esc(g) + '" data-s="' + esc(sc) + '" data-m="' + esc(m) + '"';
+          html += '<div class="cn-mac"' + da + '><div class="cn-mac-t"><span>' + esc(m || 'Sin macroproceso') + '</span>' +
+            '<button type="button" class="cn-acc" data-cn="pro+"' + da + ' data-pr="">+ Proceso</button>' +
+            '<button type="button" class="cn-acc" data-cn="sub+"' + da + ' data-pr="">+ Subproceso</button>' +
+            (m ? '<button type="button" class="cn-acc peligro" data-cn="mac-"' + da + ' aria-label="Eliminar el macroproceso ' + esc(m) + '">Eliminar</button>' : '') + '</div>';
+          // Los subprocesos se agrupan bajo su proceso (el proceso es el texto que comparten; el nodo es el subproceso).
+          var grupos = [];
           macros[m].forEach(function(p){
-            var cb = cobertura(p.id), nom = nombreProc(p), sub = p.subproceso && p.proceso && p.proceso !== nom ? p.proceso + ' › ' : '';
-            var kc = m + '|' + (p.proceso && p.proceso !== nom ? p.proceso : '');
-            if (kc !== prAntC){ prAntC = kc; if (p.proceso && p.proceso !== nom) html += '<div class="cn-proc-t">' + esc(p.proceso) + '</div>'; }
-            html += '<div class="cn-nodo st-' + cb.estado + (CN.sel[p.id] ? ' sel' : '') + '" draggable="true" tabindex="0" role="button" aria-pressed="' + !!CN.sel[p.id] + '" data-p="' + esc(p.id) + '" title="' + esc(sub + nom + ' · ' + ESTADO_TXT[cb.estado]) + '">' +
-              '<span class="cn-grip" aria-hidden="true">⋮⋮</span><span class="cn-n">' + esc(nom) + '</span>' +
-              '<div class="cn-meta">' + (p.codigo ? '<span>' + esc(p.codigo) + '</span>' : '') +
-              '<button type="button" data-cn="mover" data-p="' + esc(p.id) + '" aria-label="Mover ' + esc(nom) + ' a otra sección">Mover…</button>' +
-              '<button type="button" data-cn="editar" data-p="' + esc(p.id) + '" aria-label="Editar ' + esc(nom) + '">Editar</button>' +
-              '<button type="button" data-cn="fuera" data-p="' + esc(p.id) + '" aria-label="Dejar ' + esc(nom) + ' fuera de alcance">Fuera de alcance</button>' +
-              '<button type="button" data-cn="borrar" data-p="' + esc(p.id) + '" aria-label="Borrar ' + esc(nom) + '">Borrar</button></div></div>';
+            var pr = p.proceso && p.proceso !== nombreProc(p) ? p.proceso : '', u = grupos[grupos.length - 1];
+            if (!u || u.pr !== pr) grupos.push(u = {pr: pr, ps: []});
+            u.ps.push(p);
+          });
+          grupos.forEach(function(gr){
+            if (!gr.pr){ gr.ps.forEach(function(p){ html += nodoHtml(p); }); return; }
+            var dp = da + ' data-pr="' + esc(gr.pr) + '"';
+            html += '<div class="cn-pro"' + dp + '><div class="cn-proc-t"><span>' + esc(gr.pr) + '</span>' +
+              '<button type="button" class="cn-acc" data-cn="sub+"' + dp + '>+ Subproceso</button>' +
+              '<button type="button" class="cn-acc peligro" data-cn="pro-"' + dp + ' aria-label="Eliminar el proceso ' + esc(gr.pr) + '">Eliminar</button></div>';
+            gr.ps.forEach(function(p){ html += nodoHtml(p); });
+            html += '</div>';
           });
           html += '</div>';
         });
@@ -1127,8 +1217,9 @@
       html += '</div></section>';
     }
     $('#constr').innerHTML = html + '</div>';
-    $('#cnAyuda').innerHTML = ayuda('Arrastra un proceso a otra sección para reasignarlo (a un macroproceso concreto si lo sueltas sobre él). Ctrl o Mayús + clic elige varios. «Mover…» hace lo mismo sin arrastrar, y funciona con el teclado. ' +
-      'Al mover se actualizan el mapa, la matriz y la encuesta; las respuestas y asignaciones se conservan. Un proceso con respuestas no se puede borrar. Tienes 10 segundos para deshacer.');
+    $('#cnAyuda').innerHTML = ayuda('Arrastra un subproceso a otra sección (a un macroproceso o a un proceso concreto si lo sueltas sobre él). Ctrl o Mayús + clic elige varios. «Mover…» hace lo mismo sin arrastrar, y funciona con el teclado. ' +
+      'Crea y elimina gerencias, secciones, macroprocesos, procesos y subprocesos con los botones de cada bloque; todo pide confirmación. Solo se elimina lo que está vacío o no tiene respuestas. ' +
+      'Al mover se actualizan el mapa, la matriz y la encuesta; las respuestas y asignaciones se conservan. Tienes 10 segundos para deshacer un movimiento.');
     pintarSeleccion();
   }
   function pintarSeleccion(){
@@ -1159,26 +1250,128 @@
   }
   $('#cnLimpiar').addEventListener('click', function(){ CN.sel = {}; pintarSeleccion(); });
   $('#cnMoverSel').addEventListener('click', function(){ dialogoMover(Object.keys(CN.sel)); });
-  $('#cnGer').addEventListener('click', function(){
-    var g = (prompt('Nombre de la nueva gerencia:') || '').trim();
-    if (!g) return;
-    if (C.procesos.some(function(p){ return igualArea(p.gerencia, g); }) || CN.extras.some(function(x){ return igualArea(x.g, g); })){ alert('Esa gerencia ya existe.'); return; }
-    CN.extras.push({g: g, s: ''}); guardarExtras(); pintarConstructor();
-  });
+  // ---- Crear y eliminar gerencias, secciones, macroprocesos, procesos y subprocesos (siempre con ventana de confirmación) ----
+  function aplicarEstructura(j){ if (j && j.estructura) C.estructura = j.estructura; pintarConstructor(); }
+  function errorModal(err){ return modalAviso('No se pudo completar', '<p>' + esc(err && err.message ? err.message : err) + '</p>'); }
+  function crearGerencia(){
+    modalPedir({titulo: 'Nueva gerencia', etiqueta: 'Nombre de la gerencia', boton: 'Continuar'}).then(function(g){
+      if (!g) return;
+      return modalConfirmar({titulo: 'Crear gerencia', html: '<p>Se creará la gerencia <b>' + esc(g) + '</b> en el esqueleto de la campaña. Después podrás agregarle secciones y mover procesos hacia ella.</p>', boton: 'Crear'}).then(function(ok){
+        if (!ok) return;
+        return api('/a/estructura/crear', {campana_id: C.campana.id, gerencia: g}).then(aplicarEstructura).catch(errorModal);
+      });
+    });
+  }
+  function crearSeccion(g){
+    modalPedir({titulo: 'Nueva sección de «' + g + '»', etiqueta: 'Nombre de la sección', boton: 'Continuar'}).then(function(s){
+      if (!s) return;
+      return modalConfirmar({titulo: 'Crear sección', html: '<p>Se creará la sección <b>' + esc(s) + '</b> en la gerencia <b>' + esc(g) + '</b>.</p>', boton: 'Crear'}).then(function(ok){
+        if (!ok) return;
+        return api('/a/estructura/crear', {campana_id: C.campana.id, gerencia: g, seccion: s}).then(aplicarEstructura).catch(errorModal);
+      });
+    });
+  }
+  function eliminarEstructuraCn(g, sc){
+    var h = hijosDe(g, sc), esSec = !!sc;
+    if (h.procesos || h.personas)
+      return modalAviso('No se puede eliminar', '<p>' + (esSec ? 'La sección' : 'La gerencia') + ' <b>' + esc(esSec ? sc : g) + '</b> tiene ' + esc(textoHijos(h)) + '. Muévelos o elimínalos antes de eliminarla.</p>');
+    var nSec = esSec ? 0 : (C.estructura || []).filter(function(f){ return igualArea(f.gerencia, g) && f.seccion; }).length;
+    modalConfirmar({titulo: esSec ? 'Eliminar sección' : 'Eliminar gerencia', peligro: true, boton: 'Eliminar',
+      html: '<p>Se eliminará ' + (esSec ? 'la sección <b>' + esc(sc) + '</b> de la gerencia <b>' + esc(g) + '</b>' : 'la gerencia <b>' + esc(g) + '</b>' + (nSec ? ' y sus ' + nSec + (nSec === 1 ? ' sección vacía' : ' secciones vacías') : '')) + ' del esqueleto de la campaña. Está vacía: no se pierde ningún proceso ni persona.</p>'
+    }).then(function(ok){
+      if (!ok) return;
+      return api('/a/estructura/eliminar', {campana_id: C.campana.id, gerencia: g, seccion: sc || ''}).then(aplicarEstructura).catch(errorModal);
+    });
+  }
+  // Formulario de alta de un subproceso con el macroproceso y el proceso ya puestos.
+  function nuevoSub(g, sc, m, pr){
+    editarProceso(null, g, sc);
+    $('#eMac').value = m || ''; $('#ePro').value = pr || '';
+    var f = $(pr ? '#eSub' : (m ? '#ePro' : '#eMac')); if (f) f.focus();
+  }
+  function crearMacro(g, sc){
+    modalPedir({titulo: 'Nuevo macroproceso en «' + sc + '»', etiqueta: 'Nombre del macroproceso', boton: 'Continuar', ayuda: 'Un macroproceso existe cuando tiene procesos: a continuación se abre el formulario para crear el primero (se confirma con «Guardar»).'}).then(function(n){
+      if (n) nuevoSub(g, sc, n, '');
+    });
+  }
+  function crearProceso(g, sc, m){
+    modalPedir({titulo: 'Nuevo proceso en «' + (m || 'Sin macroproceso') + '»', etiqueta: 'Nombre del proceso', boton: 'Continuar', ayuda: 'A continuación se abre el formulario para crear su primer subproceso (se confirma con «Guardar»).'}).then(function(n){
+      if (n) nuevoSub(g, sc, m, n);
+    });
+  }
+  // Trabajo ya hecho que un borrado destruiría aunque nadie haya respondido: validación, precarga de documentos y contenido de la matriz.
+  var IDENT_MATRIZ = ['division','gerencia','seccion','niv0','macroproceso','niv1','proceso','niv2','subproceso','participantes'];
+  function trabajoHecho(p){
+    var out = [], m = p.matriz || {};
+    if (p.validacion === 'validado') out.push('validado');
+    if (Object.keys(IX.pre[p.id] || {}).some(function(k){ return String((IX.pre[p.id][k] || {}).texto || '').trim(); })) out.push('con precarga de documentos');
+    if (Object.keys(m).some(function(k){ return IDENT_MATRIZ.indexOf(k) < 0 && String(m[k] || '').trim(); })) out.push('con contenido en la matriz');
+    return out;
+  }
+  // Borrado forzado: lista lo que se perdería y exige escribir el nombre. Devuelve una promesa con {forzar, confirmar_nombre} o null si se cancela.
+  function confirmarForzado(ps, que, nombre){
+    var con = ps.map(function(p){ return {p: p, t: trabajoHecho(p)}; }).filter(function(x){ return x.t.length; });
+    return modalConfirmar({titulo: 'Hay trabajo hecho que se perdería', peligro: true, boton: 'Continuar',
+      html: '<p>' + esc(que) + ' tiene ' + con.length + (con.length === 1 ? ' subproceso' : ' subprocesos') + ' con trabajo ya hecho:</p>' +
+        '<ul class="cm-lista">' + con.slice(0, 8).map(function(x){ return '<li>' + esc(nombreProc(x.p)) + ' <span class="muted">(' + esc(x.t.join(', ')) + ')</span></li>'; }).join('') + (con.length > 8 ? '<li>… y ' + (con.length - 8) + ' más</li>' : '') + '</ul>' +
+        '<p style="margin-top:10px">Lo recomendable es moverlos a otro grupo o marcarlos fuera de alcance. Si los borras, <b>se pierde</b> esa validación, precarga y matriz; el sistema guarda una copia en el registro de borrados, pero no se restaura sola.</p>'
+    }).then(function(ok){
+      if (!ok) return null;
+      return modalPedir({titulo: 'Confirmar el borrado', etiqueta: 'Escribe «' + nombre + '» para confirmar', boton: 'Borrar de todos modos', ayuda: 'Debe coincidir con el nombre tal cual (sin importar mayúsculas).'}).then(function(v){
+        if (v === null || v === undefined) return null;
+        if (sinTildes(v).trim().toLowerCase() !== sinTildes(nombre).trim().toLowerCase()){
+          return modalAviso('El nombre no coincide', '<p>No se borró nada. Escribiste «' + esc(v) + '» y se esperaba «' + esc(nombre) + '».</p>').then(function(){ return null; });
+        }
+        return {forzar: true, confirmar_nombre: v};
+      });
+    });
+  }
+  // Elimina un macroproceso entero (pr indefinido) o un proceso: son el texto compartido por sus subprocesos, así que se borran sus filas.
+  function eliminarGrupo(g, sc, m, pr){
+    var conPr = pr !== undefined && pr !== null && pr !== '';
+    var ps = C.procesos.concat(C.fuera || []).filter(function(p){
+      return p.gerencia === g && p.seccion === sc && (p.macroproceso || '') === m && (!conPr || (p.proceso || '') === pr);
+    });
+    var que = conPr ? 'el proceso «' + pr + '»' : 'el macroproceso «' + m + '»';
+    if (!ps.length) return;
+    var conResp = ps.filter(function(p){ return Object.keys(IX.todas[p.id] || {}).length; });
+    if (conResp.length)
+      return modalAviso('No se puede eliminar', '<p>Hay ' + conResp.length + (conResp.length === 1 ? ' subproceso con respuestas' : ' subprocesos con respuestas') + ' en ' + esc(que) + ' (' +
+        esc(conResp.slice(0, 5).map(nombreProc).join(', ') + (conResp.length > 5 ? '…' : '')) + '). Muévelos a otro grupo o resuélvelos en la reunión de validación; no se borra nada.</p>');
+    var hechos = ps.filter(function(p){ return trabajoHecho(p).length; });
+    var paso = hechos.length ? confirmarForzado(ps, que.charAt(0).toUpperCase() + que.slice(1), conPr ? pr : m) :
+    modalConfirmar({titulo: conPr ? 'Eliminar proceso' : 'Eliminar macroproceso', peligro: true, boton: 'Eliminar',
+      html: '<p>Se eliminará ' + esc(que) + ' de <b>' + esc(g + ' · ' + sc) + '</b> con sus <b>' + ps.length + (ps.length === 1 ? ' subproceso' : ' subprocesos') + '</b>:</p>' +
+        '<ul class="cm-lista">' + ps.slice(0, 12).map(function(p){ return '<li>' + esc(nombreProc(p)) + '</li>'; }).join('') + (ps.length > 12 ? '<li>… y ' + (ps.length - 12) + ' más</li>' : '') + '</ul>' +
+        '<p style="margin-top:10px">Ninguno tiene respuestas, validación, precarga de documentos ni contenido en la matriz. Esta acción no se puede deshacer.</p>'
+    }).then(function(ok){ return ok ? {} : null; });
+    paso.then(function(extra){
+      if (!extra) return;
+      return api('/a/proceso/borrar-grupo', Object.assign({campana_id: C.campana.id, gerencia: g, seccion: sc, macroproceso: m, proceso: conPr ? pr : undefined}, extra)).then(function(j){
+        var fuera = {}; (j.borrados || []).forEach(function(id){ fuera[id] = 1; delete CN.sel[id]; });
+        C.procesos = C.procesos.filter(function(x){ return !fuera[x.id]; });
+        C.fuera = (C.fuera || []).filter(function(x){ return !fuera[x.id]; });
+        pintarTodo();
+      }).catch(errorModal);
+    });
+  }
+
+  $('#cnGer').addEventListener('click', crearGerencia);
 
   $('#constr').addEventListener('click', function(e){
     var b = e.target.closest('[data-cn]');
     if (b){
-      var a = b.dataset.cn, g = b.dataset.g, sc = b.dataset.s;
-      if (a === 'sec+'){
-        var n = (prompt('Nombre de la nueva sección de «' + g + '»:') || '').trim();
-        if (!n) return;
-        if (C.procesos.some(function(p){ return igualArea(p.gerencia, g) && igualArea(p.seccion, n); }) || CN.extras.some(function(x){ return igualArea(x.g, g) && igualArea(x.s, n); })){ alert('Esa sección ya existe en la gerencia.'); return; }
-        CN.extras.push({g: g, s: n}); guardarExtras(); pintarConstructor();
-      } else if (a === 'proc+') editarProceso(null, g, sc);
-      else if (a === 'quitar'){
-        CN.extras = CN.extras.filter(function(x){ return !(x.g === g && x.s === (sc || '')); }); guardarExtras(); pintarConstructor();
-      } else if (a === 'editar') editarProceso(procPorId(b.dataset.p));
+      var a = b.dataset.cn, g = b.dataset.g, sc = b.dataset.s, m = b.dataset.m, pr = b.dataset.pr;
+      if (a === 'sec+') crearSeccion(g);
+      else if (a === 'sec-') eliminarEstructuraCn(g, sc);
+      else if (a === 'ger-') eliminarEstructuraCn(g, '');
+      else if (a === 'mac+') crearMacro(g, sc);
+      else if (a === 'mac-') eliminarGrupo(g, sc, m);
+      else if (a === 'pro+') crearProceso(g, sc, m);
+      else if (a === 'pro-') eliminarGrupo(g, sc, m, pr);
+      else if (a === 'sub+') nuevoSub(g, sc, m, pr);
+      else if (a === 'proc+') editarProceso(null, g, sc);
+      else if (a === 'editar') editarProceso(procPorId(b.dataset.p));
       else if (a === 'mover') dialogoMover(CN.sel[b.dataset.p] ? Object.keys(CN.sel) : [b.dataset.p]);
       else if (a === 'borrar') borrarNodo(b.dataset.p);
       else if (a === 'fuera') marcarFuera(CN.sel[b.dataset.p] ? Object.keys(CN.sel) : [b.dataset.p], true);
@@ -1188,6 +1381,7 @@
     var nodo = e.target.closest('.cn-nodo');
     if (nodo) elegirNodo(nodo.dataset.p, e);
   });
+
   $('#constr').addEventListener('keydown', function(e){
     var nodo = e.target.closest('.cn-nodo');
     if (!nodo || e.target !== nodo) return;
@@ -1204,18 +1398,20 @@
       'Dejar ' + (ids.length === 1 ? '«' + nombreProc(procPorId(ids[0])) + '»' : ids.length + ' procesos') + ' fuera de alcance?\n\nDejan de verse en la encuesta, de contar en el avance y de estructurarse con IA. No se borra nada: se pueden reincorporar desde la columna «Fuera de alcance».' +
         (conResp ? '\n\n' + conResp + (conResp === 1 ? ' tiene' : ' tienen') + ' respuestas, que se conservan.' : '') :
       'Reincorporar ' + (ids.length === 1 ? '«' + nombreProc(procPorId(ids[0])) + '»' : ids.length + ' procesos') + ' al alcance? Volverán a verse en la encuesta.';
-    if (!confirm(msg)) return;
-    api('/a/fuera-alcance', {campana_id: C.campana.id, proceso_ids: ids, valor: valor ? 1 : 0}).then(function(){
-      ids.forEach(function(id){
-        var de = valor ? C.procesos : C.fuera, a = valor ? C.fuera : C.procesos;
-        var p = de.filter(function(x){ return x.id === id; })[0];
-        if (!p) return;
-        p.fuera_alcance = valor ? 1 : 0;
-        de.splice(de.indexOf(p), 1); a.push(p);
-      });
-      CN.sel = {};
-      pintarTodo();
-    }).catch(function(err){ alert(err.message); });
+    modalConfirmar({titulo: valor ? 'Dejar fuera de alcance' : 'Reincorporar al alcance', html: '<p>' + esc(msg).split('\n\n').join('</p><p>') + '</p>', boton: valor ? 'Dejar fuera' : 'Reincorporar'}).then(function(ok){
+      if (!ok) return;
+      return api('/a/fuera-alcance', {campana_id: C.campana.id, proceso_ids: ids, valor: valor ? 1 : 0}).then(function(){
+        ids.forEach(function(id){
+          var de = valor ? C.procesos : C.fuera, a = valor ? C.fuera : C.procesos;
+          var p = de.filter(function(x){ return x.id === id; })[0];
+          if (!p) return;
+          p.fuera_alcance = valor ? 1 : 0;
+          de.splice(de.indexOf(p), 1); a.push(p);
+        });
+        CN.sel = {};
+        pintarTodo();
+      }).catch(errorModal);
+    });
   }
   // Propone (sin aplicar) los procesos de compra de bienes y servicios; la compra de accesorios para vender se queda.
   $('#cnSugerir').addEventListener('click', function(){
@@ -1233,12 +1429,18 @@
 
   function borrarNodo(id){
     var p = procPorId(id); if (!p) return;
-    if (!confirm('¿Borrar «' + nombreProc(p) + '» del mapa? Solo se puede si nadie lo respondió.')) return;
-    api('/a/proceso/borrar', {proceso_id: id}).then(function(){
-      C.procesos = C.procesos.filter(function(x){ return x.id !== id; });
-      delete CN.sel[id];
-      pintarTodo();
-    }).catch(function(err){ alert(err.message); });
+    var paso = trabajoHecho(p).length ? confirmarForzado([p], 'El subproceso «' + nombreProc(p) + '»', nombreProc(p)) :
+    modalConfirmar({titulo: 'Borrar subproceso', peligro: true, boton: 'Borrar',
+      html: '<p>¿Borrar <b>' + esc(nombreProc(p)) + '</b> de <b>' + esc(p.gerencia + ' · ' + p.seccion) + '</b>? No tiene respuestas, validación, precarga ni contenido en la matriz. Esta acción no se puede deshacer.</p>'
+    }).then(function(ok){ return ok ? {} : null; });
+    paso.then(function(extra){
+      if (!extra) return;
+      return api('/a/proceso/borrar', Object.assign({campana_id: C.campana.id, proceso_id: id}, extra)).then(function(){
+        C.procesos = C.procesos.filter(function(x){ return x.id !== id; });
+        delete CN.sel[id];
+        pintarTodo();
+      }).catch(errorModal);
+    });
   }
 
   // Personas que dejarán de ver los procesos (los veían por su sección) y personas que los verán por su sección nueva.
@@ -1260,23 +1462,31 @@
     return {dejan: Object.keys(dejan).length, veran: Object.keys(veran).length, conResp: Object.keys(conResp).length};
   }
 
-  function confirmarMover(ids, g, sc, m){
-    var ps = ids.map(procPorId).filter(function(p){ return p && !(igualArea(p.gerencia, g) && igualArea(p.seccion, sc) && (m === undefined || (p.macroproceso || '') === m)); });
+  function confirmarMover(ids, g, sc, m, pr){
+    var ps = ids.map(procPorId).filter(function(p){
+      return p && !(igualArea(p.gerencia, g) && igualArea(p.seccion, sc) && (m === undefined || (p.macroproceso || '') === m) && (pr === undefined || (p.proceso || '') === pr));
+    });
     if (!ps.length) return;
     var imp = impactoPersonas(ps, g, sc);
     var que = ps.length === 1 ? '«' + nombreProc(ps[0]) + '»' : ps.length + ' procesos';
-    var msg = 'Mover ' + que + ' a «' + g + ' · ' + sc + '»' + (m !== undefined ? ' (macroproceso «' + (m || 'sin macroproceso') + '»)' : '') + '?\n\n' +
-      (imp.dejan ? imp.dejan + (imp.dejan === 1 ? ' persona dejará' : ' personas dejarán') + ' de verlo en su encuesta (lo veían por su sección)' + (imp.conResp ? '; ' + imp.conResp + ' ya tenían respuestas, que se conservan.' : '.') : 'Nadie dejará de verlo.') + '\n' +
-      (imp.veran ? imp.veran + (imp.veran === 1 ? ' persona lo verá' : ' personas lo verán') + ' por su sección.' : 'Nadie más lo verá por su sección.') + '\n\n' +
-      'Las respuestas y asignaciones se conservan. La fila de la matriz queda como «Actualizado» si no estaba validada.';
-    if (!confirm(msg)) return;
-    var previo = ps.map(function(p){ return {id: p.id, gerencia: p.gerencia, seccion: p.seccion, macroproceso: p.macroproceso || '', validacion: p.validacion || '', actualizado_en: p.actualizado_en || ''}; });
-    api('/a/proceso/mover', {campana_id: C.campana.id, proceso_ids: ps.map(function(p){ return p.id; }), gerencia: g, seccion: sc, macroproceso: m}).then(function(j){
-      j.procesos.forEach(aplicarProceso);
-      CN.sel = {};
-      pintarTodo();
-      avisarDeshacer(previo, ps.length === 1 ? 'Movido «' + nombreProc(ps[0]) + '» a ' + g + ' · ' + sc : 'Movidos ' + ps.length + ' procesos a ' + g + ' · ' + sc);
-    }).catch(function(err){ alert(err.message); });
+    // Una fila que es un proceso (sin subproceso) y pasa a colgar de otro proceso se queda como su subproceso.
+    var cuelgan = pr === undefined ? [] : ps.filter(function(p){ return !p.subproceso && p.proceso && p.proceso !== pr; });
+    var html = '<p>Mover <b>' + esc(que) + '</b> a <b>' + esc(g + ' · ' + sc) + '</b>' + (m !== undefined ? ', macroproceso <b>' + esc(m || 'sin macroproceso') + '</b>' : '') + (pr !== undefined ? ', proceso <b>' + esc(pr || 'sin proceso') + '</b>' : '') + '.</p>' +
+      '<ul class="cm-lista">' +
+        '<li>' + (imp.dejan ? esc(imp.dejan + (imp.dejan === 1 ? ' persona dejará' : ' personas dejarán') + ' de verlo en su encuesta (lo veían por su sección)' + (imp.conResp ? '; ' + imp.conResp + ' ya tenían respuestas, que se conservan.' : '.')) : 'Nadie dejará de verlo.') + '</li>' +
+        '<li>' + (imp.veran ? esc(imp.veran + (imp.veran === 1 ? ' persona lo verá' : ' personas lo verán') + ' por su sección.') : 'Nadie más lo verá por su sección.') + '</li>' +
+        (cuelgan.length ? '<li>' + esc(cuelgan.length === 1 ? '«' + cuelgan[0].proceso + '» pasa a ser un subproceso de «' + pr + '».' : cuelgan.length + ' procesos pasan a ser subprocesos de «' + pr + '».') + '</li>' : '') +
+        '<li>Las respuestas y asignaciones se conservan. La fila de la matriz queda como «Actualizado» si no estaba validada.</li></ul>';
+    modalConfirmar({titulo: ps.length === 1 ? 'Mover proceso' : 'Mover procesos', html: html, boton: 'Mover'}).then(function(ok){
+      if (!ok) return;
+      var previo = ps.map(function(p){ return {id: p.id, gerencia: p.gerencia, seccion: p.seccion, macroproceso: p.macroproceso || '', proceso: p.proceso || '', subproceso: p.subproceso || '', validacion: p.validacion || '', actualizado_en: p.actualizado_en || ''}; });
+      return api('/a/proceso/mover', {campana_id: C.campana.id, proceso_ids: ps.map(function(p){ return p.id; }), gerencia: g, seccion: sc, macroproceso: m, proceso: pr}).then(function(j){
+        j.procesos.forEach(aplicarProceso);
+        CN.sel = {};
+        pintarTodo();
+        avisarDeshacer(previo, ps.length === 1 ? 'Movido «' + nombreProc(ps[0]) + '» a ' + g + ' · ' + sc : 'Movidos ' + ps.length + ' procesos a ' + g + ' · ' + sc);
+      }).catch(errorModal);
+    });
   }
 
   // «Deshacer» del último movimiento, disponible 10 segundos.
@@ -1305,12 +1515,14 @@
     $('#dlgS').textContent = ps.length === 1 ? nombreProc(p0) : ps.slice(0, 3).map(nombreProc).join(', ') + (ps.length > 3 ? '…' : '');
     var dl = function(id, valores){ return '<datalist id="' + id + '">' + valores.map(function(x){ return '<option value="' + esc(x) + '">'; }).join('') + '</datalist>'; };
     var gers = {}, secs = {};
-    C.procesos.forEach(function(p){ gers[p.gerencia] = 1; (secs[p.gerencia] = secs[p.gerencia] || {})[p.seccion] = 1; });
-    CN.extras.forEach(function(x){ gers[x.g] = 1; if (x.s) (secs[x.g] = secs[x.g] || {})[x.s] = 1; });
+    var pros = {};
+    C.procesos.forEach(function(p){ gers[p.gerencia] = 1; (secs[p.gerencia] = secs[p.gerencia] || {})[p.seccion] = 1; if (p.proceso) pros[p.proceso] = 1; });
+    (C.estructura || []).forEach(function(f){ gers[f.gerencia] = 1; if (f.seccion) (secs[f.gerencia] = secs[f.gerencia] || {})[f.seccion] = 1; });
     $('#dlgB').innerHTML = '<div class="grid2"><div><label for="mvGer">Gerencia de destino *</label><input type="text" id="mvGer" value="' + esc(p0.gerencia) + '" list="mvGers"></div>' +
       '<div><label for="mvSec">Sección de destino *</label><input type="text" id="mvSec" value="' + esc(p0.seccion) + '" list="mvSecs"></div></div>' +
-      '<label for="mvMac">Macroproceso (opcional: vacío lo deja como está)</label><input type="text" id="mvMac" list="dlMacro">' +
-      dl('mvGers', Object.keys(gers)) + dl('mvSecs', Object.keys(secs[p0.gerencia] || {})) +
+      '<div class="grid2"><div><label for="mvMac">Macroproceso (opcional: vacío lo deja como está)</label><input type="text" id="mvMac" list="dlMacro"></div>' +
+      '<div><label for="mvPro">Proceso (opcional: vacío lo deja como está)</label><input type="text" id="mvPro" list="mvPros"></div></div>' +
+      dl('mvGers', Object.keys(gers)) + dl('mvSecs', Object.keys(secs[p0.gerencia] || {})) + dl('mvPros', Object.keys(pros).sort()) +
       '<div class="row" style="margin-top:12px"><button class="btn" id="mvGo" type="button">Mover</button><span class="muted" id="mvMsg"></span></div>';
     $('#mvGer').addEventListener('input', function(){
       var l = Object.keys(secs[$('#mvGer').value] || {});
@@ -1321,7 +1533,7 @@
       var g = $('#mvGer').value.trim(), sc = $('#mvSec').value.trim();
       if (!g || !sc){ $('#mvMsg').textContent = 'Indica la gerencia y la sección.'; return; }
       $('#dlg').close();
-      confirmarMover(ids, g, sc, $('#mvMac').value.trim() || undefined);
+      confirmarMover(ids, g, sc, $('#mvMac').value.trim() || undefined, $('#mvPro').value.trim() || undefined);
     });
   }
 
@@ -1339,7 +1551,8 @@
     if (x < r.left + 70) c.scrollLeft -= 18; else if (x > r.right - 70) c.scrollLeft += 18;
   }
   function soltarEn(z, ids){
-    confirmarMover(ids, z.dataset.g, z.dataset.s, z.classList.contains('cn-mac') ? z.dataset.m : undefined);
+    var conMacro = z.classList.contains('cn-mac') || z.classList.contains('cn-pro');
+    confirmarMover(ids, z.dataset.g, z.dataset.s, conMacro ? z.dataset.m : undefined, z.classList.contains('cn-pro') ? z.dataset.pr : undefined);
   }
   $('#constr').addEventListener('dragstart', function(e){
     var n = e.target.closest ? e.target.closest('.cn-nodo') : null;
@@ -1351,7 +1564,7 @@
   });
   $('#constr').addEventListener('dragover', function(e){
     if (!CN.arr) return;
-    var z = e.target.closest('.cn-mac, .cn-sec');
+    var z = e.target.closest('.cn-pro, .cn-mac, .cn-sec');
     if (!z) return;
     e.preventDefault(); e.dataTransfer.dropEffect = 'move';
     resaltar(z); autoDesplazar(e.clientX);
@@ -1359,7 +1572,7 @@
   $('#constr').addEventListener('drop', function(e){
     if (!CN.arr) return;
     e.preventDefault();
-    var z = e.target.closest('.cn-mac, .cn-sec'), ids = CN.arr;
+    var z = e.target.closest('.cn-pro, .cn-mac, .cn-sec'), ids = CN.arr;
     limpiarSobre(); marcarArrastre(ids, false); CN.arr = null;
     if (z) soltarEn(z, ids);
   });
@@ -1367,7 +1580,7 @@
 
   // ---- Arrastre táctil (Pointer Events): se toma el asa «⋮⋮» del nodo ----
   var TQ = null;
-  function zonaEn(x, y){ var el = document.elementFromPoint(x, y); return el ? el.closest('.cn-mac, .cn-sec') : null; }
+  function zonaEn(x, y){ var el = document.elementFromPoint(x, y); return el ? el.closest('.cn-pro, .cn-mac, .cn-sec') : null; }
   function moverFantasma(e){ TQ.ghost.style.left = (e.clientX + 12) + 'px'; TQ.ghost.style.top = (e.clientY + 12) + 'px'; }
   $('#constr').addEventListener('pointerdown', function(e){
     if (e.pointerType === 'mouse') return;
@@ -3471,13 +3684,46 @@
     var ger = XLSX.utils.aoa_to_sheet([['area','gerencia','seccion'],['Operaciones','Logística','Importaciones'],['Operaciones','Logística','Almacenes'],['Soporte','Finanzas','Tesorería']]);
     ger['!cols'] = [{wch:20},{wch:22},{wch:24}];
     var enc = XLSX.utils.aoa_to_sheet([['nombre','correo','gerencia','seccion','rol'],['Ejemplo Apellido','ejemplo@empresa.com','Logística','Importaciones','líder'],['Ejemplo Apellido','ejemplo@empresa.com','Logística','Almacenes',''],['Otra Persona','otra@empresa.com','Finanzas','Tesorería','jefa']]);
-    var pro = XLSX.utils.aoa_to_sheet([['codigo','gerencia','seccion','macroproceso','proceso','subproceso','descripcion'],['LOG.02.03','Logística','Importaciones','Abastecimiento de vehículos','Importación de vehículos','Desaduanaje','(opcional) descripción del inventario anterior']]);
+    // Hoja Procesos: la identificación del proceso y, opcionales, todas las columnas de la matriz (vacías = no se tocan).
+    var EJEMPLO = {objetivo: 'Nacionalizar los vehículos importados', alcance: 'Recepción de documentos, pago de tributos, levante', datos_personales: 'No', estandar_tdp: 'Parcialmente'};
+    var cabPro = ['codigo','gerencia','seccion','macroproceso','proceso','subproceso','descripcion'].concat(COLS_PLANTILLA.map(function(c){ return c[1]; }));
+    var ejPro = ['LOG.02.03','Logística','Importaciones','Abastecimiento de vehículos','Importación de vehículos','Desaduanaje','(opcional) descripción del inventario anterior'].concat(COLS_PLANTILLA.map(function(c){ return EJEMPLO[c[0]] || ''; }));
+    var pro = XLSX.utils.aoa_to_sheet([cabPro, ejPro]);
     var sis = XLSX.utils.aoa_to_sheet([['nombre','tipo'],['SAP S/4HANA','ERP'],['Portal SUNAT','Portal de tercero']]);
     enc['!cols'] = [{wch:26},{wch:28},{wch:18},{wch:22},{wch:10}];
-    pro['!cols'] = [{wch:12},{wch:18},{wch:22},{wch:28},{wch:28},{wch:28},{wch:40}];
+    pro['!cols'] = [{wch:12},{wch:18},{wch:22},{wch:28},{wch:28},{wch:28},{wch:40}].concat(COLS_PLANTILLA.map(function(c){ return {wch: LARGOS[c[0]] ? 40 : 22}; }));
     XLSX.utils.book_append_sheet(wb, ger, 'Gerencias'); XLSX.utils.book_append_sheet(wb, enc, 'Encuestados'); XLSX.utils.book_append_sheet(wb, pro, 'Procesos'); XLSX.utils.book_append_sheet(wb, sis, 'Sistemas');
     XLSX.writeFile(wb, 'Plantilla carga relevamiento.xlsx');
   });
+
+  // Columnas de la matriz que la hoja Procesos admite además de la identificación (macroproceso, proceso, subproceso y sección ya son columnas propias).
+  var COLS_PLANTILLA = MATRIZ.filter(function(c){ return ['macroproceso','proceso','subproceso','seccion'].indexOf(c[0]) < 0; });
+  function claveHdr(k){ return String(k).trim().toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,''); }
+  // Listas cerradas (Datos personales, Estándar TDP): «si», «SI» o «parcialmente» se llevan a la opción exacta; lo que no coincide se carga igual y se avisa.
+  function normalizarOpciones(m, avisos, fila){
+    Object.keys(OPCIONES).forEach(function(k){
+      if (!m[k]) return;
+      var ok = OPCIONES[k].filter(function(o){ return normEnc(o).toLowerCase() === normEnc(m[k]).toLowerCase(); })[0];
+      if (ok) m[k] = ok;
+      else avisos.push('Fila ' + fila + ': «' + m[k] + '» no es una opción válida de «' + k.replace(/_/g, ' ') + '» (' + OPCIONES[k].join(', ') + ').');
+    });
+  }
+  // Filas de la hoja Procesos de la plantilla: lo que traen las columnas de la matriz va en x.matriz (solo celdas con valor).
+  function procesosDeHoja(filas, avisos){
+    return filas.map(function(r, i){
+      var m = {};
+      COLS_PLANTILLA.forEach(function(c){
+        var v = r[claveHdr(c[1])] || r[c[0]] || (c[4] ? r[claveHdr(c[4])] : '');
+        if (v) m[c[0]] = String(v);
+      });
+      normalizarOpciones(m, avisos, i + 2);
+      if (Object.keys(m).length) r.matriz = m;
+      r.fila = i + 2;
+      return r;
+    });
+  }
+  var normRuta = function(v){ return sinTildes(String(v || '').trim().replace(/\s+/g, ' ')); };
+  var rutaClave = function(x){ return [x.gerencia, x.seccion, x.macroproceso, x.proceso, x.subproceso].map(normRuta).join('|'); };
 
   // Encabezados en minúscula y sin tildes: "Sección" y "seccion" valen igual.
   function hoja(wb, nombre){
@@ -3523,6 +3769,9 @@
   // (formato anterior). Cada fila se reconoce por el ID de la herramienta (columna oculta) o, en archivos anteriores, por su código.
   function normEnc(s){ return sinTildes(String(s == null ? '' : s).split('\n')[0]).replace(/\s+/g, ' ').trim(); }
   function leerMatrizExcel(wb){
+    // La plantilla de carga también tiene «Subproceso» y «Objetivo del subproceso» en su hoja Procesos: no es la matriz exportada
+    // (esa trae la columna oculta «ID herramienta») y se lee como plantilla.
+    var esPlantilla = wb.SheetNames.some(function(n){ return /^(gerencias|encuestados|sistemas)$/i.test(n.trim()); });
     for (var i = 0; i < wb.SheetNames.length; i++){
       var filas = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[i]], {header: 1, defval: ''});
       var hi = -1;
@@ -3531,6 +3780,7 @@
         if (encs.indexOf('subproceso (niv.2)') >= 0 || (encs.indexOf('subproceso') >= 0 && encs.indexOf('objetivo del subproceso') >= 0)){ hi = r; break; }
       }
       if (hi < 0) continue;
+      if (esPlantilla && filas[hi].map(normEnc).indexOf(normEnc(COL_ID)) < 0) continue;
       var idx = {};
       filas[hi].forEach(function(v, j){ var k = normEnc(v); if (k && idx[k] === undefined) idx[k] = j; });
       var celda = function(row, enc){ var j = idx[normEnc(enc)]; return j === undefined ? '' : String(row[j] == null ? '' : row[j]).trim(); };
@@ -3539,13 +3789,7 @@
         var m = {};
         MATRIZ.forEach(function(c){ var v = celda(row, c[1]) || (c[4] ? celda(row, c[4]) : ''); if (v) m[c[0]] = v; });
         if (!m.subproceso && !m.proceso) return;
-        // Listas cerradas: «si», «SI» o «parcialmente» se llevan a la opción exacta; lo que no coincide se carga igual y se avisa.
-        Object.keys(OPCIONES).forEach(function(k){
-          if (!m[k]) return;
-          var ok = OPCIONES[k].filter(function(o){ return normEnc(o).toLowerCase() === normEnc(m[k]).toLowerCase(); })[0];
-          if (ok) m[k] = ok;
-          else avisos.push('Fila ' + (hi + 2 + n) + ': «' + m[k] + '» no es una opción válida de «' + k.replace(/_/g, ' ') + '» (' + OPCIONES[k].join(', ') + ').');
-        });
+        normalizarOpciones(m, avisos, hi + 2 + n);
         var validado = normEnc(celda(row, 'Validado')) === 'si';
         var estado = normEnc(celda(row, 'Estado de actualización'));
         out.push({fila: hi + 2 + n, id: celda(row, COL_ID), codigo: celda(row, 'NIV.2'), personas: celda(row, 'PARTICIPANTES'),
@@ -3582,7 +3826,15 @@
         $('#btnImportar').disabled = false;
         return;
       }
-      CARGA = {estructura: hoja(wb, 'Gerencias'), encuestados: hoja(wb, 'Encuestados'), procesos: hoja(wb, 'Procesos'), sistemas: hoja(wb, 'Sistemas')};
+      var avisosHoja = [];
+      CARGA = {estructura: hoja(wb, 'Gerencias'), encuestados: hoja(wb, 'Encuestados'), procesos: procesosDeHoja(hoja(wb, 'Procesos'), avisosHoja), sistemas: hoja(wb, 'Sistemas')};
+      // Filas de la hoja Procesos que reconocen un proceso ya cargado (por código o por su ruta completa): se actualizan en vez de duplicarse.
+      var conCodigo = {}, conRuta = {};
+      C.procesos.concat(C.fuera || []).forEach(function(p){ if (p.codigo) conCodigo[sinTildes(p.codigo)] = 1; conRuta[rutaClave(p)] = 1; });
+      var yaExisten = $('#modoCarga').value !== 'agregar' ? 0 : CARGA.procesos.filter(function(x){
+        return (x.codigo && conCodigo[sinTildes(x.codigo)]) || (x.gerencia && x.seccion && conRuta[rutaClave(x)]);
+      }).length;
+      var conMatriz = CARGA.procesos.filter(function(x){ return x.matriz; }).length;
       // Secciones sin procesos o sin personas suelen ser un error de escritura entre hojas.
       // En modo "agregar" también cuenta lo que ya está cargado en la campaña.
       var sEnc = {}, sPro = {};
@@ -3596,15 +3848,49 @@
       $('#prevCarga').innerHTML = 'Leídos: ' + (CARGA.estructura.length ? '<b>' + CARGA.estructura.length + '</b> filas de gerencias, ' : '') + '<b>' + CARGA.encuestados.length + '</b> personas, <b>' + CARGA.procesos.length + '</b> procesos, <b>' + CARGA.sistemas.length + '</b> sistemas.' +
         (sinProc.length ? '<div class="msg warn" style="margin-top:6px">Secciones con personas pero sin procesos (tendrán que buscar sus procesos o agregarlos): ' + esc(sinProc.join('; ')) + '</div>' : '') +
         (sinEnc.length ? '<div class="msg warn" style="margin-top:6px">Secciones con procesos pero sin personas (se cubren con el enlace abierto): ' + esc(sinEnc.join('; ')) + '</div>' : '') +
-        (vinc.length ? '<div class="msg warn" style="margin-top:6px">Gerencias o secciones que no están en el esqueleto (se agregarán a él, sin área): ' + esc(vinc.join('; ')) + '</div>' : '');
+        (vinc.length ? '<div class="msg warn" style="margin-top:6px">Gerencias o secciones que no están en el esqueleto (se agregarán a él, sin área): ' + esc(vinc.join('; ')) + '</div>' : '') +
+        (conMatriz ? '<div style="margin-top:6px"><b>' + conMatriz + '</b> procesos traen columnas de la matriz (las celdas vacías no borran nada).</div>' : '') +
+        (yaExisten ? '<div class="msg warn" style="margin-top:6px"><b>' + yaExisten + '</b> procesos ya existen en la campaña (mismo código o misma ruta): se actualizarán en vez de duplicarse y, antes de cargar, se te mostrarán los campos que cambiarían.</div>' : '') +
+        (avisosHoja.length ? '<div class="msg warn" style="margin-top:6px">' + avisosHoja.slice(0, 10).map(esc).join('<br>') + (avisosHoja.length > 10 ? '<br>… y ' + (avisosHoja.length - 10) + ' más.' : '') + '</div>' : '');
       $('#btnImportar').disabled = false;
     }).catch(function(){ $('#prevCarga').textContent = 'No se pudo leer el archivo.'; });
   });
+  // Resumen de lo que la carga cambiaría en procesos que ya existen (respuesta de /a/importar con dry_run).
+  function htmlCambiosCarga(pv){
+    var etiq = {}; MATRIZ.forEach(function(c){ etiq[c[0]] = c[1]; });
+    var corto = function(t){ t = String(t); return t.length > 90 ? t.slice(0, 90) + '…' : t; };
+    var h = '';
+    if (pv.reemplaza) h += '<div class="msg warn"><b>Modo «Reemplazar todo»:</b> se borrarán los ' + (pv.procesos_existentes || 0) + ' procesos, las personas y los sistemas que hay en la campaña y se cargará solo lo del archivo.</div>';
+    h += '<p>' + (pv.procesos_actualizados ? '<b>' + pv.procesos_actualizados + '</b> procesos existentes se actualizarán' + (pv.campos_cambiados ? ': <b>' + (pv.campos_sobrescritos || 0) + '</b> campos con contenido se <b>reemplazarán</b> y <b>' + (pv.campos_cambiados - (pv.campos_sobrescritos || 0)) + '</b> campos vacíos se completarán.' : '.') : '') +
+      (pv.procesos ? ' Se crearán <b>' + pv.procesos + '</b> procesos nuevos.' : '') + ' Las celdas vacías del archivo no borran nada.</p>';
+    if (pv.validados_modificados) h += '<div class="msg warn"><b>' + pv.validados_modificados + '</b> proceso' + (pv.validados_modificados > 1 ? 's ya validados cambian' : ' ya validado cambia') + ' su contenido y se mantienen como validados: revísalos en «Matriz y validación».</div>';
+    var lista = (pv.cambios || []).filter(function(c){ return c.campos.some(function(x){ return x.anterior; }) || c.validado; });
+    if (!lista.length) lista = pv.cambios || [];
+    h += lista.slice(0, 10).map(function(c){
+      return '<div style="margin-top:8px"><b>' + esc(c.nombre || 'Proceso') + '</b> <span class="muted">(fila ' + esc(c.fila) + (c.validado ? ' · validado' : '') + ')</span><ul class="cm-lista">' +
+        c.campos.slice(0, 5).map(function(x){
+          return '<li class="cm-campo">' + esc(etiq[x.campo] || x.campo) + ': ' + (x.anterior ? '<span class="ant">' + esc(corto(x.anterior)) + '</span> → ' : '<span class="muted">(vacío)</span> → ') + '<span class="nvo">' + esc(corto(x.nuevo)) + '</span></li>';
+        }).join('') + (c.campos.length > 5 ? '<li class="muted">… y ' + (c.campos.length - 5) + ' campos más</li>' : '') + '</ul></div>';
+    }).join('');
+    if ((pv.cambios_total || 0) > 10) h += '<p class="muted" style="margin-top:8px">… y ' + (pv.cambios_total - 10) + ' procesos más con cambios.</p>';
+    return h;
+  }
   $('#btnImportar').addEventListener('click', function(){
     if (!CARGA) return;
     var b = this; b.disabled = true;
-    $('#msgCarga').innerHTML = '<span class="muted">Importando…</span>';
-    api('/a/importar', Object.assign({campana_id: C.campana.id, modo: CARGA.upsert ? 'agregar' : $('#modoCarga').value}, CARGA)).then(function(j){
+    var modo = CARGA.upsert ? 'agregar' : $('#modoCarga').value;
+    // La hoja Procesos reconoce procesos ya cargados (por código o ruta) al agregar; la matriz exportada ya viene con upsert.
+    var cuerpo = Object.assign({campana_id: C.campana.id, modo: modo}, CARGA, {upsert: !!CARGA.upsert || (modo === 'agregar' && (CARGA.procesos || []).length > 0)});
+    $('#msgCarga').innerHTML = '<span class="muted">Revisando qué cambiaría…</span>';
+    // 1) Vista previa en el servidor (no escribe): si la carga reemplaza contenido existente, se pide confirmación con el detalle.
+    api('/a/importar', Object.assign({}, cuerpo, {dry_run: true})).then(function(pv){
+      var pide = pv.reemplaza || (pv.campos_sobrescritos || 0) > 0 || (pv.validados_modificados || 0) > 0;
+      if (!pide) return true;
+      return modalConfirmar({titulo: 'Confirmar la carga', html: htmlCambiosCarga(pv), boton: pv.reemplaza ? 'Reemplazar todo y cargar' : 'Reemplazar y cargar', peligro: !!pv.reemplaza});
+    }).then(function(ok){
+      if (!ok){ $('#msgCarga').innerHTML = '<span class="muted">Carga cancelada: no se cambió nada.</span>'; b.disabled = false; return; }
+      $('#msgCarga').innerHTML = '<span class="muted">Importando…</span>';
+      return api('/a/importar', cuerpo).then(function(j){
       $('#msgCarga').innerHTML = '<div class="msg ok">Importados: ' + j.encuestados + ' personas nuevas' + (j.encuestados_actualizados ? ' y ' + j.encuestados_actualizados + ' actualizadas (mismo correo, conservan su enlace)' : '') +
         ', ' + j.procesos + ' procesos nuevos' + (j.procesos_actualizados ? ' y ' + j.procesos_actualizados + ' actualizados (' + (j.campos_cambiados || 0) + ' campos de la matriz cambiaron)' : '') + ', ' + j.sistemas + ' sistemas.' + (j.asignados ? ' ' + j.asignados + ' procesos asignados por secciones adicionales.' : '') + ((j.claves || []).length ? ' ' + j.claves.length + ' cuentas de acceso creadas (sus claves se muestran ahora).' : '') +
         (j.estructura ? ' Esqueleto: ' + j.estructura.total + ' filas (' + j.estructura.nuevas + ' nuevas).' : '') + '</div>' + resultadoEstructura(j.estructura) +
@@ -3613,6 +3899,7 @@
         (j.avisos_perfil || []).map(function(a){ return '<div class="msg warn" style="margin-top:6px">' + esc(a) + '</div>'; }).join('');
       CARGA = null; $('#inExcel').value = '';
       abrir(C.campana.id).then(function(){ if (window.UsuariosConsola) window.UsuariosConsola.mostrarClaves(j.claves); });
+    }).catch(function(err){ $('#msgCarga').innerHTML = '<div class="msg warn">' + esc(err.message) + '</div>'; b.disabled = false; });
     }).catch(function(err){ $('#msgCarga').innerHTML = '<div class="msg warn">' + esc(err.message) + '</div>'; b.disabled = false; });
   });
   // Logo del cliente: se guarda como imagen incrustada (data URI) en la campaña.

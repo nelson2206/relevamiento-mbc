@@ -389,3 +389,24 @@ CREATE TABLE IF NOT EXISTS avance_diario (
   generado TEXT NOT NULL,
   PRIMARY KEY (campana_id, dia, gerencia, seccion)
 );
+
+-- Borrados forzados del Constructor (migracion-027.sql)
+CREATE TABLE IF NOT EXISTS borrados_forzados (
+  id TEXT PRIMARY KEY,
+  campana_id TEXT NOT NULL,
+  proceso_id TEXT NOT NULL,
+  gerencia TEXT NOT NULL DEFAULT '',
+  seccion TEXT NOT NULL DEFAULT '',
+  macroproceso TEXT NOT NULL DEFAULT '',
+  proceso TEXT NOT NULL DEFAULT '',
+  subproceso TEXT NOT NULL DEFAULT '',
+  alcance TEXT NOT NULL DEFAULT 'proceso',   -- proceso | grupo (macroproceso o proceso borrado con sus subprocesos)
+  motivos TEXT NOT NULL DEFAULT '',          -- validado, precarga, matriz (lo que se perdió)
+  nombre_confirmado TEXT NOT NULL DEFAULT '',-- lo que escribió la persona para confirmar
+  validacion TEXT NOT NULL DEFAULT '',
+  matriz TEXT NOT NULL DEFAULT '{}',         -- copia de la matriz al borrar (permite reconstruirla)
+  precarga TEXT NOT NULL DEFAULT '[]',       -- copia de la precarga al borrar: [{punto, texto, archivos}]
+  actor_nombre TEXT NOT NULL DEFAULT '',
+  creado TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_bf_camp ON borrados_forzados(campana_id, creado);
