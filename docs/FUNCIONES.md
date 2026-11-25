@@ -308,7 +308,7 @@ Perfiles: **Responsable** (responde sus procesos), **Supervisor** (su sección; 
 | Archivo | Qué es |
 |---|---|
 | `sitio.mjs` | Copia `index.html`, `admin.html`, los `flujo-*.js`, `usuarios-consola.js` e íconos a `worker/publico/` antes de desplegar. |
-| `schema.sql` y `migracion-002.sql` a `migracion-024.sql` | Esquema de la base D1. `schema.sql` trae el **estado final** (base nueva: solo ese archivo). Las migraciones sirven para actualizar una base existente: se aplican en orden y **antes** de desplegar. 017–018 (PIN y renovación de accesos), 019 (documentos), 020 (`matriz_historial`), 021 (`precarga_borrador` y `documento_extracciones`), 022 (`respuestas.datos`, para la pregunta estructurada), 023 (`documentos.seccion` y `documentos.hash`), 024 (`documento_extraccion_historial` y el estado `ok` de las lecturas pasa a `generado`). `test/unit/esquema.test.mjs` falla si una migración crea algo que `schema.sql` no tiene. |
+| `schema.sql` y `migracion-002.sql` a `migracion-027.sql` | Esquema de la base D1. `schema.sql` trae el **estado final** (base nueva: solo ese archivo). Las migraciones sirven para actualizar una base existente: se aplican en orden y **antes** de desplegar. 017–018 (PIN y renovación de accesos), 019 (documentos), 020 (`matriz_historial`), 021 (`precarga_borrador` y `documento_extracciones`), 022 (`respuestas.datos`, para la pregunta estructurada), 023 (`documentos.seccion` y `documentos.hash`), 024 (`documento_extraccion_historial` y el estado `ok` de las lecturas pasa a `generado`), 027 (`borrados_forzados`: registro de los borrados del Constructor que se hicieron a propósito sobre procesos con validación, precarga o matriz). `test/unit/esquema.test.mjs` falla si una migración crea algo que `schema.sql` no tiene. |
 | `wrangler.toml` | Configuración del Worker: base, variables de modelo de IA (`IA_MODELO_*`, `IA_ESFUERZO_*`), orígenes permitidos y la tarea programada. |
 
 ---
@@ -415,3 +415,6 @@ Módulo `FlujoAdmin`. Lo consulta `admin.html` al abrir una campaña.
 | `npm run semilla` | `test/semilla-demo.mjs` | Crea la campaña demo (empresa ficticia). Requiere `npm run dev`. |
 | `node test/estructura.mjs` | `test/estructura.mjs` | Integración de la hoja «Gerencias» en la carga. Requiere `npm run dev`. |
 | `node test/estandares.mjs` | `test/estandares.mjs` + `test/estandares.json` | Clasificación de estándares (TDP, TMC, otros, normativa). Sin IA por defecto; `--real` llama a la IA. |
+
+### Borrado forzado en el Constructor
+Eliminar un subproceso, proceso o macroproceso se bloquea si algún subproceso tiene respuestas (nunca se fuerza), o validación, precarga de documentos o contenido en la matriz. Para los tres últimos hay una salida: «Borrar de todos modos» muestra lo que se perdería y pide escribir el nombre; el servidor lo exige (`forzar` + `confirmar_nombre`) y guarda en `borrados_forzados` quién, cuándo, el alcance y una copia de la matriz y la precarga. Se consulta con `GET /a/campana/borrados?id=`.

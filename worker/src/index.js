@@ -49,8 +49,9 @@
  *   POST /a/importar             {campana_id, modo, upsert?, estructura[] (hoja Gerencias: {area, gerencia, seccion}), encuestados[], procesos[] (con matriz opcional; con upsert se actualiza por id o código), sistemas[]}
  *   GET  /a/campana?id=          volcado completo de la campaña
  *   POST /a/proceso              {campana_id, id?, codigo, gerencia, seccion, macroproceso, proceso, subproceso, descripcion}
- *   POST /a/proceso/borrar       {proceso_id, campana_id?}   (solo si nadie lo respondió)
- *   POST /a/proceso/borrar-grupo {campana_id, gerencia, seccion, macroproceso, proceso?}   (borra un macroproceso o proceso entero; 409 si algún subproceso tiene respuestas)
+ *   POST /a/proceso/borrar       {proceso_id, campana_id?, forzar?, confirmar_nombre?}   (solo si nadie lo respondió; con validación, precarga o matriz solo con forzar + el nombre escrito, y queda en borrados_forzados)
+ *   POST /a/proceso/borrar-grupo {campana_id, gerencia, seccion, macroproceso, proceso?, forzar?, confirmar_nombre?}   (borra un macroproceso o proceso entero; 409 si algún subproceso tiene respuestas, o validación/precarga/matriz sin forzar)
+ *   GET  /a/campana/borrados?id=   registro de los borrados forzados (quién, cuándo, qué se perdió y copia de la matriz y la precarga)
  *   POST /a/estructura/crear     {campana_id, gerencia, seccion?}   (constructor: gerencia o sección en el esqueleto)
  *   POST /a/estructura/eliminar  {campana_id, gerencia, seccion?}   (solo si no tiene procesos ni personas)
  *   POST /a/importar             {..., dry_run?}   (dry_run: calcula los campos que cambiarían sin escribir)
@@ -1424,15 +1425,49 @@ async function contenidoProceso(env, p) {
 const MOTIVOS_BORRADO = { validado: 'está validado', precarga: 'tiene información previa de documentos (precarga)', matriz: 'tiene contenido en la matriz' };
 const textoMotivos = (n, m) => ` (${n} ${n === 1 ? 'subproceso' : 'subprocesos'}${m.length ? ': ' + m.map(k => MOTIVOS_BORRADO[k]).join(', ') : ''})`;
 
+
+// Borrado forzado: quien lo pide escribe el nombre exacto para confirmar y queda un registro con la copia de lo que se pierde.
+function exigirNombre(b, esperado) {
+  if (normal(txt(b.confirmar_nombre, 200)) !== normal(esperado) || !normal(esperado))
+    throw new HttpError(400, 'Escribe el nombre «' + esperado + '» tal cual para confirmar el borrado.');
+}
+async function sentenciasRegistroForzado(env, campId, filas, contenidos, alcance, nombre) {
+  const t = ahora(), st = [];
+  for (let i = 0; i < filas.length; i++) {
+    if (!contenidos[i].length) continue;
+    const p = filas[i];
+    const pre = (await env.DB.prepare("SELECT punto, texto, archivos FROM precarga WHERE proceso_id=? AND trim(texto)<>''").bind(p.id).all()).results
+      .map(x => ({ punto: x.punto, texto: x.texto, archivos: x.archivos }));
+    st.push(env.DB.prepare(`INSERT INTO borrados_forzados (id, campana_id, proceso_id, gerencia, seccion, macroproceso, proceso, subproceso, alcance, motivos,
+        nombre_confirmado, validacion, matriz, precarga, actor_nombre, creado) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+      .bind(uid(), campId, p.id, p.gerencia || '', p.seccion || '', p.macroproceso || '', p.proceso || '', p.subproceso || '', alcance, contenidos[i].join(','),
+        txt(nombre, 200), p.validacion || '', p.matriz || '{}', JSON.stringify(pre), ACTOR_CONSOLA.nombre, t));
+  }
+  return st;
+}
+// GET /a/campana/borrados?id=  -> borrados forzados de la campaña, los más recientes primero
+async function rutaBorradosForzados(env, url) {
+  const id = url.searchParams.get('id') || '';
+  const r = await env.DB.prepare('SELECT * FROM borrados_forzados WHERE campana_id=? ORDER BY creado DESC LIMIT 200').bind(id).all();
+  return { ok: true, borrados: r.results.map(x => Object.assign(x, { motivos: x.motivos ? x.motivos.split(',') : [] })) };
+}
+
 async function rutaProcesoBorrar(env, b) {
   // campana_id es opcional por compatibilidad; si llega, el proceso debe ser de esa campaña.
-  const p = await env.DB.prepare("SELECT id, validacion, matriz FROM procesos WHERE id=? AND (?='' OR campana_id=?)").bind(b.proceso_id, txt(b.campana_id, 60), txt(b.campana_id, 60)).first();
+  const p = await env.DB.prepare("SELECT * FROM procesos WHERE id=? AND (?='' OR campana_id=?)").bind(b.proceso_id, txt(b.campana_id, 60), txt(b.campana_id, 60)).first();
   if (!p) throw new HttpError(404, 'Proceso no encontrado');
   const n = await env.DB.prepare(consultaConRespuestas).bind(p.id).first();
   if (n.n) throw new HttpError(409, 'Este proceso ya tiene respuestas y no se puede borrar. Edítalo o resuélvelo en la reunión de validación.');
   const cont = await contenidoProceso(env, p);
-  if (cont.length) throw new HttpError(409, 'Este proceso ' + cont.map(k => MOTIVOS_BORRADO[k]).join(' y ') + ': no se puede borrar sin perder ese trabajo. Muévelo o márcalo fuera de alcance.');
-  await env.DB.batch(sentenciasBorrarProceso(env, p.id));
+  let registro = [];
+  if (cont.length) {
+    if (!b.forzar) throw new HttpError(409, 'Este proceso ' + cont.map(k => MOTIVOS_BORRADO[k]).join(' y ') + ': no se puede borrar sin perder ese trabajo. Muévelo, márcalo fuera de alcance o bórralo de todos modos escribiendo su nombre.');
+    const nombre = p.subproceso || p.proceso || p.macroproceso;
+    exigirNombre(b, nombre);
+    registro = await sentenciasRegistroForzado(env, p.campana_id, [p], [cont], 'proceso', b.confirmar_nombre);
+    log('borrado_forzado', { campana: p.campana_id, procesos: 1, motivos: cont.join(',') });
+  }
+  await env.DB.batch([...registro, ...sentenciasBorrarProceso(env, p.id)]);
   return { ok: true };
 }
 
@@ -1444,7 +1479,7 @@ async function rutaProcesoBorrarGrupo(env, b) {
   const g = txt(b.gerencia, 150), sec = txt(b.seccion, 150), mac = txt(b.macroproceso, 200);
   const conProceso = b.proceso !== undefined && b.proceso !== null;
   const pro = conProceso ? txt(b.proceso, 200) : '';
-  const filas = (await env.DB.prepare('SELECT id, macroproceso, proceso, validacion, matriz FROM procesos WHERE campana_id=? AND gerencia=? AND seccion=?').bind(camp.id, g, sec).all()).results
+  const filas = (await env.DB.prepare('SELECT * FROM procesos WHERE campana_id=? AND gerencia=? AND seccion=?').bind(camp.id, g, sec).all()).results
     .filter(p => String(p.macroproceso || '') === mac && (!conProceso || String(p.proceso || '') === pro));
   if (!filas.length) throw new HttpError(404, 'No hay procesos en ese grupo');
   if (filas.length > 400) throw new HttpError(400, 'Demasiados procesos para borrarlos juntos');
@@ -1452,13 +1487,18 @@ async function rutaProcesoBorrarGrupo(env, b) {
     if ((await env.DB.prepare(consultaConRespuestas).bind(p.id).first()).n)
       throw new HttpError(409, 'Hay procesos con respuestas en este grupo: no se borra nada. Muévelos o resuélvelos en la reunión de validación.');
   }
-  const conTrabajo = [];
-  for (const p of filas) { const c = await contenidoProceso(env, p); if (c.length) conTrabajo.push(c); }
+  const contenidos = [];
+  for (const p of filas) contenidos.push(await contenidoProceso(env, p));
+  const conTrabajo = contenidos.filter(c => c.length);
+  let registro = [];
   if (conTrabajo.length) {
     const motivos = [...new Set(conTrabajo.flat())];
-    throw new HttpError(409, 'Hay trabajo hecho en este grupo' + textoMotivos(conTrabajo.length, motivos) + ': no se borra nada. Muévelos a otro grupo o márcalos fuera de alcance.');
+    if (!b.forzar) throw new HttpError(409, 'Hay trabajo hecho en este grupo' + textoMotivos(conTrabajo.length, motivos) + ': no se borra nada. Muévelos a otro grupo, márcalos fuera de alcance o bórralos de todos modos escribiendo el nombre.');
+    exigirNombre(b, conProceso ? pro : mac);
+    registro = await sentenciasRegistroForzado(env, camp.id, filas, contenidos, 'grupo', b.confirmar_nombre);
+    log('borrado_forzado', { campana: camp.id, procesos: conTrabajo.length, motivos: motivos.join(',') });
   }
-  const st = filas.flatMap(p => sentenciasBorrarProceso(env, p.id));
+  const st = [...registro, ...filas.flatMap(p => sentenciasBorrarProceso(env, p.id))];
   for (let i = 0; i < st.length; i += 90) await env.DB.batch(st.slice(i, i + 90));
   log('borrar_grupo', { campana: camp.id, procesos: filas.length });
   return { ok: true, borrados: filas.map(p => p.id) };
@@ -3113,6 +3153,7 @@ export default {
         if (ruta === 'GET /a/campana') return json(await rutaCampana(env, url), 200, h);
         if (ruta === 'GET /a/campana/flujo') return json(await rutaFlujoAdminCampana(env, url), 200, h);
         if (ruta === 'GET /a/campana/trazabilidad') return json(await rutaTrazabilidadAdmin(env, url), 200, h);
+        if (ruta === 'GET /a/campana/borrados') return json(await rutaBorradosForzados(env, url), 200, h);
         if (ruta === 'GET /a/campana/historial') return json(await rutaHistorialMatriz(env, url), 200, h);
         if (ruta === 'GET /a/embudo/funnel') return json(await rutaAdminFunnel(env, url), 200, h);
         if (ruta === 'GET /a/embudo/export') return await exportarEmbudo(env, url, BLOQUES, h);

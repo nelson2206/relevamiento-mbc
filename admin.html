@@ -1308,12 +1308,23 @@
     if (Object.keys(m).some(function(k){ return IDENT_MATRIZ.indexOf(k) < 0 && String(m[k] || '').trim(); })) out.push('con contenido en la matriz');
     return out;
   }
-  function avisoTrabajoHecho(ps, que){
+  // Borrado forzado: lista lo que se perdería y exige escribir el nombre. Devuelve una promesa con {forzar, confirmar_nombre} o null si se cancela.
+  function confirmarForzado(ps, que, nombre){
     var con = ps.map(function(p){ return {p: p, t: trabajoHecho(p)}; }).filter(function(x){ return x.t.length; });
-    if (!con.length) return null;
-    return modalAviso('No se puede eliminar', '<p>' + esc(que) + ' tiene ' + con.length + (con.length === 1 ? ' subproceso' : ' subprocesos') + ' con trabajo ya hecho que se perdería:</p>' +
-      '<ul class="cm-lista">' + con.slice(0, 8).map(function(x){ return '<li>' + esc(nombreProc(x.p)) + ' <span class="muted">(' + esc(x.t.join(', ')) + ')</span></li>'; }).join('') + (con.length > 8 ? '<li>… y ' + (con.length - 8) + ' más</li>' : '') + '</ul>' +
-      '<p style="margin-top:10px">No se borra nada. Muévelos a otro grupo o márcalos fuera de alcance.</p>');
+    return modalConfirmar({titulo: 'Hay trabajo hecho que se perdería', peligro: true, boton: 'Continuar',
+      html: '<p>' + esc(que) + ' tiene ' + con.length + (con.length === 1 ? ' subproceso' : ' subprocesos') + ' con trabajo ya hecho:</p>' +
+        '<ul class="cm-lista">' + con.slice(0, 8).map(function(x){ return '<li>' + esc(nombreProc(x.p)) + ' <span class="muted">(' + esc(x.t.join(', ')) + ')</span></li>'; }).join('') + (con.length > 8 ? '<li>… y ' + (con.length - 8) + ' más</li>' : '') + '</ul>' +
+        '<p style="margin-top:10px">Lo recomendable es moverlos a otro grupo o marcarlos fuera de alcance. Si los borras, <b>se pierde</b> esa validación, precarga y matriz; el sistema guarda una copia en el registro de borrados, pero no se restaura sola.</p>'
+    }).then(function(ok){
+      if (!ok) return null;
+      return modalPedir({titulo: 'Confirmar el borrado', etiqueta: 'Escribe «' + nombre + '» para confirmar', boton: 'Borrar de todos modos', ayuda: 'Debe coincidir con el nombre tal cual (sin importar mayúsculas).'}).then(function(v){
+        if (v === null || v === undefined) return null;
+        if (sinTildes(v).trim().toLowerCase() !== sinTildes(nombre).trim().toLowerCase()){
+          return modalAviso('El nombre no coincide', '<p>No se borró nada. Escribiste «' + esc(v) + '» y se esperaba «' + esc(nombre) + '».</p>').then(function(){ return null; });
+        }
+        return {forzar: true, confirmar_nombre: v};
+      });
+    });
   }
   // Elimina un macroproceso entero (pr indefinido) o un proceso: son el texto compartido por sus subprocesos, así que se borran sus filas.
   function eliminarGrupo(g, sc, m, pr){
@@ -1327,14 +1338,16 @@
     if (conResp.length)
       return modalAviso('No se puede eliminar', '<p>Hay ' + conResp.length + (conResp.length === 1 ? ' subproceso con respuestas' : ' subprocesos con respuestas') + ' en ' + esc(que) + ' (' +
         esc(conResp.slice(0, 5).map(nombreProc).join(', ') + (conResp.length > 5 ? '…' : '')) + '). Muévelos a otro grupo o resuélvelos en la reunión de validación; no se borra nada.</p>');
-    var bloq = avisoTrabajoHecho(ps, que.charAt(0).toUpperCase() + que.slice(1)); if (bloq) return bloq;
+    var hechos = ps.filter(function(p){ return trabajoHecho(p).length; });
+    var paso = hechos.length ? confirmarForzado(ps, que.charAt(0).toUpperCase() + que.slice(1), conPr ? pr : m) :
     modalConfirmar({titulo: conPr ? 'Eliminar proceso' : 'Eliminar macroproceso', peligro: true, boton: 'Eliminar',
       html: '<p>Se eliminará ' + esc(que) + ' de <b>' + esc(g + ' · ' + sc) + '</b> con sus <b>' + ps.length + (ps.length === 1 ? ' subproceso' : ' subprocesos') + '</b>:</p>' +
         '<ul class="cm-lista">' + ps.slice(0, 12).map(function(p){ return '<li>' + esc(nombreProc(p)) + '</li>'; }).join('') + (ps.length > 12 ? '<li>… y ' + (ps.length - 12) + ' más</li>' : '') + '</ul>' +
         '<p style="margin-top:10px">Ninguno tiene respuestas, validación, precarga de documentos ni contenido en la matriz. Esta acción no se puede deshacer.</p>'
-    }).then(function(ok){
-      if (!ok) return;
-      return api('/a/proceso/borrar-grupo', {campana_id: C.campana.id, gerencia: g, seccion: sc, macroproceso: m, proceso: conPr ? pr : undefined}).then(function(j){
+    }).then(function(ok){ return ok ? {} : null; });
+    paso.then(function(extra){
+      if (!extra) return;
+      return api('/a/proceso/borrar-grupo', Object.assign({campana_id: C.campana.id, gerencia: g, seccion: sc, macroproceso: m, proceso: conPr ? pr : undefined}, extra)).then(function(j){
         var fuera = {}; (j.borrados || []).forEach(function(id){ fuera[id] = 1; delete CN.sel[id]; });
         C.procesos = C.procesos.filter(function(x){ return !fuera[x.id]; });
         C.fuera = (C.fuera || []).filter(function(x){ return !fuera[x.id]; });
@@ -1416,12 +1429,13 @@
 
   function borrarNodo(id){
     var p = procPorId(id); if (!p) return;
-    var bloq = avisoTrabajoHecho([p], 'El subproceso «' + nombreProc(p) + '»'); if (bloq) return bloq;
+    var paso = trabajoHecho(p).length ? confirmarForzado([p], 'El subproceso «' + nombreProc(p) + '»', nombreProc(p)) :
     modalConfirmar({titulo: 'Borrar subproceso', peligro: true, boton: 'Borrar',
-      html: '<p>¿Borrar <b>' + esc(nombreProc(p)) + '</b> de <b>' + esc(p.gerencia + ' · ' + p.seccion) + '</b>? Solo se puede si no tiene respuestas, validación, precarga ni contenido en la matriz. Esta acción no se puede deshacer.</p>'
-    }).then(function(ok){
-      if (!ok) return;
-      return api('/a/proceso/borrar', {campana_id: C.campana.id, proceso_id: id}).then(function(){
+      html: '<p>¿Borrar <b>' + esc(nombreProc(p)) + '</b> de <b>' + esc(p.gerencia + ' · ' + p.seccion) + '</b>? No tiene respuestas, validación, precarga ni contenido en la matriz. Esta acción no se puede deshacer.</p>'
+    }).then(function(ok){ return ok ? {} : null; });
+    paso.then(function(extra){
+      if (!extra) return;
+      return api('/a/proceso/borrar', Object.assign({campana_id: C.campana.id, proceso_id: id}, extra)).then(function(){
         C.procesos = C.procesos.filter(function(x){ return x.id !== id; });
         delete CN.sel[id];
         pintarTodo();

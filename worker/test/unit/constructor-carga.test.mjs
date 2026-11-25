@@ -11,9 +11,9 @@ const G = 'Gerencia Legal', S = 'Sección Legal';
 const { d1, db } = crearD1();
 const env = { DB: d1, ALLOWED_ORIGINS: ORIGEN, ADMIN_CODE: ADMIN };
 
-async function admin(ruta, cuerpo) {
+async function admin(ruta, cuerpo, metodo = 'POST') {
   const r = await worker.fetch(new Request('http://worker.local' + ruta, {
-    method: 'POST', body: JSON.stringify(cuerpo),
+    method: metodo, body: metodo === 'GET' ? undefined : JSON.stringify(cuerpo),
     headers: { origin: ORIGEN, 'content-type': 'application/json', 'cf-connecting-ip': '10.0.0.6', 'x-admin-code': ADMIN }
   }), env, { waitUntil() {} });
   return { status: r.status, ...(await r.json()) };
@@ -166,4 +166,40 @@ test('borrar se bloquea si el proceso está validado, tiene precarga o contenido
   assert.equal(g.status, 409); assert.equal(n("SELECT COUNT(*) AS n FROM procesos WHERE macroproceso='MacroT'"), 4);
   assert.equal((await admin('/a/proceso/borrar', { campana_id: 'c1', proceso_id: 't4' })).status, 200);
   assert.equal(proceso('t4'), undefined);
+});
+
+test('borrado forzado: exige forzar y el nombre escrito, deja registro con copia de la matriz y la precarga, y no pasa por encima de las respuestas', async () => {
+  const nuevo = (id, validacion, matriz) => db.prepare("INSERT INTO procesos (id, campana_id, gerencia, seccion, macroproceso, proceso, subproceso, fuente, validacion, matriz) VALUES (?, 'c1', ?, ?, 'MacroF', 'ProcF', ?, 'inventario', ?, ?)")
+    .run(id, G, S, 'Sub ' + id, validacion, JSON.stringify(matriz));
+  nuevo('f1', 'validado', { objetivo: 'Inventario 2021' });
+  nuevo('f2', '', {});
+  db.prepare("INSERT INTO precarga (proceso_id, bloque, punto, texto, archivos, creado, actualizado) VALUES ('f1','b1','alcance','Del documento','[\"a.pdf\"]','2026-11-04T12:00:00.000Z','2026-11-04T12:00:00.000Z')").run();
+  const grupo = { campana_id: 'c1', gerencia: G, seccion: S, macroproceso: 'MacroF' };
+  assert.equal((await admin('/a/proceso/borrar-grupo', grupo)).status, 409);
+  assert.equal((await admin('/a/proceso/borrar-grupo', { ...grupo, forzar: true })).status, 400);                              // sin nombre
+  assert.equal((await admin('/a/proceso/borrar-grupo', { ...grupo, forzar: true, confirmar_nombre: 'Otro' })).status, 400);    // nombre equivocado
+  assert.equal(n("SELECT COUNT(*) AS n FROM procesos WHERE macroproceso='MacroF'"), 2);
+  assert.equal(n('SELECT COUNT(*) AS n FROM borrados_forzados'), 0);
+  // las respuestas siguen bloqueando aunque se fuerce
+  db.prepare("INSERT INTO respuestas (encuestado_id, proceso_id, pregunta, texto, actualizado) VALUES ('e1','f2','b1','algo','2026-11-04T12:00:00.000Z')").run();
+  assert.equal((await admin('/a/proceso/borrar-grupo', { ...grupo, forzar: true, confirmar_nombre: 'macrof' })).status, 409);
+  db.prepare("DELETE FROM respuestas WHERE proceso_id='f2'").run();
+  const r = await admin('/a/proceso/borrar-grupo', { ...grupo, forzar: true, confirmar_nombre: ' macrof ' });
+  assert.equal(r.status, 200, JSON.stringify(r)); assert.equal(n("SELECT COUNT(*) AS n FROM procesos WHERE macroproceso='MacroF'"), 0);
+  const reg = db.prepare('SELECT * FROM borrados_forzados').all();
+  assert.equal(reg.length, 1);                                   // solo f1 tenía trabajo
+  assert.equal(reg[0].proceso_id, 'f1'); assert.equal(reg[0].alcance, 'grupo'); assert.equal(reg[0].motivos, 'validado,precarga,matriz');
+  assert.equal(JSON.parse(reg[0].matriz).objetivo, 'Inventario 2021'); assert.equal(JSON.parse(reg[0].precarga)[0].texto, 'Del documento');
+  assert.equal(reg[0].actor_nombre, 'Equipo consultor');
+  const lista = await admin('/a/campana/borrados?id=c1', null, 'GET');
+  assert.equal(lista.borrados.length, 1);
+});
+
+test('borrado forzado de un subproceso suelto pide el nombre del subproceso', async () => {
+  db.prepare("INSERT INTO procesos (id, campana_id, gerencia, seccion, macroproceso, proceso, subproceso, fuente, validacion, matriz) VALUES ('f9','c1',?,?,'M9','P9','Sub nueve','inventario','validado','{}')").run(G, S);
+  assert.equal((await admin('/a/proceso/borrar', { campana_id: 'c1', proceso_id: 'f9', forzar: true, confirmar_nombre: 'M9' })).status, 400);
+  assert.ok(proceso('f9'));
+  assert.equal((await admin('/a/proceso/borrar', { campana_id: 'c1', proceso_id: 'f9', forzar: true, confirmar_nombre: 'Sub nueve' })).status, 200);
+  assert.equal(proceso('f9'), undefined);
+  assert.equal(db.prepare("SELECT alcance FROM borrados_forzados WHERE proceso_id='f9'").get().alcance, 'proceso');
 });
