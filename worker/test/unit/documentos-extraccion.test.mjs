@@ -190,6 +190,7 @@ test('borrar un proceso limpia sus asociaciones, borradores, estado e historial,
   assert.equal(filas("SELECT * FROM documento_extraccion_historial WHERE proceso_id='p11'").length, 1);
   await llamar('POST', '/a/matriz', { proceso_id: 'p11', matriz: { kpis: 'Indicador' } });
   assert.equal(uno("SELECT estado FROM documentos WHERE id=?", d4.id).estado, 'clasificado');
+  db.prepare("UPDATE procesos SET matriz='{}' WHERE id='p11'").run();   // con contenido en la matriz el borrado se bloquea (prueba aparte)
   const r = await llamar('POST', '/a/proceso/borrar', { proceso_id: 'p11' });
   assert.equal(r.status, 200, JSON.stringify(r));
   for (const t of ['documento_procesos', 'documento_extracciones', 'documento_extraccion_historial', 'precarga_borrador', 'matriz_historial']) assert.equal(uno(`SELECT COUNT(*) n FROM ${t} WHERE proceso_id='p11'`).n, 0, t);

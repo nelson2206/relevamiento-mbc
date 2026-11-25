@@ -143,8 +143,27 @@ test('borrar un grupo se rechaza entero si algún subproceso tiene respuestas; s
   assert.equal(bloqueado.status, 409);
   assert.equal(n("SELECT COUNT(*) AS n FROM procesos WHERE campana_id='c1'"), antes);
   db.prepare("DELETE FROM respuestas WHERE proceso_id='p3'").run();
+  db.prepare("UPDATE procesos SET matriz='{}', validacion='' WHERE campana_id='c1'").run();   // el contenido de la matriz y la validación bloquean el borrado (prueba aparte)
   const r = await admin('/a/proceso/borrar-grupo', { campana_id: 'c1', gerencia: G, seccion: S, macroproceso: 'Legal', proceso: 'Contratación' });
   assert.equal(r.status, 200, JSON.stringify(r)); assert.equal(r.borrados.length, antes);
   assert.equal(n("SELECT COUNT(*) AS n FROM procesos WHERE campana_id='c1'"), 0);
   assert.equal(n("SELECT COUNT(*) AS n FROM procesos WHERE campana_id='c2'"), 1);   // la otra campaña no se toca
+});
+
+test('borrar se bloquea si el proceso está validado, tiene precarga o contenido en la matriz, aunque no tenga respuestas', async () => {
+  const nuevo = (id, validacion, matriz) => db.prepare("INSERT INTO procesos (id, campana_id, gerencia, seccion, macroproceso, proceso, subproceso, fuente, validacion, matriz) VALUES (?, 'c1', ?, ?, 'MacroT', 'ProcT', ?, 'inventario', ?, ?)")
+    .run(id, G, S, id, validacion, JSON.stringify(matriz));
+  nuevo('t1', 'validado', {});
+  nuevo('t2', '', { objetivo: 'texto del inventario 2021' });
+  nuevo('t3', '', { gerencia: G });
+  db.prepare("INSERT INTO precarga (proceso_id, bloque, punto, texto, archivos, creado, actualizado) VALUES ('t3','b1','objetivo','Del documento','[]','2026-11-04T12:00:00.000Z','2026-11-04T12:00:00.000Z')").run();
+  nuevo('t4', '', { gerencia: G });   // solo identificación: sí se puede borrar
+  for (const id of ['t1', 't2', 't3']) {
+    const r = await admin('/a/proceso/borrar', { campana_id: 'c1', proceso_id: id });
+    assert.equal(r.status, 409, id); assert.ok(proceso(id), id);
+  }
+  const g = await admin('/a/proceso/borrar-grupo', { campana_id: 'c1', gerencia: G, seccion: S, macroproceso: 'MacroT' });
+  assert.equal(g.status, 409); assert.equal(n("SELECT COUNT(*) AS n FROM procesos WHERE macroproceso='MacroT'"), 4);
+  assert.equal((await admin('/a/proceso/borrar', { campana_id: 'c1', proceso_id: 't4' })).status, 200);
+  assert.equal(proceso('t4'), undefined);
 });

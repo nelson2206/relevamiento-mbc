@@ -1409,12 +1409,29 @@ const sentenciasBorrarProceso = (env, id) => [
 ];
 const consultaConRespuestas = `SELECT COUNT(*) AS n FROM respuestas WHERE proceso_id=? AND (trim(texto)<>'' OR sistemas<>'[]')`;
 
+// Trabajo ya hecho que un borrado destruiría aunque nadie haya respondido la encuesta: validación del equipo, información previa
+// de documentos (precarga) y contenido de la matriz (inventario 2021 u otros campos). Los campos de identificación no cuentan.
+const MATRIZ_IDENTIFICA = ['division', 'gerencia', 'seccion', 'niv0', 'macroproceso', 'niv1', 'proceso', 'niv2', 'subproceso', 'participantes'];
+async function contenidoProceso(env, p) {
+  const out = [];
+  if (p.validacion === 'validado') out.push('validado');
+  const pre = await env.DB.prepare("SELECT COUNT(*) AS n FROM precarga WHERE proceso_id=? AND trim(texto)<>''").bind(p.id).first();
+  if (pre.n) out.push('precarga');
+  let m = {}; try { m = JSON.parse(p.matriz || '{}') || {}; } catch (e) { m = {}; }
+  if (Object.keys(limpiarMatriz(m)).some(k => !MATRIZ_IDENTIFICA.includes(k))) out.push('matriz');
+  return out;
+}
+const MOTIVOS_BORRADO = { validado: 'está validado', precarga: 'tiene información previa de documentos (precarga)', matriz: 'tiene contenido en la matriz' };
+const textoMotivos = (n, m) => ` (${n} ${n === 1 ? 'subproceso' : 'subprocesos'}${m.length ? ': ' + m.map(k => MOTIVOS_BORRADO[k]).join(', ') : ''})`;
+
 async function rutaProcesoBorrar(env, b) {
   // campana_id es opcional por compatibilidad; si llega, el proceso debe ser de esa campaña.
-  const p = await env.DB.prepare("SELECT id FROM procesos WHERE id=? AND (?='' OR campana_id=?)").bind(b.proceso_id, txt(b.campana_id, 60), txt(b.campana_id, 60)).first();
+  const p = await env.DB.prepare("SELECT id, validacion, matriz FROM procesos WHERE id=? AND (?='' OR campana_id=?)").bind(b.proceso_id, txt(b.campana_id, 60), txt(b.campana_id, 60)).first();
   if (!p) throw new HttpError(404, 'Proceso no encontrado');
   const n = await env.DB.prepare(consultaConRespuestas).bind(p.id).first();
   if (n.n) throw new HttpError(409, 'Este proceso ya tiene respuestas y no se puede borrar. Edítalo o resuélvelo en la reunión de validación.');
+  const cont = await contenidoProceso(env, p);
+  if (cont.length) throw new HttpError(409, 'Este proceso ' + cont.map(k => MOTIVOS_BORRADO[k]).join(' y ') + ': no se puede borrar sin perder ese trabajo. Muévelo o márcalo fuera de alcance.');
   await env.DB.batch(sentenciasBorrarProceso(env, p.id));
   return { ok: true };
 }
@@ -1427,13 +1444,19 @@ async function rutaProcesoBorrarGrupo(env, b) {
   const g = txt(b.gerencia, 150), sec = txt(b.seccion, 150), mac = txt(b.macroproceso, 200);
   const conProceso = b.proceso !== undefined && b.proceso !== null;
   const pro = conProceso ? txt(b.proceso, 200) : '';
-  const filas = (await env.DB.prepare('SELECT id, macroproceso, proceso FROM procesos WHERE campana_id=? AND gerencia=? AND seccion=?').bind(camp.id, g, sec).all()).results
+  const filas = (await env.DB.prepare('SELECT id, macroproceso, proceso, validacion, matriz FROM procesos WHERE campana_id=? AND gerencia=? AND seccion=?').bind(camp.id, g, sec).all()).results
     .filter(p => String(p.macroproceso || '') === mac && (!conProceso || String(p.proceso || '') === pro));
   if (!filas.length) throw new HttpError(404, 'No hay procesos en ese grupo');
   if (filas.length > 400) throw new HttpError(400, 'Demasiados procesos para borrarlos juntos');
   for (const p of filas) {
     if ((await env.DB.prepare(consultaConRespuestas).bind(p.id).first()).n)
       throw new HttpError(409, 'Hay procesos con respuestas en este grupo: no se borra nada. Muévelos o resuélvelos en la reunión de validación.');
+  }
+  const conTrabajo = [];
+  for (const p of filas) { const c = await contenidoProceso(env, p); if (c.length) conTrabajo.push(c); }
+  if (conTrabajo.length) {
+    const motivos = [...new Set(conTrabajo.flat())];
+    throw new HttpError(409, 'Hay trabajo hecho en este grupo' + textoMotivos(conTrabajo.length, motivos) + ': no se borra nada. Muévelos a otro grupo o márcalos fuera de alcance.');
   }
   const st = filas.flatMap(p => sentenciasBorrarProceso(env, p.id));
   for (let i = 0; i < st.length; i += 90) await env.DB.batch(st.slice(i, i + 90));

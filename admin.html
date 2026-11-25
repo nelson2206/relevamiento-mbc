@@ -1299,6 +1299,22 @@
       if (n) nuevoSub(g, sc, m, n);
     });
   }
+  // Trabajo ya hecho que un borrado destruiría aunque nadie haya respondido: validación, precarga de documentos y contenido de la matriz.
+  var IDENT_MATRIZ = ['division','gerencia','seccion','niv0','macroproceso','niv1','proceso','niv2','subproceso','participantes'];
+  function trabajoHecho(p){
+    var out = [], m = p.matriz || {};
+    if (p.validacion === 'validado') out.push('validado');
+    if (Object.keys(IX.pre[p.id] || {}).some(function(k){ return String((IX.pre[p.id][k] || {}).texto || '').trim(); })) out.push('con precarga de documentos');
+    if (Object.keys(m).some(function(k){ return IDENT_MATRIZ.indexOf(k) < 0 && String(m[k] || '').trim(); })) out.push('con contenido en la matriz');
+    return out;
+  }
+  function avisoTrabajoHecho(ps, que){
+    var con = ps.map(function(p){ return {p: p, t: trabajoHecho(p)}; }).filter(function(x){ return x.t.length; });
+    if (!con.length) return null;
+    return modalAviso('No se puede eliminar', '<p>' + esc(que) + ' tiene ' + con.length + (con.length === 1 ? ' subproceso' : ' subprocesos') + ' con trabajo ya hecho que se perdería:</p>' +
+      '<ul class="cm-lista">' + con.slice(0, 8).map(function(x){ return '<li>' + esc(nombreProc(x.p)) + ' <span class="muted">(' + esc(x.t.join(', ')) + ')</span></li>'; }).join('') + (con.length > 8 ? '<li>… y ' + (con.length - 8) + ' más</li>' : '') + '</ul>' +
+      '<p style="margin-top:10px">No se borra nada. Muévelos a otro grupo o márcalos fuera de alcance.</p>');
+  }
   // Elimina un macroproceso entero (pr indefinido) o un proceso: son el texto compartido por sus subprocesos, así que se borran sus filas.
   function eliminarGrupo(g, sc, m, pr){
     var conPr = pr !== undefined && pr !== null && pr !== '';
@@ -1311,10 +1327,11 @@
     if (conResp.length)
       return modalAviso('No se puede eliminar', '<p>Hay ' + conResp.length + (conResp.length === 1 ? ' subproceso con respuestas' : ' subprocesos con respuestas') + ' en ' + esc(que) + ' (' +
         esc(conResp.slice(0, 5).map(nombreProc).join(', ') + (conResp.length > 5 ? '…' : '')) + '). Muévelos a otro grupo o resuélvelos en la reunión de validación; no se borra nada.</p>');
+    var bloq = avisoTrabajoHecho(ps, que.charAt(0).toUpperCase() + que.slice(1)); if (bloq) return bloq;
     modalConfirmar({titulo: conPr ? 'Eliminar proceso' : 'Eliminar macroproceso', peligro: true, boton: 'Eliminar',
       html: '<p>Se eliminará ' + esc(que) + ' de <b>' + esc(g + ' · ' + sc) + '</b> con sus <b>' + ps.length + (ps.length === 1 ? ' subproceso' : ' subprocesos') + '</b>:</p>' +
         '<ul class="cm-lista">' + ps.slice(0, 12).map(function(p){ return '<li>' + esc(nombreProc(p)) + '</li>'; }).join('') + (ps.length > 12 ? '<li>… y ' + (ps.length - 12) + ' más</li>' : '') + '</ul>' +
-        '<p style="margin-top:10px">Ninguno tiene respuestas. Esta acción no se puede deshacer.</p>'
+        '<p style="margin-top:10px">Ninguno tiene respuestas, validación, precarga de documentos ni contenido en la matriz. Esta acción no se puede deshacer.</p>'
     }).then(function(ok){
       if (!ok) return;
       return api('/a/proceso/borrar-grupo', {campana_id: C.campana.id, gerencia: g, seccion: sc, macroproceso: m, proceso: conPr ? pr : undefined}).then(function(j){
@@ -1399,8 +1416,9 @@
 
   function borrarNodo(id){
     var p = procPorId(id); if (!p) return;
+    var bloq = avisoTrabajoHecho([p], 'El subproceso «' + nombreProc(p) + '»'); if (bloq) return bloq;
     modalConfirmar({titulo: 'Borrar subproceso', peligro: true, boton: 'Borrar',
-      html: '<p>¿Borrar <b>' + esc(nombreProc(p)) + '</b> de <b>' + esc(p.gerencia + ' · ' + p.seccion) + '</b>? Solo se puede si nadie lo respondió. Esta acción no se puede deshacer.</p>'
+      html: '<p>¿Borrar <b>' + esc(nombreProc(p)) + '</b> de <b>' + esc(p.gerencia + ' · ' + p.seccion) + '</b>? Solo se puede si no tiene respuestas, validación, precarga ni contenido en la matriz. Esta acción no se puede deshacer.</p>'
     }).then(function(ok){
       if (!ok) return;
       return api('/a/proceso/borrar', {campana_id: C.campana.id, proceso_id: id}).then(function(){
