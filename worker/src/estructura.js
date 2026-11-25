@@ -2,7 +2,7 @@
 // Permite definir la estructura sin procesos y que las cargas siguientes (personas, procesos, matriz) se vinculen a ella:
 // los nombres se normalizan (mayúsculas, tildes, espacios) y se agrupan bajo el nombre del esqueleto.
 // Una campaña sin filas en `estructura` funciona como siempre (gerencias y secciones salen de sus procesos).
-import { normal, txt } from './comun.js';
+import { normal, txt, HttpError } from './comun.js';
 
 const clave = (g, s) => normal(g) + '|' + normal(s);
 const porNombre = (a, b) => a.localeCompare(b, 'es');
@@ -85,6 +85,50 @@ export async function asegurarEstructura(env, campId, g, s) {
   const hermana = filas.find(f => normal(f.gerencia) === normal(g));
   await env.DB.prepare('INSERT OR IGNORE INTO estructura (campana_id, clave, area, gerencia, seccion, orden) VALUES (?,?,?,?,?,?)')
     .bind(campId, clave(g, s), hermana ? hermana.area : '', hermana ? hermana.gerencia : txt(g, 150), txt(s, 150), filas.reduce((m, f) => Math.max(m, f.orden + 1), 0)).run();
+}
+
+// Constructor del mapa: crea una gerencia (seccion vacía) o una sección dentro de una gerencia, ya guardada en el servidor.
+// Si la campaña aún no tenía esqueleto, se siembra con las gerencias/secciones que ya tiene en procesos y personas para que activarlo
+// no cambie cómo se leen las cargas siguientes.
+export async function crearEstructura(env, campId, gerencia, seccion) {
+  const g = txt(gerencia, 150), s = txt(seccion, 150);
+  if (!normal(g)) throw new HttpError(400, 'Escribe el nombre de la gerencia');
+  let filas = await leerEstructura(env, campId);
+  if (!filas.length) {
+    const par = (await env.DB.prepare(`SELECT gerencia, seccion FROM procesos WHERE campana_id=? UNION SELECT gerencia, seccion FROM encuestados WHERE campana_id=?`).bind(campId, campId).all()).results;
+    const vistos = new Set(), sem = [];
+    par.filter(x => normal(x.gerencia) && normal(x.seccion)).forEach(x => {
+      const k = clave(x.gerencia, x.seccion);
+      if (!vistos.has(k)) { vistos.add(k); sem.push(env.DB.prepare('INSERT OR IGNORE INTO estructura (campana_id, clave, area, gerencia, seccion, orden) VALUES (?,?,?,?,?,?)').bind(campId, k, '', txt(x.gerencia, 150), txt(x.seccion, 150), sem.length)); }
+    });
+    for (let i = 0; i < sem.length; i += 90) await env.DB.batch(sem.slice(i, i + 90));
+    filas = await leerEstructura(env, campId);
+  }
+  const hermana = filas.find(f => normal(f.gerencia) === normal(g));
+  if (s) {
+    if (filas.some(f => f.clave === clave(g, s))) throw new HttpError(409, 'Esa sección ya existe en la gerencia');
+    if (!hermana) throw new HttpError(404, 'La gerencia no existe: créala primero');
+  } else if (hermana) throw new HttpError(409, 'Esa gerencia ya existe');
+  const orden = filas.reduce((m, f) => Math.max(m, f.orden + 1), 0);
+  await env.DB.prepare('INSERT OR IGNORE INTO estructura (campana_id, clave, area, gerencia, seccion, orden) VALUES (?,?,?,?,?,?)')
+    .bind(campId, clave(g, s), hermana ? hermana.area : '', hermana ? hermana.gerencia : g, s, orden).run();
+  // La fila «gerencia sin sección» solo marca una gerencia vacía: deja de hacer falta con la primera sección real.
+  if (s) await env.DB.prepare("DELETE FROM estructura WHERE campana_id=? AND clave=?").bind(campId, clave(g, '')).run();
+  return leerEstructura(env, campId);
+}
+
+// Elimina una sección vacía o una gerencia entera (con sus secciones) solo si no tiene procesos ni personas.
+export async function eliminarEstructura(env, campId, gerencia, seccion) {
+  const g = txt(gerencia, 150), s = txt(seccion, 150);
+  if (!normal(g)) throw new HttpError(400, 'Indica la gerencia');
+  const enGer = x => normal(x.gerencia) === normal(g) && (!s || normal(x.seccion) === normal(s));
+  const filas = (await leerEstructura(env, campId)).filter(enGer);
+  if (!filas.length) throw new HttpError(404, s ? 'La sección no existe en el esqueleto' : 'La gerencia no existe en el esqueleto');
+  const procs = (await env.DB.prepare('SELECT gerencia, seccion FROM procesos WHERE campana_id=?').bind(campId).all()).results.filter(enGer).length;
+  const pers = (await env.DB.prepare('SELECT gerencia, seccion FROM encuestados WHERE campana_id=?').bind(campId).all()).results.filter(enGer).length;
+  if (procs || pers) throw new HttpError(409, 'No se puede eliminar: tiene ' + [procs ? procs + (procs === 1 ? ' proceso' : ' procesos') : '', pers ? pers + (pers === 1 ? ' persona' : ' personas') : ''].filter(Boolean).join(' y ') + '. Muévelos o elimínalos antes.');
+  await env.DB.batch(filas.map(f => env.DB.prepare('DELETE FROM estructura WHERE campana_id=? AND clave=?').bind(campId, f.clave)));
+  return leerEstructura(env, campId);
 }
 
 // Gerencias y secciones del esqueleto en el formato de areasDeCampana ([{gerencia, secciones[]}]), solo las que tienen al menos una sección.

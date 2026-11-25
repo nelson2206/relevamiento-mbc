@@ -110,7 +110,9 @@ Ninguna clave de Supervisor se guarda en claro: en la base solo queda su huella 
 | `POST /a/campana/invitacion` | `rutaInvitacion` | Texto de invitación. |
 | `POST /a/campana/cliente` | `rutaClienteAcceso` | Generar, renovar, desactivar o definir el acceso del cliente. |
 | `POST /a/enlace` | `rutaEnlace` | Crear o regenerar el código público (enlace abierto). |
-| `POST /a/importar` | `rutaImportar` | Carga de Excel: estructura, personas, procesos con matriz y sistemas. Con `upsert` (matriz completada a mano) actualiza por ID o código sin exigir gerencia, conserva lo que el archivo deja vacío y devuelve `campos_cambiados` y `descartadas` (HU05). |
+| `POST /a/importar` | `rutaImportar` | Carga de Excel: estructura, personas, procesos con matriz y sistemas. Con `upsert` (matriz completada a mano) actualiza por ID o código sin exigir gerencia, conserva lo que el archivo deja vacío y devuelve `campos_cambiados` y `descartadas` (HU05). Con `upsert` también reconoce un proceso por su ruta (gerencia, sección, macroproceso, proceso, subproceso) y con `dry_run` calcula `cambios`/`campos_sobrescritos` sin escribir (la consola lo usa para pedir confirmación). |
+| `POST /a/estructura/crear` · `POST /a/estructura/eliminar` | `rutaEstructuraCrear` · `rutaEstructuraEliminar` | Constructor: gerencias y secciones del esqueleto; eliminar solo si no tienen procesos ni personas. |
+| `POST /a/proceso/borrar-grupo` | `rutaProcesoBorrarGrupo` | Constructor: borra un macroproceso o proceso entero; se rechaza si algún subproceso tiene respuestas. |
 | `POST /a/encuestado` | `rutaEncuestadoAlta` | Alta rápida de responsables sin enlace personal. |
 | `POST /a/encuestado/borrar` | `rutaEncuestadoBorrar` | Borra personas (con respuestas, solo con `forzar`). |
 | `POST /a/respuesta/borrar` | `rutaRespuestaBorrar` | Borra respuestas de una persona en uno o varios procesos. |
@@ -341,7 +343,7 @@ Es el archivo más grande (unas 300 funciones). Se organiza en pestañas (`data-
 | Sesión y campañas | `api(path, body)`, `entrar`, `entrarCliente`, `pintarCampanas`, `borrarCampana`, `ver`, `copiar` | Entrar con el código de administración o con el del cliente; listar, abrir y borrar campañas. |
 | Resumen | `pintarKpis`, `llenarFiltros`, `barraCob`, `cobertura`, `avancePersona`, `puntosUnidos` | Indicadores y filtros. La cobertura replica la regla de `cobertura.js`. |
 | Mapa de procesos | `pintarMapa`, `listaMapa`, `fijarVistaMapa` | Árbol Gerencia > Sección > Macroproceso > Proceso. |
-| Constructor del mapa | `pintarConstructor`, `elegirNodo`, `marcarFuera`, `borrarNodo`, `dialogoMover`, `confirmarMover`, `avisarDeshacer`, `soltarEn`, `zonaEn`, `terminarToque` | Mover procesos entre secciones con arrastre o con toque, con confirmación e historial para deshacer. |
+| Constructor del mapa | `pintarConstructor`, `elegirNodo`, `marcarFuera`, `borrarNodo`, `dialogoMover`, `confirmarMover`, `avisarDeshacer`, `soltarEn`, `zonaEn`, `terminarToque` | Mover subprocesos entre secciones, macroprocesos y procesos con arrastre o con toque, y crear/eliminar gerencias, secciones, macroprocesos, procesos y subprocesos (`crearGerencia`, `crearSeccion`, `crearMacro`, `crearProceso`, `eliminarEstructuraCn`, `eliminarGrupo`), todo con ventana de confirmación (`modalConfirmar`, `modalPedir`) e historial para deshacer. |
 | Matriz | `pintarMatriz`, `pintarMatrizLista`, `gridMatriz`, `arbolMatriz`, `filaMx`, `celdaMx`, `pedirValidador`, `sugerencias`, `faltantes` | Matriz de procesos con columnas plegables; muestra lo que falta para el contrato. |
 | Exportar | `exportarMatriz`, `hojaMatriz`, `libroInventario`, `guardarLibro`, `nombreArchivo` | Excel de la matriz e inventario. |
 | Detalle de un proceso | `detalle`, `editorMatriz`, `activarEditor`, `leerEditor`, `activarPrecarga`, `seccionPrecarga`, `editarProceso`, `estructurar` | Edición de la matriz, precarga de puntos y pedido de completación a la IA. |
@@ -405,7 +407,7 @@ Módulo `FlujoAdmin`. Lo consulta `admin.html` al abrir una campaña.
 
 | Comando (desde `worker/`) | Archivo | Qué cubre |
 |---|---|---|
-| `npm run test:unit` | `test/unit/*.test.mjs` | Sin red (SQLite en memoria con `schema.sql`): `cobertura.js`, `comun.js` + `ambito.js`, `estructura.js`, las reglas de `flujo.js`, PIN y acceso, documentos (HU01/HU02), extracción de precarga y borradores, matriz como única fuente (`matriz-sync.test.mjs`), carga de la matriz completada a mano (`importar-matriz.test.mjs`, HU05) y el desfase entre migraciones y `schema.sql` (`node --test`). |
+| `npm run test:unit` | `test/unit/*.test.mjs` | Sin red (SQLite en memoria con `schema.sql`): `cobertura.js`, `comun.js` + `ambito.js`, `estructura.js`, las reglas de `flujo.js`, PIN y acceso, documentos (HU01/HU02), extracción de precarga y borradores, matriz como única fuente (`matriz-sync.test.mjs`), carga de la matriz completada a mano (`importar-matriz.test.mjs`, HU05), hoja Procesos con la matriz y Constructor (`constructor-carga.test.mjs`) y el desfase entre migraciones y `schema.sql` (`node --test`). |
 | `npm run test:flujo` | `test/flujo.mjs` | Integración del flujo del Supervisor: pasos, advertencias, aprobación y reapertura. Requiere `npm run dev`. |
 | `npm run test:usuarios` | `test/usuarios.mjs` | Integración desde la consola: alta y edición de personas, claves, equipo visible y catálogo. Requiere `npm run dev`. |
 | `npm run test:seguridad` | `test/seguridad.mjs` | Integración: permisos del Gerente y entradas inválidas en la carga con esqueleto. Requiere `npm run dev`. |
