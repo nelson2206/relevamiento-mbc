@@ -193,6 +193,19 @@
   .pbar{flex:1;height:8px;border-radius:99px;background:var(--panel);overflow:hidden}
   .pbar div{height:100%;width:0;background:var(--accent);border-radius:99px;transition:width .25s ease}
   .ptext{font-family:Montserrat,sans-serif;font-size:12.5px;font-weight:700;color:var(--heading);white-space:nowrap;font-variant-numeric:tabular-nums}
+  #barra .pbar,#barra .ptext{display:none}
+  #barra{padding:6px 16px}
+  .pguard{font-size:12.5px;font-weight:600;color:var(--muted);white-space:nowrap}
+  .pguard.ok{color:var(--ok)} .pguard.warn{color:var(--warn);white-space:normal}
+  @media (max-width:560px){.barra-in{flex-wrap:wrap;gap:6px 14px}.pguard{flex-basis:100%;white-space:normal}}
+  .resfin{border:1px solid var(--line);border-radius:12px;padding:14px 16px;margin:12px 0;background:var(--panel)}
+  .resfin h3{margin:0 0 8px;font-size:15px}
+  .resfin ul{list-style:none;margin:0 0 10px;padding:0}
+  .resfin li{display:flex;gap:8px;padding:5px 0;border-top:1px solid var(--line);font-size:14px}
+  .resfin li:first-child{border-top:0}
+  .resfin li b{min-width:5.5em;font-weight:700}
+  .resfin .ok{color:var(--ok)} .resfin .ini{color:var(--heading)} .resfin .falta{color:var(--warn)}
+  .resfin .acc{display:flex;gap:10px;flex-wrap:wrap;margin-top:6px}
   .msg{border-radius:12px;padding:12px 16px}
   .msg.warn{background:var(--warn-bg);color:var(--warn)} .msg.ok{background:var(--ok-bg);color:var(--ok)}
   /* Checklist de cada bloque: lo que la matriz necesita saber */
@@ -275,6 +288,7 @@
   <div class="barra-in">
     <div class="pbar"><div id="pfill"></div></div>
     <span class="ptext" id="ptext">0 de 0 respuestas</span>
+    <span class="pguard" id="pguard" role="status" aria-live="polite"></span>
   </div>
 </div>
 
@@ -829,6 +843,8 @@
     $('#heroTitle').textContent = 'Hola, ' + e.nombre.split(' ')[0] + ': cuéntanos cómo funcionan tus procesos';
     $('#heroIntro').innerHTML = 'Son tres partes. Primero confirmas tus procesos del inventario; luego, si hace falta, buscas otros en los que participes; y al final nos cuentas, <strong>hablando</strong> o escribiendo, cómo funciona cada uno. Todo se guarda solo: puedes dejarlo y volver con tu nombre y tu PIN.';
     ponerLogo(S.campana);
+    $('#barra').classList.remove('hidden');   // franja fija: solo el estado de guardado (el avance ya está en la tarjeta «Tu avance»)
+    pintarGuardado();
     ponerAvanceHero();
 
     var root = $('#root');
@@ -921,7 +937,7 @@
     var fin = document.createElement('section');
     fin.className = 'card';
     fin.innerHTML = '<h2>¿Terminaste?</h2><p class="lead">Tus respuestas ya están guardadas. Avísanos que terminaste para preparar la reunión de validación. Puedes volver a editar después.</p>' +
-      '<button class="btn" type="button" id="btnEnviar">Marcar como terminado</button><div class="msg ok hidden" id="msgFin" style="margin-top:12px"></div>';
+      '<div class="resfin hidden" id="resumenFin"></div><button class="btn" type="button" id="btnEnviar">Marcar como terminado</button><div class="msg ok hidden" id="msgFin" style="margin-top:12px"></div>';
     root.appendChild(fin);
 
     pintarPaso1();
@@ -931,14 +947,7 @@
     $('#btnAgregar').addEventListener('click', function(){ abrirNuevo(''); });
     $('#btnCancelarNuevo').addEventListener('click', function(){ $('#formNuevo').classList.add('hidden'); });
     $('#btnGuardarNuevo').addEventListener('click', agregarProceso);
-    $('#btnEnviar').addEventListener('click', function(){
-      var inc = procesosActivos().filter(function(p){ return !procesoCompleto(p.id); });
-      if (inc.length && !confirm('Te ' + (inc.length === 1 ? 'falta completar 1 proceso' : 'faltan completar ' + inc.length + ' procesos') + ': ' +
-        inc.slice(0, 5).map(nombreProc).join(', ') + (inc.length > 5 ? '…' : '') + '.\n\n¿Marcar la encuesta como terminada igual?')) return;
-      var b = this; b.disabled = true;
-      api('/r/enviar', {}).then(function(){ mostrarFin('¡Gracias! Avisamos al equipo consultor. Te contactarán para una reunión corta de validación.'); })
-        .catch(function(err){ mostrarFin(err.message, true); }).then(function(){ b.disabled = false; });
-    });
+    $('#btnEnviar').addEventListener('click', mostrarResumenFin);   // primero se muestra qué quedó guardado; el envío se confirma ahí
     actualizarAvance();
     ajustarBuscadorFijo();
     if (nuevo !== null) abrirNuevo(nuevo);
@@ -1316,12 +1325,13 @@
     clearTimeout(timers[key]);
     if (!document.getElementById('est-' + key)) return Promise.resolve();
     return api('/r/respuesta', {proceso_id: pid, pregunta: qid, datos: leerEst(key)}).then(function(j){
-      delete sinGuardar[key];
+      delete sinGuardar[key]; registrarGuardado(key);
       (S.respuestas[pid] = S.respuestas[pid] || {})[qid] = {texto: '', sistemas: [], checklist: j.checklist || {}, datos: j.datos};
       estado(key, j.completo ? 'Guardado' : 'Guardado, falta completarla', j.completo ? 'ok' : '');
       actualizarAvance();
     }).catch(function(err){
       estado(key, 'No se guardó: ' + err.message + '. Vuelve a marcar para reintentar.', 'warn');
+      falloGuardado[key] = true; pintarGuardado();
     });
   }
 
@@ -1682,6 +1692,64 @@
     ];
     Array.prototype.forEach.call(document.querySelectorAll('#avPasos i'), function(i){ i.className = estados[Number(i.dataset.p)]; });
     if ($('#avRes')) $('#avRes').textContent = conf + ' de ' + deParte1.length + ' confirmados · ' + completos + ' de ' + activos.length + ' descritos';
+    pintarGuardado();
+  }
+
+  // Franja de guardado: cuenta lo que el servidor ya confirmó (S.respuestas solo se actualiza cuando el guardado responde bien),
+  // la hora del último guardado de esta visita y avisa si algo falló o sigue pendiente.
+  var ultimoGuardado = null, falloGuardado = {};
+  function horaCorta(d){ return d.toLocaleTimeString('es-PE', {hour: '2-digit', minute: '2-digit'}); }
+  function totalGuardadas(){
+    var n = 0;
+    Object.keys(S.respuestas || {}).forEach(function(pid){
+      Object.keys(S.respuestas[pid] || {}).forEach(function(q){ if (respondida(pid, q)) n++; });
+    });
+    return n;
+  }
+  function pintarGuardado(){
+    var el = $('#pguard'); if (!el) return;
+    var n = totalGuardadas(), pend = Object.keys(sinGuardar).length, fallo = Object.keys(falloGuardado).length;
+    if (fallo){ el.className = 'pguard warn'; el.textContent = '⚠ No se pudo guardar una respuesta. Vuelve a escribir en ella para reintentar.'; return; }
+    if (pend){ el.className = 'pguard'; el.textContent = 'Guardando…'; return; }
+    if (!n){ el.className = 'pguard'; el.textContent = 'Aún no hay respuestas guardadas'; return; }
+    el.className = 'pguard ok';
+    el.textContent = '✔ ' + n + (n === 1 ? ' respuesta guardada' : ' respuestas guardadas') + ' en el servidor' + (ultimoGuardado ? ' · última a las ' + horaCorta(ultimoGuardado) : '');
+  }
+  function registrarGuardado(key){ delete falloGuardado[key]; ultimoGuardado = new Date(); }
+
+  // Resumen previo a «Marcar como terminado»: estado de cada proceso tal como quedó en el servidor.
+  function filasResumen(){
+    var tot = totalPuntos();
+    return procesosActivos().map(function(p){
+      var r = S.respuestas[p.id] || {}, hay = Object.keys(r).some(function(q){ return respondida(p.id, q); }), n = listosProceso(p.id);
+      var cls = tot && n === tot ? 'ok' : hay || n ? 'ini' : 'falta';
+      var t = cls === 'ok' ? '✔ Completo' : cls === 'ini' ? 'En curso · ' + n + ' de ' + tot + ' puntos' : '✘ Sin respuestas';
+      return {p: p, cls: cls, t: t};
+    });
+  }
+  function mostrarResumenFin(){
+    var caja = $('#resumenFin'); if (!caja) return;
+    var filas = filasResumen(), sin = filas.filter(function(f){ return f.cls === 'falta'; }).length;
+    var pend = Object.keys(sinGuardar).length || Object.keys(falloGuardado).length;
+    var porMarcar = S.procesos.filter(function(p){ return (p.enSeccion || p.asignado) && !S.revisiones[p.id]; }).length;
+    var h = '<h3>Esto es lo que quedó guardado en el servidor</h3>';
+    h += filas.length ? '<ul>' + filas.map(function(f){ return '<li class="' + f.cls + '"><b>' + esc(f.p.codigo || '') + '</b><span>' + esc(nombreProc(f.p)) + ' · ' + f.t + '</span></li>'; }).join('') + '</ul>'
+      : '<p>No marcaste ningún proceso como «participo», así que no hay respuestas que enviar.</p>';
+    if (sin) h += '<p class="falta">' + (sin === 1 ? '1 proceso no tiene respuestas.' : sin + ' procesos no tienen respuestas.') + ' Puedes terminar igual o volver a completarlos.</p>';
+    if (porMarcar) h += '<p class="falta">' + (porMarcar === 1 ? 'Falta marcar 1 proceso' : 'Faltan marcar ' + porMarcar + ' procesos') + ' de tu sección en la parte 1.</p>';
+    if (pend) h += '<p class="falta">Todavía hay cambios sin guardar. Espera unos segundos a que aparezca «Guardado» y vuelve a pulsar el botón.</p>';
+    h += '<div class="acc"><button class="btn" type="button" id="btnConfirmarFin"' + (pend ? ' disabled' : '') + '>Confirmar y marcar como terminado</button>' +
+      '<button class="btn-link" type="button" id="btnVolverFin">Volver a revisar</button></div>';
+    caja.innerHTML = h; caja.classList.remove('hidden');
+    $('#btnVolverFin').addEventListener('click', function(){ caja.classList.add('hidden'); });
+    $('#btnConfirmarFin').addEventListener('click', function(){
+      var b = this; b.disabled = true;
+      api('/r/enviar', {}).then(function(){
+        caja.classList.add('hidden');
+        var n = totalGuardadas();
+        mostrarFin('¡Gracias! Quedaron ' + n + (n === 1 ? ' respuesta guardada' : ' respuestas guardadas') + ' en ' + filas.length + (filas.length === 1 ? ' proceso' : ' procesos') + ' (enviado a las ' + horaCorta(new Date()) + '). Avisamos al equipo consultor. Te contactarán para una reunión corta de validación.');
+      }).catch(function(err){ mostrarFin(err.message, true); b.disabled = false; });
+    });
   }
 
   // ------------------------------------------------------------ guardado
@@ -1691,6 +1759,7 @@
     sinGuardar[key] = true;
     porRevisar[key] = true;
     if (!grab[key]) estado(key, 'Sin guardar…');
+    pintarGuardado();
     clearTimeout(timers[key]);
     timers[key] = setTimeout(function(){ guardar(pid, qid); }, espera === undefined ? 1200 : espera);
   }
@@ -1704,7 +1773,7 @@
     var sistemas = Array.prototype.map.call(document.querySelectorAll('[data-sis="' + CSS.escape(key) + '"]:checked'), function(c){ return c.value; });
     var rech = (respuesta(pid, qid).checklist || {})._sistemas_rechazados;
     return api('/r/respuesta', {proceso_id: pid, pregunta: qid, texto: texto, sistemas: sistemas, sis_rechazados: rech}).then(function(){
-      delete sinGuardar[key];
+      delete sinGuardar[key]; registrarGuardado(key);
       var ant = respuesta(pid, qid);
       (S.respuestas[pid] = S.respuestas[pid] || {})[qid] = {texto: texto, sistemas: sistemas, checklist: ant.checklist || {}};
       if (!grab[key]) estado(key, 'Guardado', 'ok');
@@ -1712,6 +1781,7 @@
       actualizarAvance();
     }).catch(function(err){
       estado(key, 'No se guardó: ' + err.message + '. Vuelve a escribir para reintentar.', 'warn');
+      falloGuardado[key] = true; pintarGuardado();
     });
   }
   window.addEventListener('beforeunload', function(ev){
